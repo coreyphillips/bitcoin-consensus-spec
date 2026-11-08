@@ -202,10 +202,10 @@ Outcomes:
 
 | `result` | Meaning |
 |---|---|
-| `accepted` | The block was stored and no consensus failure has been found. It may or may not be on the active chain. |
+| `accepted` | The block was stored and no consensus failure has been found. It may or may not be on the active chain. Also used, with reason `unrequested-header-only`, when an unrequested block with too little work was reduced to its header (chapter 11 section 11.6 step 4). |
 | `duplicate` | The block's full data was already known before this request (whether valid or invalid). Nothing changed. |
 | `orphan` | The parent header is unknown. The block was discarded. Implementations must not keep it for later. |
-| `invalid` | The header or the block violates consensus. The block hash is now known to be invalid, and so is every descendant. |
+| `invalid` | The header or the block violates consensus. Whether the hash is now remembered as invalid follows chapter 11 (failures of the context-free body checks are not remembered). A block already known to be invalid gives reason `duplicate-invalid`. |
 | `mutated` | The block data does not match what its header commits to (chapter 11, "Mutated blocks"). Nothing about the block hash was recorded; a correct copy of the same block can still be accepted later. |
 | `temporary` | The header's timestamp is too far in the future relative to `now`. Nothing was recorded. |
 
@@ -219,6 +219,7 @@ Delivers block headers (80 bytes each), as in a `headers` message (chapter 14), 
 |---|---|---|
 | `headers` | array of hex | Headers in order; each must connect to a known header or to the previous one in the array |
 | `now` | integer | Current time |
+| `via` | string, optional | `p2p` (default): the headers arrived in one `headers` message, and the whole message is dropped unless it passes the message-level checks of specification chapter 14 (`headers_message_acceptable`). `rpc`: header submission by an operator (one header per request), processed directly. |
 
 | Response field | Type | Meaning |
 |---|---|---|
