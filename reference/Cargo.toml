@@ -1,0 +1,23 @@
+[package]
+name = "bitcoin-consensus-spec"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Executable reference generated from the bitcoin-consensus-spec documents (spec/*.md)"
+build = "build.rs"
+
+[lib]
+name = "bcs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "reference-harness"
+path = "src/bin/harness.rs"
+
+# The reference has no dependencies: everything is defined in spec/*.md using the Rust standard library.
+[dependencies]
+
+[[bin]]
+name = "reference-node"
+path = "src/bin/node.rs"

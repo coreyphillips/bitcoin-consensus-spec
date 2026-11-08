@@ -1,0 +1,25 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  reference:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Known-answer tests from the specification
+        run: cargo test --release -p bitcoin-consensus-spec
+      - name: Build the reference and the runner
+        run: cargo build --release
+      - name: Conformance suite against the reference
+        run: ./target/release/bcs-conformance --impl ./target/release/reference-harness
+      - name: No em or en dash characters
+        run: |
+          if grep -rn --exclude-dir=target --exclude-dir=.git -e "$(printf '\xe2\x80\x94')" -e "$(printf '\xe2\x80\x93')" . ; then
+            echo "Found an em or en dash character"
+            exit 1
+          fi

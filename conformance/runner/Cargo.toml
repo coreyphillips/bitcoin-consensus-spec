@@ -1,0 +1,17 @@
+[package]
+name = "conformance-runner"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Runs the bitcoin-consensus-spec conformance suites against any harness that speaks conformance/PROTOCOL.md"
+
+[[bin]]
+name = "bcs-conformance"
+path = "src/main.rs"
+
+# The runner must stay independent of the implementations it tests: it never depends on the
+# reference crate. secp256k1 is only used to build the taproot placeholders of script_tests.json.
+[dependencies]
+serde_json = { version = "1", features = ["raw_value"] }
+sha2 = "0.10"
+secp256k1 = "0.31"
