@@ -23,8 +23,8 @@ The reference (the specification's own code) passes:
 | BIP341 wallet vectors, BIP340 vectors | 26 / 19 | pass |
 | Bitcoin Core qa-assets `script_assets_test.json` (taproot and more), 64 flag combinations | 239,168 | pass, identical error codes |
 | Edge cases found by mutation testing, expectations from Bitcoin Core's own code | 21 | pass |
-| Block corpus: 18 scenarios recorded from Bitcoin Core's functional tests and this project's own tests (16,832 events) | 5,121 normative tip checks, 1,076 chain tip sets, 2,139 UTXO set hashes | identical |
-| Live interop: the reference node synchronizes each scenario's chain from Bitcoin Core v32.1 over P2P, with no whitelist | tip, height and UTXO set hash for 18 chains | identical, no misbehaviour logged |
+| Block corpus: 20 scenarios recorded from Bitcoin Core's functional tests and this project's own tests (17,150 events) | 5,275 normative tip checks, 1,230 chain tip sets, 2,288 UTXO set hashes | identical |
+| Live interop: the reference node synchronizes each scenario's chain from Bitcoin Core v32.1 over P2P, with no whitelist | tip, height and UTXO set hash for 20 chains | identical, no misbehaviour logged |
 | Mainnet and testnet4 header chains from public peers, fully validated | every header | identical tip and chain work |
 
 Every expectation above comes from Bitcoin Core v32.1 itself: the "derived" vectors were produced by running Bitcoin Core's own interpreter (compiled from the pinned source) under every consensus flag combination, and the block corpus was recorded from official v32.1 binaries. `RESULTS.md` has the details, the independent reviews, the mutation audit, and the blind implementation experiment (a node built only from this document, synchronizing mainnet next to Bitcoin Core).

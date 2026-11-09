@@ -14,9 +14,9 @@ The reference is the specification's own code (every ```rust block in `spec/`, b
 | `bip341` / `bip340`: BIP341 wallet vectors, BIP340 vectors | 26 / 19 | pass |
 | `script-assets`: qa-assets `script_assets_test.json` under all 64 flag combinations | 239,168 | pass, identical error identifiers |
 | `custom`: edge cases found by mutation testing, expectations computed by Bitcoin Core's own code | 21 | pass, identical error identifiers |
-| `corpus`: 18 block scenarios recorded from Bitcoin Core (16,832 events) | 5,121 normative tips; 1,076 chain tip sets; 2,139 UTXO set hashes | all identical |
+| `corpus`: 20 block scenarios recorded from Bitcoin Core (17,150 events) | 5,275 normative tips; 1,230 chain tip sets; 2,288 UTXO set hashes | all identical |
 | `headers-live`: mainnet and testnet4 header chains from public peers, every header validated | 975,114 / 159,961 headers (2026-11-09) | every header accepted; the best header is the peer's last header |
-| `interop`: the reference node synchronizes each scenario's chain from a fresh bitcoind v32.1 over P2P | 18 chains: 300 generated blocks and 17 scenarios (one more is excluded by rule: its blocks are dated in the future, which a live node with a real clock rejects) | identical tip, height and `hash_serialized_3` for all 18; bitcoind ran without a whitelist and logged no misbehaviour |
+| `interop`: the reference node synchronizes each scenario's chain from a fresh bitcoind v32.1 over P2P | 20 chains: 300 generated blocks and 19 scenarios (one more is excluded by rule: its blocks are dated in the future, which a live node with a real clock rejects) | identical tip, height and `hash_serialized_3` for all 20; bitcoind ran without a whitelist and logged no misbehaviour |
 
 The derived expectations come from Bitcoin Core's own interpreter compiled from the pinned source (`conformance/oracle-core`), which passes the same script and transaction suites. The interop suite's check for misbehaviour was itself tested: a fake node that sends a `getdata` with 50,001 entries is reported ("Misbehaving: peer=0: getdata message size = 50001"). The vector suites passed on the reference's first complete run; so did the first 16 corpus scenarios. Every corpus scenario is replayed with restarts re-delivered (33 restarts, 10,781 re-delivered events), as `conformance/CORPUS.md` section 4 prescribes.
 
@@ -37,9 +37,9 @@ Each mutant changes one rule from Appendix A in a copy of the reference (for exa
 | Mutants | Caught by the vectors and corpus | Notes |
 |---|---|---|
 | 38 script and transaction rules | 35 by a wrong verdict, 1 more by a wrong reject reason only | The other 2 cannot be caught: skipping `FindAndDelete` of an empty signature in `OP_CHECKMULTISIG` cannot change any result under the consensus flags (an empty signature always fails), and a taproot tweak at or above the curve order needs a tagged hash that large, which is infeasible to find |
-| 30 block and chain rules | 26 by a normative tip check, 3 more only by the chain tip sets (a level the suite reports but does not require) | 1 survived: a version floor compared as unsigned at the BIP34 height only, which is observable only at heights where BIP34 is active and BIP66 and BIP65 are not; a scenario for it is being recorded |
+| 30 block and chain rules | 28 by a normative tip check, 2 more only by the chain tip sets (a level the suite reports but does not require) | The 2 change only the status of blocks off the active chain (descendants of an invalid block; unrequested low-work blocks kept in full) and no active tip in any recorded scenario |
 
-Every surviving mutant that could be caught led to new tests: 21 custom vectors (script and transaction edge cases, expectations from Core's own code) and a recorded scenario, `feature_spec_pitfalls`, of hand-built blocks delivered to Bitcoin Core v32.1 (BIP68 with high-bit versions, legacy sigop counting at exactly 80,000, the subsidy halving boundary, negative block versions, the 64-byte transaction ambiguity, the P2SH stack limit).
+Every surviving mutant that could be caught led to new tests: 21 custom vectors (script and transaction edge cases, expectations from Core's own code) and a recorded scenario, `feature_spec_pitfalls` (three nodes with different activation options), of hand-built blocks delivered to Bitcoin Core v32.1: BIP68 with high-bit versions, legacy sigop counting at exactly 80,000, the subsidy halving boundary, negative block versions, the version floor where BIP34 is active and BIP66 and BIP65 are not, the 64-byte transaction ambiguity, the P2SH stack limit, the BIP94 timewarp boundary with full blocks, and the anti-denial-of-service work checks for blocks and headers from peers.
 
 ## 4. The blind implementation
 
@@ -51,8 +51,20 @@ First runs, before any fix:
 |---|---|---|
 | M1: consensus library and harness | all vector suites, 337,963 checks; 21 custom cases | all pass, identical error identifiers |
 | M2: chain state | 16 corpus scenarios: 4,951 normative tips, 935 chain tip sets, 2,078 UTXO set hashes | all pass |
+| After the specification errata from the reviews (old build, no code changed yet) | the re-recorded corpus, 18 scenarios: 5,114 normative tips | all pass |
+| M3: the node (RocksDB, block and undo files, P2P) | `interop` against bitcoind v32.1 without a whitelist, 18 chains | 18 of 18 identical (tip, height, `hash_serialized_3`) |
+| Corpus with the version floor and timewarp nodes | 20 scenarios: 5,275 normative tips, 1,230 chain tip sets, 2,288 UTXO set hashes | all pass |
 
-It recorded five places where the specification was unclear (`SPEC_FEEDBACK.md` in its repository); all are resolved in the specification or the protocol. The node, its live interop, and the full testnet4 and mainnet synchronizations next to Bitcoin Core are in progress and will be added here.
+Its own regtest scenarios against bitcoind (about 90,000 signed transactions of every standard output type, reorganizations while connected, and ten kills with SIGKILL during synchronization followed by restarts) also matched Bitcoin Core's tip and UTXO set hash.
+
+It recorded five places where the specification was unclear (`SPEC_FEEDBACK.md` in its repository); all are resolved in the specification or the protocol. The errata it received during the experiment are the review fixes described in section 2; its log states which of them needed code changes.
+
+Holdouts, run by the experiment owner on a fixed commit of the node (`7ddd347`), not by the agent:
+
+| Network | Source | Comparison | Result |
+|---|---|---|---|
+| testnet4 | public peers from the DNS seeds | `hash_serialized_3` at heights 90,000, 120,000 and 150,000 against Bitcoin Core's values (chapter 15) | running |
+| mainnet | the local Bitcoin Core v32.1 node | `hash_serialized_3` at heights 840,000 to 965,000 against Bitcoin Core's values, then at a common tip | not started: the Bitcoin Core node is still synchronizing |
 
 ## 5. Not covered
 
