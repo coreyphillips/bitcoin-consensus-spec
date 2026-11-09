@@ -59,16 +59,19 @@ Its own regtest scenarios against bitcoind (about 90,000 signed transactions of 
 
 It recorded five places where the specification was unclear (`SPEC_FEEDBACK.md` in its repository); all are resolved in the specification or the protocol. The errata it received during the experiment are the review fixes described in section 2; its log states which of them needed code changes.
 
-Holdouts, run by the experiment owner on a fixed commit of the node, not by the agent (testnet4: `7ddd347`):
+Holdouts, run by the experiment owner on a fixed commit of the node, not by the agent (testnet4: `7ddd347`; mainnet: `1124fb7`):
 
 | Network | Source | Comparison | Result |
 |---|---|---|---|
 | testnet4 | public peers from the DNS seeds | `hash_serialized_3` at heights 90,000, 120,000 and 150,000 against Bitcoin Core's values (chapter 15) | **identical at all three heights.** Every block from genesis to 150,000 fully validated, every script checked, in 68 minutes (2026-11-08) |
-| mainnet | the local Bitcoin Core v32.1 node | `hash_serialized_3` at heights 840,000 to 965,000 against Bitcoin Core's values, then at a common tip | not started: the Bitcoin Core node is still synchronizing |
+| mainnet | a local Bitcoin Core v32.1 node as its only peer | `hash_serialized_3` at heights 840,000, 880,000, 910,000, 935,000 and 965,000 against Bitcoin Core's values (chapter 15), then against that node's `gettxoutsetinfo` at a common tip | **identical at all five heights and at the tip.** Every block from genesis to 975,132 fully validated, every script checked (the node has no assume-valid), in 2 hours 26 minutes (2026-11-08) |
+
+At the common tip, block 975,132 (`00000000000000000000d50927e773416b727bdb5706f62a8ec4a7006011a1a1`), both nodes reported `hash_serialized_3` `0139bed824c0ad6b70c60c63fa2bf09fdd06e02a957b4362d6a9889befe1c0ef` over 163,585,794 unspent outputs. The blind node computed its value after a clean shutdown and a restart from its database. The machine was an Apple M5 Pro (6 performance and 12 efficiency cores, 64 GB); the node verifies signatures with libsecp256k1 on every core, as chapter 02 section 2.11 allows.
 
 ## 5. Not covered
 
-- The reference has synchronized mainnet and testnet4 *headers* from real peers; full mainnet and testnet4 block validation is being tested with the blind implementation against a local Bitcoin Core node.
+- The reference itself has validated mainnet and testnet4 *headers* from real peers, not their blocks: it keeps its state in memory and is written for clarity, not speed. Full block validation of both networks was done by the blind implementation (section 4).
+- A full synchronization shows that the node accepts every block of the real chain and reaches the same UTXO set as Bitcoin Core at the compared heights. It does not exercise invalid blocks; their rejection is tested by the vector suites and the block corpus.
 - The low-work headers synchronization of Bitcoin Core (download, prove, download again) is described but not implemented by the reference; for honest peers the stored result is the same.
 - Out of scope by design: the BIP324 encrypted transport, transaction relay and mempool policy, compact blocks, address relay, mining and wallets.
 - No test suite proves the absence of divergence. These results are strong evidence, not a proof.
