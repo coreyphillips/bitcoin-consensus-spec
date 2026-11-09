@@ -202,6 +202,12 @@ fn run_node(command: &str, stderr_path: &Path, timeout: Duration) -> Result<Node
                             break;
                         }
                         Some("tip") => out.last_progress = Some(v),
+                        // PROTOCOL.md section 5: `x_` events are implementation extensions.
+                        Some(event) if event.starts_with("x_") => {}
+                        Some("error") => out.problems.push(format!(
+                            "node reported an error: {}",
+                            crate::check::shorten(&line, 200)
+                        )),
                         _ => out.problems.push(format!(
                             "unexpected line: {}",
                             crate::check::shorten(&line, 200)
