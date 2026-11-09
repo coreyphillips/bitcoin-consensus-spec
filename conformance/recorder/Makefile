@@ -34,6 +34,7 @@ NODES_feature_segwit := 0,1,2
 NODES_p2p_segwit := 0,1
 NODES_feature_bip68_sequence := 0,1
 NODES_mining_basic := 0,1
+NODES_feature_spec_pitfalls := 0,1,2
 
 COMMON_ARGS := --randomseed=$(SEED) --portseed=$(SEED) --v1transport --timeout-factor=$(TIMEOUT_FACTOR)
 # $(1): recording (run1 or run2), $(2): extra postprocess.py arguments.

@@ -33,6 +33,18 @@ g. Peer-to-peer anti-DoS work checks (net_processing). The threshold is the
    claimed work is below it is ignored entirely, from a peer without the noban
    permission; one more header in the same message reaches the threshold and
    every header is stored.
+
+Parts a to g run on node 0 (default regtest parameters). Two more nodes, never
+connected to anything but the test, each get their own corpus file:
+
+h. Node 1 activates BIP34 at height 2 and BIP66 and BIP65 only at 300, so the
+   version floor is 2 alone: version 0x80000000 is valid at height 1 (before
+   BIP34); at height 11 versions 0x80000000, 0xffffffff and 1 are bad-version,
+   and version 2 is valid.
+i. Node 2 runs with -test=bip94 and blocks 600 seconds apart. A full block at
+   the first height of a retarget period (144) whose timestamp is more than
+   600 seconds before its parent's is time-timewarp-attack; exactly 600
+   seconds before is valid and becomes the tip.
 """
 
 from io import BytesIO
@@ -74,18 +86,32 @@ from test_framework.util import assert_equal
 ANYONE_CAN_SPEND = CScript([OP_TRUE])
 SEQUENCE_LOCKTIME_TYPE_FLAG = 1 << 22
 HALVING_HEIGHT = 150
+RETARGET_INTERVAL = 144  # regtest: one day of 600 second blocks
+MAX_TIMEWARP = 600
 
 
 class SpecPitfallsTest(BitcoinTestFramework):
     def set_test_params(self):
-        self.num_nodes = 1
+        self.num_nodes = 3
         self.setup_clean_chain = True
+        self.extra_args = [
+            [],
+            ["-testactivationheight=bip34@2", "-testactivationheight=dersig@300", "-testactivationheight=cltv@300"],
+            ["-test=bip94"],
+        ]
+
+    def setup_network(self):
+        # Independent nodes: blocks reach each one only from the test.
+        self.setup_nodes()
+
+    def mine(self, count):
+        self.generatetodescriptor(self.node, count, self.miner, sync_fun=self.no_op)
 
     def run_test(self):
         self.node = self.nodes[0]
         self.miner = descsum_create("raw(51)")  # coinbases pay to a bare OP_TRUE
         self.next_coinbase_height = 1
-        self.generatetodescriptor(self.node, 110, self.miner)
+        self.mine(110)
         self.bootstrap_p2p()
 
         self.test_block_version()
@@ -95,6 +121,11 @@ class SpecPitfallsTest(BitcoinTestFramework):
         self.test_bip68_unsigned_version()
         self.test_subsidy_halving()
         self.test_anti_dos_work()
+
+        self.node = self.nodes[1]
+        self.test_version_floor_before_dersig()
+        self.node = self.nodes[2]
+        self.test_timewarp_full_block()
 
     # ------------------------------------------------------------ helpers
 
@@ -269,9 +300,9 @@ class SpecPitfallsTest(BitcoinTestFramework):
 
         # Nine confirmations still fail, ten pass.
         _, height, _ = self.tip()
-        self.generatetodescriptor(self.node, coin_height + 8 - height, self.miner)
+        self.mine(coin_height + 8 - height)
         self.submit(self.make_block([tx_ffffffff, tx_80000000]), "bad-txns-nonfinal")
-        self.generatetodescriptor(self.node, 1, self.miner)
+        self.mine(1)
         block = self.make_block([tx_ffffffff, tx_80000000])
         assert_equal(self.tip()[1] + 1, coin_height + 10)
         self.send([block])
@@ -291,7 +322,7 @@ class SpecPitfallsTest(BitcoinTestFramework):
     def test_subsidy_halving(self):
         self.log.info("c. Subsidy at the regtest halving height")
         _, height, _ = self.tip()
-        self.generatetodescriptor(self.node, HALVING_HEIGHT - 2 - height, self.miner)
+        self.mine(HALVING_HEIGHT - 2 - height)
         assert_equal(self.tip()[1], HALVING_HEIGHT - 2)
         self.send([self.make_block(coinbase_value=50 * COIN)])
         assert_equal(self.tip()[1], HALVING_HEIGHT - 1)
@@ -326,7 +357,7 @@ class SpecPitfallsTest(BitcoinTestFramework):
         assert_equal(peers[0]["permissions"], [])
 
         _, height, _ = self.tip()
-        self.generatetodescriptor(self.node, 200 - height, self.miner)
+        self.mine(200 - height)
         _, tip_height, _ = self.tip()
         # Every regtest block has work 2, so the threshold (tip work minus
         # 144 blocks of work) is the chain work at height tip_height - 144: a
@@ -365,6 +396,60 @@ class SpecPitfallsTest(BitcoinTestFramework):
         self.peer.send_and_ping(msg_headers([CBlockHeader(b) for b in blocks]))
         assert_equal(self.chain_tip_entry(blocks[-1].hash_hex)["status"], "headers-only")
         assert_equal(self.tip()[1], tip_height)
+
+    # ------------------------------------------------------------ h (node 1)
+
+    def test_version_floor_before_dersig(self):
+        self.log.info("h. Node 1, BIP34 at 2 but BIP66 and BIP65 at 300: the version floor is 2, compared as signed")
+        self.log.info("h1. Before the BIP34 height a negative version is valid")
+        block = self.make_block(version=-0x80000000)
+        self.submit(block, None)
+        assert_equal(self.tip()[1], 1)
+        self.mine(9)
+        self.bootstrap_p2p()
+
+        self.log.info("h2. After it, 0x80000000, 0xffffffff and 1 are below 2")
+        self.send([self.make_block(version=-0x80000000)], success=False, force_send=True,
+                  reject_reason="bad-version(0x80000000)", reconnect=True)
+        self.submit(self.make_block(version=-1), "bad-version(0xffffffff)")
+        self.submit(self.make_block(version=1), "bad-version(0x00000001)")
+        assert_equal(self.tip()[1], 10)
+
+        self.log.info("h3. Version 2 is valid until BIP66 activates")
+        block = self.make_block(version=2)
+        self.send([block])
+        assert_equal(self.node.getbestblockhash(), block.hash_hex)
+
+    # ------------------------------------------------------------ i (node 2)
+
+    def test_timewarp_full_block(self):
+        self.log.info("i. Node 2, -test=bip94: full blocks at a retarget boundary")
+        node = self.node
+        genesis_time = node.getblockheader(node.getblockhash(0))["time"]
+        for height in range(1, RETARGET_INTERVAL):
+            node.setmocktime(genesis_time + 600 * height)
+            self.mine(1)
+        prev_hash, prev_height, prev_time = self.tip()
+        assert_equal(prev_height, RETARGET_INTERVAL - 1)
+        assert_equal(prev_time, genesis_time + 600 * prev_height)
+        self.bootstrap_p2p()
+
+        def boundary_block(ntime):
+            block = create_block(prev_hash, create_coinbase(RETARGET_INTERVAL), ntime=ntime, version=4)
+            block.solve()
+            return block
+
+        self.log.info("i1. More than 600 seconds before the parent: time-timewarp-attack")
+        self.send([boundary_block(prev_time - MAX_TIMEWARP - 1)], success=False, force_send=True,
+                  reject_reason="time-timewarp-attack", reconnect=True)
+        self.submit(boundary_block(prev_time - 2 * MAX_TIMEWARP), "time-timewarp-attack")
+        assert_equal(self.tip()[1], RETARGET_INTERVAL - 1)
+
+        self.log.info("i2. Exactly 600 seconds before the parent is valid and becomes the tip")
+        block = boundary_block(prev_time - MAX_TIMEWARP)
+        self.send([block])
+        assert_equal(node.getbestblockhash(), block.hash_hex)
+        assert_equal(self.tip()[1], RETARGET_INTERVAL)
 
 
 if __name__ == '__main__':

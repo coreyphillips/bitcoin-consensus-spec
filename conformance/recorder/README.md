@@ -32,7 +32,7 @@ A scenario is one recorded test run, listed in `SCENARIOS` in the Makefile toget
 
 - Core's consensus functional tests, with `feature_block` run with `--skipreorg`;
 - `feature_block_reorg`: `feature_block.py` again, including its 1088-block reorg (over 1 GB of block data, mostly zero bytes; blocks over 100,000 bytes go to blobs);
-- `feature_spec_pitfalls`: `extra/feature_spec_pitfalls.py`, a test written for this corpus in Core's framework style. It covers BIP68 with transaction versions 0xffffffff and 0x80000000, legacy sigop counting at the 80,000 limit, the subsidy at the regtest halving height, signed block versions, 64-byte transactions with a merkle-matching mutated body, the P2SH stack size limit, and the P2P anti-DoS work checks for blocks and headers messages.
+- `feature_spec_pitfalls`: `extra/feature_spec_pitfalls.py`, a test written for this corpus in Core's framework style. It covers BIP68 with transaction versions 0xffffffff and 0x80000000, legacy sigop counting at the 80,000 limit, the subsidy at the regtest halving height, signed block versions, 64-byte transactions with a merkle-matching mutated body, the P2SH stack size limit, and the P2P anti-DoS work checks for blocks and headers messages, all on node 0. Two more independent nodes each get their own file: node 1 (BIP34 at height 2, BIP66 and BIP65 at 300) isolates the signed version floor of 2, and node 2 (`-test=bip94`) covers the timewarp rule with full blocks at a retarget boundary.
 
 Every test runs with `--randomseed=1 --portseed=1 --v1transport --timeout-factor=4` and fresh cache and data directories, each in its own container, so ports never collide with anything on the host.
 
