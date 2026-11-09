@@ -58,11 +58,14 @@ pub struct Bitcoind {
 
 impl Bitcoind {
     /// Starts `bitcoind -regtest` with an empty data directory and waits for its RPC server.
+    /// `v2transport` is bitcoind's `-v2transport`: with it, inbound peers may use BIP324 version 2
+    /// or version 1; without it, only version 1.
     pub fn start(
         binary: &Path,
         datadir: &Path,
         p2p_port: u16,
         rpc_port: u16,
+        v2transport: bool,
         extra: &[String],
     ) -> Result<Bitcoind, String> {
         std::fs::create_dir_all(datadir)
@@ -86,7 +89,7 @@ impl Bitcoind {
             "-listenonion=0".into(),
             "-discover=0".into(),
             "-natpmp=0".into(),
-            "-v2transport=0".into(),
+            format!("-v2transport={}", u8::from(v2transport)),
             "-printtoconsole=0".into(),
             "-daemon=0".into(),
         ];

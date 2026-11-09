@@ -64,6 +64,8 @@ INTEROP OPTIONS:
   --port-range LO-HI  Ports for bitcoind (default: 29000-29999; ports in use are skipped)
   --node-timeout SECS Seconds to wait for the node's stopped line (default: 600)
   --keep-temp         Keep the temporary data directories of passing chains too
+  --v2transport       Start bitcoind with -v2transport=1, so the node may use BIP324 version 2
+                      (bitcoind still accepts version 1); the default is -v2transport=0
 
 DERIVE OPTIONS:
   --oracle CMD        Shell command that starts oracle-core-harness
@@ -98,6 +100,7 @@ struct Options {
     port_range: (u16, u16),
     node_timeout: Duration,
     keep_temp: bool,
+    v2transport: bool,
 }
 
 fn usage_error(msg: &str) -> ExitCode {
@@ -135,6 +138,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         port_range: (29000, 29999),
         node_timeout: Duration::from_secs(600),
         keep_temp: false,
+        v2transport: false,
     };
     let mut i = 0;
     if let Some(first) = args.first() {
@@ -197,6 +201,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             }
             "--node-timeout" => o.node_timeout = secs(value(&mut i, a)?, a)?,
             "--keep-temp" => o.keep_temp = true,
+            "--v2transport" => o.v2transport = true,
             "--help" | "-h" => o.command = "help".into(),
             other => return Err(format!("unknown argument {other}")),
         }
@@ -404,6 +409,7 @@ fn cmd_run(opts: &Options) -> ExitCode {
                 port_range: opts.port_range,
                 node_timeout: opts.node_timeout,
                 keep_temp: opts.keep_temp,
+                v2transport: opts.v2transport,
             };
             let mut stats = Stats::default();
             if let Err(e) = suites::interop::run(&mut stats, opts.verbose, &cfg) {
