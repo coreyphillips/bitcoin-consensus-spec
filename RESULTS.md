@@ -71,7 +71,7 @@ At the common tip, block 975,132 (`00000000000000000000d50927e773416b727bdb5706f
 ## 5. Not covered
 
 - The reference itself has validated mainnet and testnet4 *headers* from real peers, not their blocks: it keeps its state in memory and is written for clarity, not speed. Full block validation of both networks was done by the blind implementation (section 4).
-- A full synchronization shows that every block of the real chain is accepted and connected exactly as Bitcoin Core connects it. It does not exercise invalid blocks; their rejection is tested by the vector suites and the block corpus.
+- A full synchronization shows that the node accepts every block of the real chain and reaches the same UTXO set as Bitcoin Core at the compared heights. It does not exercise invalid blocks; their rejection is tested by the vector suites and the block corpus.
 - The low-work headers synchronization of Bitcoin Core (download, prove, download again) is described but not implemented by the reference; for honest peers the stored result is the same.
 - Out of scope by design: the BIP324 encrypted transport, transaction relay and mempool policy, compact blocks, address relay, mining and wallets.
 - No test suite proves the absence of divergence. These results are strong evidence, not a proof.
