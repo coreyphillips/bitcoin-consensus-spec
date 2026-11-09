@@ -59,11 +59,11 @@ Its own regtest scenarios against bitcoind (about 90,000 signed transactions of 
 
 It recorded five places where the specification was unclear (`SPEC_FEEDBACK.md` in its repository); all are resolved in the specification or the protocol. The errata it received during the experiment are the review fixes described in section 2; its log states which of them needed code changes.
 
-Holdouts, run by the experiment owner on a fixed commit of the node (`7ddd347`), not by the agent:
+Holdouts, run by the experiment owner on a fixed commit of the node, not by the agent (testnet4: `7ddd347`):
 
 | Network | Source | Comparison | Result |
 |---|---|---|---|
-| testnet4 | public peers from the DNS seeds | `hash_serialized_3` at heights 90,000, 120,000 and 150,000 against Bitcoin Core's values (chapter 15) | running |
+| testnet4 | public peers from the DNS seeds | `hash_serialized_3` at heights 90,000, 120,000 and 150,000 against Bitcoin Core's values (chapter 15) | **identical at all three heights.** Every block from genesis to 150,000 fully validated, every script checked, in 68 minutes (2026-11-08) |
 | mainnet | the local Bitcoin Core v32.1 node | `hash_serialized_3` at heights 840,000 to 965,000 against Bitcoin Core's values, then at a common tip | not started: the Bitcoin Core node is still synchronizing |
 
 ## 5. Not covered

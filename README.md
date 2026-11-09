@@ -27,6 +27,8 @@ The reference (the specification's own code) passes:
 | Live interop: the reference node synchronizes each scenario's chain from Bitcoin Core v32.1 over P2P, with no whitelist | tip, height and UTXO set hash for 20 chains | identical, no misbehaviour logged |
 | Mainnet and testnet4 header chains from public peers, fully validated | every header | identical tip and chain work |
 
+A separate node written by an AI agent from this document alone ([bitcoin-spec-node](https://github.com/coreyphillips/bitcoin-spec-node)) passed every suite on its first runs and synchronized testnet4 from public peers with a UTXO set identical to Bitcoin Core's at heights 90,000, 120,000 and 150,000; its mainnet run is next.
+
 Every expectation above comes from Bitcoin Core v32.1 itself: the "derived" vectors were produced by running Bitcoin Core's own interpreter (compiled from the pinned source) under every consensus flag combination, and the block corpus was recorded from official v32.1 binaries. `RESULTS.md` has the details, the independent reviews, the mutation audit, and the blind implementation experiment (a node built only from this document, synchronizing mainnet next to Bitcoin Core).
 
 ## Layout
