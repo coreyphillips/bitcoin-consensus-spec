@@ -95,7 +95,7 @@ The script under test is `spent_outputs[index].script_pubkey`, the amount is `sp
 | `valid` | bool | Verification result |
 | `script_error` | string, optional | Error identifier from specification chapter 05 section 5.2 (for example `EVAL_FALSE`, `SIG_DER`), without any prefix. `OK` or absent when valid. |
 
-The identifiers are those of Bitcoin Core's script test table where it has one, and otherwise Bitcoin Core's `SCRIPT_ERR_` enum name without the prefix. Eight identifiers that occur under consensus flags are not in Core's test table: `UNKNOWN_ERROR`, `SCHNORR_SIG`, `SCHNORR_SIG_HASHTYPE`, `SCHNORR_SIG_SIZE`, `TAPROOT_WRONG_CONTROL_SIZE`, `TAPSCRIPT_CHECKMULTISIG`, `TAPSCRIPT_MINIMALIF` and `TAPSCRIPT_VALIDATION_WEIGHT`. The one name that differs from the enum is `NULLFAIL` (enum `SIG_NULLFAIL`), which never occurs under consensus flags.
+The identifiers are those of Bitcoin Core's script test table where it has one, and otherwise Bitcoin Core's `SCRIPT_ERR_` enum name without the prefix. Eight identifiers are not in Core's test table: `UNKNOWN_ERROR` (in Bitcoin Core v32.1 reachable only through an unexpected exception, so a conforming implementation never reports it), `SCHNORR_SIG`, `SCHNORR_SIG_HASHTYPE`, `SCHNORR_SIG_SIZE`, `TAPROOT_WRONG_CONTROL_SIZE`, `TAPSCRIPT_CHECKMULTISIG`, `TAPSCRIPT_MINIMALIF` and `TAPSCRIPT_VALIDATION_WEIGHT`. The one name that differs from the enum is `NULLFAIL` (enum `SIG_NULLFAIL`), which never occurs under consensus flags.
 
 The runner scores `valid` (level 1). Where the expected error is known, it also reports whether `script_error` matches (level 2).
 
@@ -186,8 +186,10 @@ Delivers a full block, as if it arrived from a peer or through block submission,
 |---|---|---|
 | `block` | hex | Serialized block with witness data |
 | `now` | integer | Current time for the future-timestamp rule |
-| `via` | string, optional | How Bitcoin Core received the block when the scenario was recorded: `p2p` (default) or `rpc` (block submission). Diagnostic; implementations may ignore it. |
-| `requested` | bool, optional | For `via: p2p`, whether Bitcoin Core had requested the block (default true). Diagnostic; implementations may ignore it. |
+| `via` | string, optional | How Bitcoin Core received the block when the scenario was recorded: `p2p` (default) or `rpc` (block submission). For `p2p`, the implementation MUST first apply the peer-to-peer checks of specification chapter 14 section 14.4 (`is_block_mutated`, `p2p_block_work_acceptable`). |
+| `requested` | bool, optional | For `via: p2p`, whether Bitcoin Core had requested the block (default true). The implementation MUST pass it to block processing as specification chapter 11 section 11.6 step 4 requires. |
+
+Ignoring `via` or `requested` can change the active tip: an unrequested block that is reduced to its header, or a mutated block that is dropped, is not linked when its descendants arrive.
 
 Recorded scenarios already contain the bytes Bitcoin Core actually validated. In particular, where `submitblock` would have added the default coinbase witness reserved value (Bitcoin Core's `UpdateUncommittedBlockStructures`), the recorded block already contains it, so no RPC behaviour needs to be emulated.
 
@@ -202,11 +204,11 @@ Outcomes:
 
 | `result` | Meaning |
 |---|---|
-| `accepted` | The block was stored and no consensus failure has been found. It may or may not be on the active chain. Also used, with reason `unrequested-header-only`, when an unrequested block with too little work was reduced to its header (chapter 11 section 11.6 step 4). |
-| `duplicate` | The block's full data was already known before this request (whether valid or invalid). Nothing changed. |
+| `accepted` | The block was stored, and the chain activation this request triggered did not find the block itself invalid. It may or may not be on the active chain, and a block that was not connected has not been fully validated. Also used, with reason `unrequested-header-only`, when an unrequested block was reduced to its header (chapter 11 section 11.6 step 4). |
+| `duplicate` | The block's full data was already known before this request, and the block is not known to be invalid. Nothing changed. |
 | `orphan` | The parent header is unknown. The block was discarded. Implementations must not keep it for later. |
-| `invalid` | The header or the block violates consensus. Whether the hash is now remembered as invalid follows chapter 11 (failures of the context-free body checks are not remembered). A block already known to be invalid gives reason `duplicate-invalid`. |
-| `mutated` | The block data does not match what its header commits to (chapter 11, "Mutated blocks"). Nothing about the block hash was recorded; a correct copy of the same block can still be accepted later. |
+| `invalid` | The header or the block violates consensus, either before storage or when chain activation tried to connect this block. Whether the hash is now remembered as invalid follows chapter 11 (failures of the context-free body checks are not remembered). A block already known to be invalid gives reason `duplicate-invalid`. Also used, with reason `too-little-chainwork`, for a `via: p2p` block dropped by the anti-denial-of-service work check of chapter 14; nothing is recorded then. |
+| `mutated` | The block data does not match what its header commits to (chapter 11, "Mutated blocks"), or the bytes do not decode as a block (the reason then describes the decoding error and is implementation-defined). Nothing about the block hash was recorded; a correct copy of the same block can still be accepted later. |
 | `temporary` | The header's timestamp is too far in the future relative to `now`. Nothing was recorded. |
 
 Conformance is judged on `tip` and `height` at the checkpoints of a scenario. Per-block outcomes are reported as diagnostics only, because implementations may validate side branches earlier or later than Bitcoin Core does without any effect on the active chain.
@@ -228,6 +230,8 @@ Delivers block headers (80 bytes each), as in a `headers` message (chapter 14), 
 | `index` | integer, optional | Index in `headers` of the first header that was not accepted |
 | `best_header` | hash | Most-work valid header known after processing, display order |
 
+A `via: p2p` message dropped as a whole by `headers_message_acceptable` gives `result` `invalid`, `reason` `headers-message-rejected` and no `index`; nothing was processed. Like the outcomes of 4.9, results and reasons are diagnostics; conformance is judged on the chain state.
+
 ### 4.10a `chain_invalidate`
 
 Marks a block, and every descendant, invalid by operator decision, exactly as specification chapter 11 defines `invalidate_block` (Bitcoin Core's `invalidateblock` RPC). If the block is on the active chain, the chain is rewound and the best remaining chain is activated. Several of Bitcoin Core's functional tests use this to rewind the chain, so recorded scenarios contain it.
@@ -235,6 +239,7 @@ Marks a block, and every descendant, invalid by operator decision, exactly as sp
 | Request field | Type | Meaning |
 |---|---|---|
 | `hash` | hash | Block hash, display order. The block must be known (header at least). |
+| `now` | integer, optional | Current time; runners send it for symmetry with the other chain operations, and a harness may ignore it |
 
 Response: `{"tip": hash, "height": integer}` after the operation.
 
@@ -252,21 +257,25 @@ Response: `{"hash_serialized_3": hash, "txouts": integer}` for the active chain 
 
 ## 5. Live node contract
 
-The interop suites run the implementation as a real node next to Bitcoin Core. For those suites the user supplies a node command template. The runner substitutes these placeholders:
+The interop suite runs the implementation as a real node next to Bitcoin Core. For that suite the user supplies a node command template. The runner substitutes these placeholders:
 
 | Placeholder | Value |
 |---|---|
 | `{network}` | `main`, `testnet3`, `testnet4`, `signet` or `regtest` |
-| `{datadir}` | An empty directory for the node's data |
+| `{datadir}` | An empty directory for the node's data. A node that keeps no data may ignore it. |
 | `{peer}` | `host:port` of the Bitcoin Core node to connect to |
 | `{stop_at}` | Block hash (display order) at which to stop |
+| `{options}` | The network options object of section 4.8 as one shell-quoted JSON argument, `'{}'` when there are none |
+
+The runner skips, as a stated rule, every scenario that needs network options when the template has no `{options}`.
 
 Required behavior:
 
-1. Start from an empty data directory, connect only to `{peer}` using the version 1 transport (chapter 14), and synchronize.
+1. Start from an empty data directory, apply the network options, connect only to `{peer}` using the version 1 transport (specification chapter 14), and synchronize.
 2. When the active tip equals `{stop_at}`, write one line to standard output and exit with status 0:
    `{"event":"stopped","tip":hash,"height":integer,"hash_serialized_3":hash}`
-3. Progress lines of the form `{"event":"tip","tip":hash,"height":integer}` may be written at any time. Other lines on standard output must not start with `{`.
+3. When the node cannot reach `{stop_at}` (the peer does not offer it, sends a block the node finds invalid, stops answering, or nothing changes for a while), exit with a non-zero status, after writing at most one line `{"event":"error","message":string,"tip":hash,"height":integer}` (`tip` and `height` optional). It must not wait forever: the runner kills the node after its `--node-timeout` and counts that as a failure.
+4. Progress lines `{"event":"tip","tip":hash,"height":integer}` may be written at any time. Lines whose `event` starts with `x_` are implementation extensions, which the runner ignores. No other line on standard output may start with `{`.
 
 ## 6. Versioning
 

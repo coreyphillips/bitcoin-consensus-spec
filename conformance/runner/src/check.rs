@@ -176,6 +176,27 @@ pub struct Stats {
     pub rules: BTreeMap<String, u64>,
     /// Set when the suite could not run at all.
     pub error: Option<String>,
+    /// Extra report lines printed after the summary table (per-file or per-chain detail).
+    pub details: Vec<String>,
+}
+
+impl Stats {
+    pub fn pass(&mut self) {
+        self.cases += 1;
+        self.passed += 1;
+    }
+
+    pub fn fail(&mut self, suite: &str, verbose: bool, loc: &str, detail: &str) {
+        self.cases += 1;
+        self.failed += 1;
+        if verbose {
+            println!("FAIL     [{suite}] {loc}: {detail}");
+        }
+    }
+
+    pub fn rule(&mut self, rule: &str, count: u64) {
+        *self.rules.entry(rule.to_string()).or_default() += count;
+    }
 }
 
 /// Executes checks for one suite against a harness and keeps the statistics.
@@ -201,7 +222,7 @@ impl<'h> Ctx<'h> {
     }
 
     pub fn rule(&mut self, rule: &str, count: u64) {
-        *self.stats.rules.entry(rule.to_string()).or_default() += count;
+        self.stats.rule(rule, count);
     }
 
     pub fn unsupported(&mut self, count: u64) {
@@ -221,16 +242,11 @@ impl<'h> Ctx<'h> {
     }
 
     pub fn pass(&mut self) {
-        self.stats.cases += 1;
-        self.stats.passed += 1;
+        self.stats.pass();
     }
 
     pub fn fail(&mut self, loc: &str, detail: &str) {
-        self.stats.cases += 1;
-        self.stats.failed += 1;
-        if self.verbose {
-            println!("FAIL     [{}] {loc}: {detail}", self.suite);
-        }
+        self.stats.fail(self.suite, self.verbose, loc, detail);
     }
 
     /// A check whose level 1 part passed and whose level 2 part (error identifier) was compared.

@@ -5,11 +5,11 @@ Chapters 08 to 10 decide whether a block is valid given its ancestors. This chap
 ## 11.1 Rules
 
 1. **Most work wins.** The active chain is the valid chain with the most cumulative work (chapter 09), not the longest chain.
-2. **First seen wins ties.** Among chains with equal work, the one whose tip block became *linked* first is preferred. A block is linked when its data and the data of all its ancestors have been received; blocks receive a strictly increasing *sequence number* at that moment, and lower is better. When a block's arrival links several waiting descendants, they are numbered in breadth-first order from it, children in the order they arrived. A node never switches between equal-work chains on its own.
+2. **First seen wins ties.** Among chains with equal work, the one whose tip block became *linked* first is preferred. A block is linked when its data and the data of all its ancestors have been received; blocks receive a strictly increasing *sequence number* at that moment, and lower is better. When a block's arrival links several waiting descendants, they are numbered in breadth-first order from it, children in the order they arrived. A node never switches between equal-work chains on its own. Bitcoin Core does not store sequence numbers: after a restart, every block of its active chain shares the best number and every other linked block shares the next one, and remaining ties are broken by memory address (Core: `LoadChainTip`, `SEQ_ID_BEST_CHAIN_FROM_DISK`, `CBlockIndexWorkComparator`). The first-seen rule therefore holds within one run of a node; across a restart only the preference for the active chain survives.
 3. **Validity is a property of the whole chain.** A block is part of a valid chain only if every ancestor is valid. When a block is found invalid, every descendant is invalid too, now and for any descendant learned later.
 4. **Only commitments may be remembered.** A node may permanently record a block hash as invalid only for failures that are determined by the data the hash commits to (kind `Invalid` from the header, contextual body or connection checks). It MUST NOT record anything for `Mutated` or `Temporary` failures, and Bitcoin Core does not record failures of the context-free body checks (`check_block`) at all, because a body that fails them may not be the body the header commits to (for example a forged body exploiting the 64-byte transaction ambiguity of the merkle tree).
 5. **Fail closed, everywhere.** If anything needed to validate a block is missing, the block is not valid (chapter 01).
-6. **Equivalence of implementations.** Implementations may validate side branches eagerly or lazily, in parallel or in batches, and may persist state however they like. They MUST select the same active chain as the reference after every block they process, and their UTXO set MUST equal the reference's (chapter 15 gives a fingerprint to compare).
+6. **Equivalence of implementations.** Implementations may validate side branches eagerly or lazily, in parallel or in batches, and may persist state however they like. They MUST select the same active chain as the reference after every block they process (given the same blocks in the same order, with the same `requested` flags, within one run), and their UTXO set MUST equal the reference's (chapter 15 gives a fingerprint to compare).
 
 The rest of this chapter specifies the reference algorithm, which follows Bitcoin Core's `ChainstateManager::ProcessNewBlock`, `AcceptBlockHeader`, `AcceptBlock`, `ReceivedBlockTransactions`, `ActivateBestChain` and `InvalidateBlock` (`src/validation.cpp`).
 
@@ -87,13 +87,16 @@ impl BlockTree {
 /// What happened to a block given to `process_block`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BlockOutcome {
-    /// Stored (or, if unrequested with too little work, only its header was kept). Valid so far.
+    /// Stored (or, if unrequested, possibly only its header was kept; section 11.6 step 4), and not
+    /// found invalid by the chain activation this call ran. A block that was not connected has not
+    /// been fully validated yet.
     Accepted,
     /// The block's data was already known.
     Duplicate,
     /// The parent is unknown; the block was discarded.
     Orphan,
-    /// Rejected; the failure says whether anything was recorded.
+    /// Rejected before storage, or found invalid when chain activation tried to connect this very
+    /// block; the failure's kind says whether anything was recorded (chapter 01).
     Rejected(Failure),
 }
 
@@ -107,8 +110,14 @@ pub struct ChainState {
     pub unlinked: std::collections::HashMap<Hash256, Vec<Hash256>>,
     pub next_sequence_id: u64,
     pub next_header_order: u64,
-    /// The most-work header not known invalid; the first accepted wins ties (Core: `m_best_header`).
+    /// The most-work header not known invalid (Core: `m_best_header`). Among equal work the first
+    /// accepted wins, except that a recalculation after an invalidation prefers the active tip.
     pub best_header: Hash256,
+    /// Bitcoin Core's minimum chain work (`-minimumchainwork`, by default the network's
+    /// `nMinimumChainWork`). Peer-to-peer policy, not consensus: it affects only unrequested blocks
+    /// (section 11.6 step 4) and the peer-to-peer checks of chapter 14. The reference starts at zero,
+    /// the regtest default.
+    pub minimum_chain_work: U256,
 }
 ```
 
@@ -149,6 +158,7 @@ impl ChainState {
             next_sequence_id: 2,
             next_header_order: 1,
             best_header: hash,
+            minimum_chain_work: U256::from_u64(0),
         }
     }
 
@@ -251,14 +261,23 @@ impl ChainState {
         &self.tree.entries[&self.best_header]
     }
 
-    /// Recomputes the best header after blocks were marked invalid. Core: `RecalculateBestHeader`.
+    /// Recomputes the best header after blocks were marked invalid. Bitcoin Core starts from the active
+    /// tip and replaces it only with a header of strictly more work; when several other headers tie,
+    /// its choice follows the iteration order of its block index, and the reference takes the first
+    /// accepted. Core: `RecalculateBestHeader`.
     fn recalculate_best_header(&mut self) {
+        let tip = self.tip().hash;
         self.best_header = self
             .tree
             .entries
             .values()
             .filter(|entry| !entry.failed)
-            .max_by(|a, b| a.chain_work.cmp(&b.chain_work).then(b.header_order.cmp(&a.header_order)))
+            .max_by(|a, b| {
+                a.chain_work
+                    .cmp(&b.chain_work)
+                    .then((a.hash == tip).cmp(&(b.hash == tip)))
+                    .then(b.header_order.cmp(&a.header_order))
+            })
             .expect("genesis is never invalid")
             .hash;
     }
@@ -272,7 +291,7 @@ Processing a full block (Core: `ProcessNewBlock`, `AcceptBlock`):
 1. **Context-free body checks** (`check_block`). A failure is returned and nothing is recorded, not even the header.
 2. **Header acceptance** (section 11.5). An orphan block is discarded.
 3. If the block's data is already stored, nothing changes (`Duplicate`), but chain activation still runs.
-4. If the block was not requested from a peer (chapter 14) and its chain has less work than the active tip, or it is more than 288 blocks ahead of the tip, only the header is kept. (This is peer-to-peer policy that bounds resource use; it does not change which chain is selected, because a block on a chain that later gains enough work is requested again.)
+4. If the block was not requested from a peer (chapter 14), only the header is kept when its chain has less work than the active tip, when it is more than 288 blocks ahead of the tip, or when its chain has less work than the minimum chain work. (Bitcoin Core also ignores an unrequested block whose data it stored before and has since pruned.) This is peer-to-peer policy that bounds resource use, but it is observable: a block reduced to its header is linked only when its data arrives again, so it can change sequence numbers and with them the choice between equal-work chains. Chapter 14 adds one more peer-to-peer rule for blocks whose header is new (`p2p_block_work_acceptable`).
 5. **Contextual body checks** (`contextual_check_block`). On an `Invalid` failure, the block and all its descendants are marked invalid. On a `Mutated` failure nothing is recorded.
 6. The block's data is stored. If its parent is linked (or it is genesis), it becomes linked with the next sequence number, and so does every stored descendant that was waiting for it, breadth first. Each newly linked block becomes a candidate for the active tip unless it is worse than the current tip.
 7. **Chain activation** (section 11.7).
@@ -300,7 +319,10 @@ impl ChainState {
         if !requested {
             let entry = &self.tree.entries[&hash];
             let tip = self.tip();
-            if entry.chain_work < tip.chain_work || entry.height > tip.height + MIN_BLOCKS_TO_KEEP {
+            if entry.chain_work < tip.chain_work
+                || entry.height > tip.height + MIN_BLOCKS_TO_KEEP
+                || entry.chain_work < self.minimum_chain_work
+            {
                 self.activate_best_chain();
                 return BlockOutcome::Accepted;
             }
@@ -318,8 +340,12 @@ impl ChainState {
         }
         self.tree.entries.get_mut(&hash).unwrap().block = Some(block);
         self.link(hash);
-        self.activate_best_chain();
-        BlockOutcome::Accepted
+        // Report a failure of this very block; a failure of an ancestor leaves the outcome
+        // `Accepted` (Bitcoin Core's block submission answers "inconclusive" then).
+        match self.activate_best_chain().into_iter().find(|(failed, _)| *failed == hash) {
+            Some((_, failure)) => BlockOutcome::Rejected(failure),
+            None => BlockOutcome::Accepted,
+        }
     }
 
     /// Assigns sequence numbers to `hash` and any waiting descendants, or queues it until its parent
@@ -376,7 +402,7 @@ Activation repeats until the active tip is the best candidate:
 
 1. Pick the best candidate (most work, then lowest sequence number). Walk from it back to the active chain; if any block on the way is known invalid or lacks data, remove the candidates on that path and pick again. If no candidate remains, or the best is the tip, stop.
 2. Disconnect blocks from the tip down to the fork point (the last block shared with the candidate's chain), restoring the UTXO set from undo data.
-3. Connect the candidate's blocks one by one (chapter 10, `connect_block`). After each success, drop candidates that are now worse than the tip. On a failure, mark the block and its descendants invalid and go back to step 1 (the node may then return to its previous chain, or stop part way along the new one if that is now the best valid chain).
+3. Connect the candidate's blocks one by one (chapter 10, `connect_block`). After each success, drop candidates that are now worse than the tip. On a failure, mark the block and its descendants invalid and go back to step 1 (the node may then return to its previous chain, or stop part way along the new one if that is now the best valid chain). Disconnecting a block does not remove it from the candidates; the old tip leaves the candidate set only when a better block (more work, or equal work and a lower sequence number) becomes the tip. That is what lets the node return to its previous chain after a failed reorganization.
 
 (Core: `ActivateBestChain`, `ActivateBestChainStep`, `FindMostWorkChain`, `PruneBlockIndexCandidates`, `ConnectTip`, `DisconnectTip`.)
 
@@ -473,14 +499,16 @@ impl ChainState {
     }
 
     /// Core: `Chainstate::ActivateBestChain`.
-    pub fn activate_best_chain(&mut self) {
+    /// Returns the blocks that failed to connect, with their failures.
+    pub fn activate_best_chain(&mut self) -> Vec<(Hash256, Failure)> {
+        let mut failures = Vec::new();
         loop {
             let best = match self.find_most_work_chain() {
                 Some(best) => best,
-                None => return,
+                None => return failures,
             };
             if best == self.tip().hash {
-                return;
+                return failures;
             }
             let fork = self.find_fork(&best);
             while self.tip().hash != fork {
@@ -494,8 +522,9 @@ impl ChainState {
             for hash in path {
                 match self.connect_tip(&hash) {
                     Ok(()) => self.prune_candidates(),
-                    Err(_) => {
+                    Err(failure) => {
                         self.mark_invalid(&hash);
+                        failures.push((hash, failure));
                         break;
                     }
                 }
@@ -621,6 +650,6 @@ pub fn is_block_mutated(block: &Block, check_witness_root: bool) -> bool {
 
 ## 11.12 What a real node adds
 
-The reference keeps everything in memory and validates one block at a time. A production node also persists the block tree, block data, undo data and the UTXO set, recovers from crashes, prunes old blocks, validates scripts in parallel, and caches signature checks. Each of these is safe exactly when it is invisible: the node MUST behave as if every block were processed by `process_block` in the order received. Appendix B lists the specific traps (batching across blocks, caches keyed by txid instead of wtxid, defaults for missing data, out-of-order connection).
+The reference keeps everything in memory and validates one block at a time. A production node also persists the block tree, block data, undo data and the UTXO set, recovers from crashes, prunes old blocks, validates scripts in parallel, and caches signature checks. Each of these is safe exactly when it is invisible: the node MUST behave as if every block were processed by `process_block` in the order received. A restart is the one exception Bitcoin Core itself makes: it keeps its active chain but forgets the order in which other equal-work chains arrived (section 11.1, rule 2). Appendix B lists the specific traps (batching across blocks, caches keyed by txid instead of wtxid, defaults for missing data, out-of-order connection).
 
 *Assume-valid.* Bitcoin Core skips script verification for blocks that are ancestors of a hard-coded block hash (block 966143 on mainnet in v32.1), under conditions spelled out in `ConnectBlock` (the block is on the best header chain, that chain has at least the minimum chain work, and the block is more than two weeks of work below the best header). Every other rule is still checked. This is an optimization based on trust in the software release, not a consensus rule; implementations MAY adopt it, and SHOULD offer a way to verify every script.

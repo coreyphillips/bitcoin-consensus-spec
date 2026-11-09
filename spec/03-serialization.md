@@ -299,7 +299,7 @@ pub fn serialize_txout(out: &mut Vec<u8>, output: &TxOut) {
 
 Decoding follows Bitcoin Core's algorithm exactly, which differs from "try the witness encoding, else the legacy one" in two corner cases:
 
-1. The decoder first reads an input count. If it is zero, the next byte is read as the *flag*. A non-zero flag means the witness encoding: inputs and outputs are then read normally. A **zero flag** means "no witness encoding", and then *nothing more is read for inputs or outputs*: the transaction has no inputs and no outputs. So the ten bytes `version | 00 00 | lock_time` decode to an empty transaction (which later fails the transaction checks of chapter 08). An implementation that rejects these ten bytes at the parser instead of decoding them breaks consensus whenever they appear inside a block, because the block must then be rejected for the correct reason with the correct failure kind.
+1. The decoder first reads an input count. If it is zero, the next byte is read as the *flag*. A non-zero flag means the witness encoding: inputs and outputs are then read normally. A **zero flag** means "no witness encoding", and then *nothing more is read for inputs or outputs*: the transaction has no inputs and no outputs. So the ten bytes `version | 00 00 | lock_time` decode to an empty transaction, which then fails the transaction checks of chapter 08 (`bad-txns-vin-empty`). A decoder that rejects these ten bytes instead still rejects every transaction and block that contains them, so validity is unaffected, but it reports a different reason from Bitcoin Core's.
 2. If the flag has bit 0 set, the witness stacks are read; if every stack turns out empty, decoding fails ("Superfluous witness record"). After bit 0 is cleared, any remaining flag bit is a decoding failure ("Unknown transaction optional data").
 
 A transaction whose input count is non-zero has no flag byte, even if a witness is present elsewhere in the data.
@@ -362,7 +362,7 @@ pub fn read_transaction(reader: &mut Reader) -> Result<Transaction, DecodeError>
     } else {
         outputs = read_txouts(reader)?;
     }
-    if flags & 1 != 0 {
+    if (flags & 1) != 0 {
         flags ^= 1;
         for input in inputs.iter_mut() {
             input.witness = read_witness_stack(reader)?;
@@ -396,7 +396,7 @@ pub fn deserialize_transaction(bytes: &[u8]) -> Result<Transaction, DecodeError>
 - The **stripped size** is the length of the legacy encoding; the **total size** is the length of the serialization with witness data.
 - The **weight** is `3 * stripped size + total size` (BIP141). Witness bytes therefore count once and all other bytes four times.
 
-(Core: `CTransaction::ComputeHash`, `ComputeWitnessHash`, `GetTransactionWeight` in `src/consensus/validation.h`.)
+(Core: `CTransaction::ComputeHash` and `CTransaction::ComputeWitnessHash` in `src/primitives/transaction.cpp`, `GetTransactionWeight` in `src/consensus/validation.h`.)
 
 ```rust
 /// Core: `WITNESS_SCALE_FACTOR`, `src/consensus/consensus.h`.

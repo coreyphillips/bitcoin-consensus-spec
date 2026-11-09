@@ -7,218 +7,9 @@ use bcs::*;
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
 
-// ---------------------------------------------------------------------------------------------
-// Minimal JSON
-
-#[derive(Clone, Debug, PartialEq)]
-enum Json {
-    Null,
-    Bool(bool),
-    Int(i128),
-    Float(f64),
-    Str(String),
-    Arr(Vec<Json>),
-    Obj(BTreeMap<String, Json>),
-}
-
-struct Parser<'a> {
-    s: &'a [u8],
-    i: usize,
-}
-
-impl<'a> Parser<'a> {
-    fn ws(&mut self) {
-        while self.i < self.s.len() && (self.s[self.i] as char).is_ascii_whitespace() {
-            self.i += 1;
-        }
-    }
-    fn parse(&mut self) -> Result<Json, String> {
-        self.ws();
-        if self.i >= self.s.len() {
-            return Err("unexpected end".into());
-        }
-        match self.s[self.i] {
-            b'{' => {
-                self.i += 1;
-                let mut map = BTreeMap::new();
-                self.ws();
-                if self.s.get(self.i) == Some(&b'}') {
-                    self.i += 1;
-                    return Ok(Json::Obj(map));
-                }
-                loop {
-                    self.ws();
-                    let key = match self.parse()? {
-                        Json::Str(k) => k,
-                        _ => return Err("object key must be a string".into()),
-                    };
-                    self.ws();
-                    if self.s.get(self.i) != Some(&b':') {
-                        return Err("expected ':'".into());
-                    }
-                    self.i += 1;
-                    let value = self.parse()?;
-                    map.insert(key, value);
-                    self.ws();
-                    match self.s.get(self.i) {
-                        Some(b',') => self.i += 1,
-                        Some(b'}') => {
-                            self.i += 1;
-                            return Ok(Json::Obj(map));
-                        }
-                        _ => return Err("expected ',' or '}'".into()),
-                    }
-                }
-            }
-            b'[' => {
-                self.i += 1;
-                let mut items = Vec::new();
-                self.ws();
-                if self.s.get(self.i) == Some(&b']') {
-                    self.i += 1;
-                    return Ok(Json::Arr(items));
-                }
-                loop {
-                    items.push(self.parse()?);
-                    self.ws();
-                    match self.s.get(self.i) {
-                        Some(b',') => self.i += 1,
-                        Some(b']') => {
-                            self.i += 1;
-                            return Ok(Json::Arr(items));
-                        }
-                        _ => return Err("expected ',' or ']'".into()),
-                    }
-                }
-            }
-            b'"' => {
-                self.i += 1;
-                let mut out = String::new();
-                loop {
-                    let c = *self.s.get(self.i).ok_or("unterminated string")?;
-                    self.i += 1;
-                    match c {
-                        b'"' => return Ok(Json::Str(out)),
-                        b'\\' => {
-                            let e = *self.s.get(self.i).ok_or("bad escape")?;
-                            self.i += 1;
-                            match e {
-                                b'"' => out.push('"'),
-                                b'\\' => out.push('\\'),
-                                b'/' => out.push('/'),
-                                b'n' => out.push('\n'),
-                                b't' => out.push('\t'),
-                                b'r' => out.push('\r'),
-                                b'b' => out.push('\u{8}'),
-                                b'f' => out.push('\u{c}'),
-                                b'u' => {
-                                    let hex = std::str::from_utf8(self.s.get(self.i..self.i + 4).ok_or("bad \\u")?)
-                                        .map_err(|_| "bad \\u")?;
-                                    let code = u32::from_str_radix(hex, 16).map_err(|_| "bad \\u")?;
-                                    self.i += 4;
-                                    out.push(char::from_u32(code).unwrap_or('?'));
-                                }
-                                _ => return Err("bad escape".into()),
-                            }
-                        }
-                        _ => {
-                            let start = self.i - 1;
-                            let mut end = self.i;
-                            while end < self.s.len() && (self.s[end] & 0xc0) == 0x80 {
-                                end += 1;
-                            }
-                            out.push_str(std::str::from_utf8(&self.s[start..end]).map_err(|_| "bad utf8")?);
-                            self.i = end;
-                        }
-                    }
-                }
-            }
-            b't' if self.s[self.i..].starts_with(b"true") => {
-                self.i += 4;
-                Ok(Json::Bool(true))
-            }
-            b'f' if self.s[self.i..].starts_with(b"false") => {
-                self.i += 5;
-                Ok(Json::Bool(false))
-            }
-            b'n' if self.s[self.i..].starts_with(b"null") => {
-                self.i += 4;
-                Ok(Json::Null)
-            }
-            _ => {
-                let start = self.i;
-                while self.i < self.s.len() && b"+-0123456789.eE".contains(&self.s[self.i]) {
-                    self.i += 1;
-                }
-                let text = std::str::from_utf8(&self.s[start..self.i]).map_err(|_| "bad number")?;
-                if text.is_empty() {
-                    return Err(format!("unexpected character at {}", start));
-                }
-                if let Ok(v) = text.parse::<i128>() {
-                    Ok(Json::Int(v))
-                } else {
-                    text.parse::<f64>().map(Json::Float).map_err(|_| format!("bad number {text}"))
-                }
-            }
-        }
-    }
-}
-
-fn parse_json(text: &str) -> Result<Json, String> {
-    let mut p = Parser { s: text.as_bytes(), i: 0 };
-    let v = p.parse()?;
-    p.ws();
-    if p.i != p.s.len() {
-        return Err("trailing characters".into());
-    }
-    Ok(v)
-}
-
-fn write_json(v: &Json, out: &mut String) {
-    match v {
-        Json::Null => out.push_str("null"),
-        Json::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Json::Int(i) => out.push_str(&i.to_string()),
-        Json::Float(f) => out.push_str(&f.to_string()),
-        Json::Str(s) => {
-            out.push('"');
-            for c in s.chars() {
-                match c {
-                    '"' => out.push_str("\\\""),
-                    '\\' => out.push_str("\\\\"),
-                    '\n' => out.push_str("\\n"),
-                    '\r' => out.push_str("\\r"),
-                    '\t' => out.push_str("\\t"),
-                    c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-                    c => out.push(c),
-                }
-            }
-            out.push('"');
-        }
-        Json::Arr(items) => {
-            out.push('[');
-            for (k, item) in items.iter().enumerate() {
-                if k > 0 {
-                    out.push(',');
-                }
-                write_json(item, out);
-            }
-            out.push(']');
-        }
-        Json::Obj(map) => {
-            out.push('{');
-            for (k, (key, value)) in map.iter().enumerate() {
-                if k > 0 {
-                    out.push(',');
-                }
-                write_json(&Json::Str(key.clone()), out);
-                out.push(':');
-                write_json(value, out);
-            }
-            out.push('}');
-        }
-    }
-}
+#[path = "../tooling.rs"]
+mod tooling;
+use tooling::*;
 
 // ---------------------------------------------------------------------------------------------
 // Request helpers
@@ -238,8 +29,16 @@ fn get_str<'a>(req: &'a Fields, name: &str) -> Result<&'a str, BadRequest> {
     }
 }
 
+/// PROTOCOL.md section 3: bytes are lowercase hexadecimal.
+fn lowercase_hex(text: &str) -> Option<Vec<u8>> {
+    if text.bytes().any(|c| c.is_ascii_uppercase()) {
+        return None;
+    }
+    hex_decode(text)
+}
+
 fn get_hex(req: &Fields, name: &str) -> Result<Vec<u8>, BadRequest> {
-    hex_decode(get_str(req, name)?).ok_or_else(|| BadRequest(format!("{name} is not hex")))
+    lowercase_hex(get_str(req, name)?).ok_or_else(|| BadRequest(format!("{name} is not lowercase hex")))
 }
 
 fn get_int(req: &Fields, name: &str) -> Result<i128, BadRequest> {
@@ -252,7 +51,7 @@ fn get_int(req: &Fields, name: &str) -> Result<i128, BadRequest> {
 fn opt_hex(req: &Fields, name: &str) -> Result<Option<Vec<u8>>, BadRequest> {
     match req.get(name) {
         None | Some(Json::Null) => Ok(None),
-        Some(Json::Str(s)) => hex_decode(s).map(Some).ok_or_else(|| BadRequest(format!("{name} is not hex"))),
+        Some(Json::Str(s)) => lowercase_hex(s).map(Some).ok_or_else(|| BadRequest(format!("{name} is not lowercase hex"))),
         _ => Err(BadRequest(format!("{name} must be a hex string"))),
     }
 }
@@ -295,6 +94,9 @@ fn get_flags(req: &Fields) -> Result<ScriptFlags, BadRequest> {
             Some((_, bit)) => flags |= bit,
             None => return Err(BadRequest(format!("unknown flag {name}"))),
         }
+    }
+    if flags & VERIFY_WITNESS != 0 && flags & VERIFY_P2SH == 0 {
+        return Err(BadRequest("WITNESS requires P2SH".into()));
     }
     Ok(flags)
 }
@@ -359,7 +161,11 @@ fn handle(op: &str, req: &Fields, chain: &mut Option<ChainState>) -> Result<Opti
             let tx = get_tx(req, "tx")?;
             let script_code = get_hex(req, "script_code")?;
             let index = get_int(req, "index")? as usize;
-            let hash_type = get_int(req, "hash_type")? as i32;
+            let hash_type = get_int(req, "hash_type")?;
+            if hash_type < i32::MIN as i128 || hash_type > i32::MAX as i128 {
+                return Err(BadRequest("hash_type must be a signed 32-bit integer".into()));
+            }
+            let hash_type = hash_type as i32;
             if index >= tx.inputs.len() {
                 return Err(BadRequest("index out of range".into()));
             }
@@ -392,8 +198,10 @@ fn handle(op: &str, req: &Fields, chain: &mut Option<ChainState>) -> Result<Opti
                 execdata.tapleaf_hash = Some(h);
                 sigversion = SigVersion::Tapscript;
             }
-            if let Some(Json::Int(pos)) = req.get("codesep_pos") {
-                execdata.codeseparator_pos = *pos as u32;
+            match req.get("codesep_pos") {
+                None | Some(Json::Null) => {}
+                Some(Json::Int(pos)) if (0..=u32::MAX as i128).contains(pos) => execdata.codeseparator_pos = *pos as u32,
+                _ => return Err(BadRequest("codesep_pos must be an unsigned 32-bit integer".into())),
             }
             let pre = PrecomputedTx::new(&tx, &spent);
             match signature_hash_schnorr(&execdata, &tx, index, hash_type as u8, sigversion, &spent, &pre) {
@@ -405,7 +213,10 @@ fn handle(op: &str, req: &Fields, chain: &mut Option<ChainState>) -> Result<Opti
             let control = get_hex(req, "control_block")?;
             let script = get_hex(req, "script")?;
             let output_key = get_hex(req, "output_key")?;
-            let valid = output_key.len() == 32 && control_block_size_valid(&control) && {
+            if output_key.len() != 32 {
+                return Err(BadRequest("output_key must be 32 bytes".into()));
+            }
+            let valid = control_block_size_valid(&control) && {
                 let leaf = tapleaf_hash(control[0] & TAPROOT_LEAF_MASK, &script);
                 verify_taproot_commitment(&control, &output_key, &leaf)
             };
@@ -415,38 +226,14 @@ fn handle(op: &str, req: &Fields, chain: &mut Option<ChainState>) -> Result<Opti
             let pubkey = get_hex(req, "pubkey")?;
             let msg = get_hex(req, "msg")?;
             let sig = get_hex(req, "sig")?;
+            if pubkey.len() != 32 || sig.len() != 64 {
+                return Err(BadRequest("pubkey must be 32 bytes and sig 64 bytes".into()));
+            }
             obj(vec![("valid", Json::Bool(schnorr_verify(&pubkey, &msg, &sig)))])
         }
         "chain_reset" => {
-            let network = match get_str(req, "network")? {
-                "main" => Network::Main,
-                "testnet3" => Network::Testnet3,
-                "testnet4" => Network::Testnet4,
-                "signet" => Network::Signet,
-                "regtest" => Network::Regtest,
-                other => return Err(BadRequest(format!("unknown network {other}"))),
-            };
-            let mut options = NetworkOptions::default();
-            if let Some(Json::Obj(opts)) = req.get("options") {
-                if let Some(Json::Obj(heights)) = opts.get("testactivationheight") {
-                    for (name, height) in heights {
-                        match height {
-                            Json::Int(h) => options.activation_heights.push((name.clone(), *h as i32)),
-                            _ => return Err(BadRequest("activation height must be an integer".into())),
-                        }
-                    }
-                }
-                if let Some(Json::Arr(tests)) = opts.get("test") {
-                    for t in tests {
-                        if t == &Json::Str("bip94".into()) {
-                            options.enforce_bip94 = true;
-                        }
-                    }
-                }
-                if let Some(Json::Str(challenge)) = opts.get("signetchallenge") {
-                    options.signet_challenge = Some(hex_decode(challenge).ok_or_else(|| BadRequest("bad signetchallenge".into()))?);
-                }
-            }
+            let network = parse_network(get_str(req, "network")?).map_err(BadRequest)?;
+            let options = parse_network_options(req.get("options")).map_err(BadRequest)?;
             let params = network_params(network, &options);
             let genesis = hash_to_display(&params.consensus.genesis_hash);
             *chain = Some(ChainState::new(params));
@@ -470,6 +257,8 @@ fn handle(op: &str, req: &Fields, chain: &mut Option<ChainState>) -> Result<Opti
                             let segwit = parent_height.map(|h| h + 1 >= state.params.consensus.segwit_height);
                             if via == "p2p" && segwit.is_some() && is_block_mutated(&block, segwit.unwrap()) {
                                 ("mutated", "block-mutated".to_string())
+                            } else if via == "p2p" && !p2p_block_work_acceptable(state, &block.header) {
+                                ("invalid", "too-little-chainwork".to_string())
                             } else {
                                 let had_data = state.tree.get(&block.hash()).map_or(false, |e| e.block.is_some());
                                 let hash = block.hash();
@@ -512,10 +301,10 @@ fn handle(op: &str, req: &Fields, chain: &mut Option<ChainState>) -> Result<Opti
                     let mut headers = Vec::new();
                     for item in &items {
                         let bytes = match item {
-                            Json::Str(h) => hex_decode(h).ok_or_else(|| BadRequest("bad header hex".into()))?,
+                            Json::Str(h) => lowercase_hex(h).ok_or_else(|| BadRequest("header is not lowercase hex".into()))?,
                             _ => return Err(BadRequest("header must be hex".into())),
                         };
-                        if bytes.len() < 80 {
+                        if bytes.len() != 80 {
                             return Err(BadRequest("header must be 80 bytes".into()));
                         }
                         headers.push(read_block_header(&mut Reader::new(&bytes)).map_err(|_| BadRequest("bad header".into()))?);

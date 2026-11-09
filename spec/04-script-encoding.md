@@ -243,7 +243,7 @@ Arithmetic inputs are limited to 4 bytes (so the range is `-(2^31 - 1)` to `2^31
 
 Non-minimal encodings (such as `0x01 0x00` for 1) are accepted by consensus. Requiring minimal encodings (`MINIMALDATA`) is relay policy; this specification carries the `require_minimal` parameter only so that the definition matches Bitcoin Core's function, and consensus always passes `false`.
 
-Decoding fails when the input is longer than the allowed size; in the interpreter that failure aborts the script with the error `UNKNOWN_ERROR` (chapter 05).
+Decoding fails when the input is longer than the allowed size; in the interpreter that failure aborts the script with the error `SCRIPTNUM` (chapter 05).
 
 ```rust
 /// Default largest script number input, in bytes. Core: `CScriptNum::nDefaultMaxNumSize`.
@@ -263,7 +263,7 @@ pub fn decode_script_num(bytes: &[u8], require_minimal: bool, max_size: usize) -
     }
     if require_minimal && !bytes.is_empty() {
         let last = bytes[bytes.len() - 1];
-        if last & 0x7f == 0 && (bytes.len() <= 1 || bytes[bytes.len() - 2] & 0x80 == 0) {
+        if (last & 0x7f) == 0 && (bytes.len() <= 1 || (bytes[bytes.len() - 2] & 0x80) == 0) {
             return Err(ScriptNumError::NonMinimal);
         }
     }
@@ -275,7 +275,8 @@ pub fn decode_script_num(bytes: &[u8], require_minimal: bool, max_size: usize) -
         result |= (byte as i64) << (8 * i);
     }
     let last = bytes[bytes.len() - 1];
-    if last & 0x80 != 0 {
+    if (last & 0x80) != 0 {
+        // Clear the sign bit (`!` on an integer is bitwise NOT).
         let mask = !(0x80i64 << (8 * (bytes.len() - 1)));
         return Ok(-(result & mask));
     }
@@ -295,7 +296,7 @@ pub fn encode_script_num(value: i64) -> Vec<u8> {
         magnitude >>= 8;
     }
     let last = out.len() - 1;
-    if out[last] & 0x80 != 0 {
+    if (out[last] & 0x80) != 0 {
         out.push(if negative { 0x80 } else { 0x00 });
     } else if negative {
         out[last] |= 0x80;

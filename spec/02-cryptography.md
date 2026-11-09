@@ -57,7 +57,7 @@ fn sha256_compress(state: &mut [u32; 8], block: &[u8]) {
     let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = *state;
     for i in 0..64 {
         let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-        let ch = (e & f) ^ (!e & g);
+        let ch = (e & f) ^ (!e & g); // `!` on an integer is bitwise NOT
         let t1 = h.wrapping_add(s1).wrapping_add(ch).wrapping_add(SHA256_K[i]).wrapping_add(w[i]);
         let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
         let maj = (a & b) ^ (a & c) ^ (b & c);
@@ -114,7 +114,7 @@ pub fn sha1(data: &[u8]) -> [u8; 20] {
         let (mut a, mut b, mut c, mut d, mut e) = (h[0], h[1], h[2], h[3], h[4]);
         for (i, word) in w.iter().enumerate() {
             let (f, k) = match i {
-                0..=19 => ((b & c) | (!b & d), 0x5a827999),
+                0..=19 => ((b & c) | (!b & d), 0x5a827999), // `!` on an integer is bitwise NOT
                 20..=39 => (b ^ c ^ d, 0x6ed9eba1),
                 40..=59 => ((b & c) | (b & d) | (c & d), 0x8f1bbcdc),
                 _ => (b ^ c ^ d, 0xca62c1d6),
@@ -174,6 +174,7 @@ const RIPEMD_S_RIGHT: [u32; 80] = [
 const RIPEMD_K_LEFT: [u32; 5] = [0x00000000, 0x5a827999, 0x6ed9eba1, 0x8f1bbcdc, 0xa953fd4e];
 const RIPEMD_K_RIGHT: [u32; 5] = [0x50a28be6, 0x5c4dd124, 0x6d703ef3, 0x7a6d76e9, 0x00000000];
 
+/// The RIPEMD-160 round functions (`!` on an integer is bitwise NOT).
 fn ripemd_f(round: usize, x: u32, y: u32, z: u32) -> u32 {
     match round {
         0 => x ^ y ^ z,
@@ -342,7 +343,7 @@ impl U256 {
 
     /// Bit `index` (0 is the least significant bit).
     pub fn bit(&self, index: usize) -> bool {
-        (self.0[index / 64] >> (index % 64)) & 1 == 1
+        ((self.0[index / 64] >> (index % 64)) & 1) == 1
     }
 
     /// Number of significant bits: 0 for zero, otherwise one more than the index of the highest set bit.
@@ -817,7 +818,7 @@ pub fn parse_der_lax(input: &[u8]) -> Option<(U256, U256)> {
     }
     let mut lenbyte = input[pos] as usize;
     pos += 1;
-    if lenbyte & 0x80 != 0 {
+    if (lenbyte & 0x80) != 0 {
         lenbyte -= 0x80;
         if lenbyte > len - pos {
             return None;
@@ -838,7 +839,7 @@ pub fn parse_der_lax(input: &[u8]) -> Option<(U256, U256)> {
         let mut lenbyte = input[*pos] as usize;
         *pos += 1;
         let content_length;
-        if lenbyte & 0x80 != 0 {
+        if (lenbyte & 0x80) != 0 {
             lenbyte -= 0x80;
             if lenbyte > len - *pos {
                 return None;

@@ -17,8 +17,11 @@ Bitcoin Core passes a set of *script verification flags* into verification. Seve
 
 The bit positions match Bitcoin Core's so that flag sets can be compared numerically with its test data.
 
+`WITNESS` is defined only together with `P2SH`: Bitcoin Core asserts this in `VerifyScript` and `CountWitnessSigOps`, and chapter 10 never produces `WITNESS` without `P2SH`. `TAPROOT` without `WITNESS` is allowed and has no effect.
+
 ```rust
-/// A set of script verification flags (Core: `script_verify_flags`, `src/script/interpreter.h`).
+/// A set of script verification flags (Core: `script_verify_flags`, `src/script/verify_flags.h`; the
+/// flag names are in `src/script/interpreter.h`).
 pub type ScriptFlags = u32;
 
 /// BIP16 pay-to-script-hash.
@@ -248,7 +251,7 @@ pub struct ExecData {
 
 `OP_CHECKLOCKTIMEVERIFY` (BIP65) succeeds only if the transaction's lock time is of the same kind as the operand (both block heights, below 500,000,000, or both times), is at least the operand, and the input's sequence is not `0xffffffff` (which would disable the transaction's lock time entirely, chapter 08).
 
-`OP_CHECKSEQUENCEVERIFY` (BIP112) succeeds only if the transaction version is at least 2, **compared as an unsigned 32-bit integer** (so `0xffffffff` passes), the input's sequence does not have the disable bit (bit 31) set, and after masking both values to the type flag (bit 22) and the low 16 bits, they are of the same kind and the input's value is at least the operand's. (Core: `GenericTransactionSignatureChecker::CheckLockTime`, `CheckSequence`.)
+`OP_CHECKSEQUENCEVERIFY` (BIP112) succeeds only if the transaction version is at least 2, **compared as an unsigned 32-bit integer** (so `0xffffffff` passes), the input's sequence does not have the disable bit (bit 31) set, and after masking both values to the type flag (bit 22) and the low 16 bits, they are of the same kind and the input's value is at least the operand's. (Core: `GenericTransactionSignatureChecker::CheckLockTime`, `CheckSequence`.) The disable bit of the *operand* is handled by the opcode before this check is reached (section 5.6).
 
 ```rust
 /// Core: `CTxIn::SEQUENCE_FINAL`.
@@ -283,7 +286,7 @@ impl<'a> TxChecker<'a> {
         if self.tx.version < 2 {
             return false;
         }
-        if tx_sequence & SEQUENCE_LOCKTIME_DISABLE_FLAG as i64 != 0 {
+        if (tx_sequence & SEQUENCE_LOCKTIME_DISABLE_FLAG as i64) != 0 {
             return false;
         }
         let mask = (SEQUENCE_LOCKTIME_TYPE_FLAG | SEQUENCE_LOCKTIME_MASK) as i64;
@@ -308,7 +311,7 @@ An ECDSA signature on the stack is a DER signature followed by one *hash type* b
 2. If the signature is empty, the result is *false*.
 3. The last byte is the hash type, used as an integer 0 to 255. Every value is allowed; undefined values behave as described in chapter 06.
 4. In `WitnessV0`, a negative amount makes the result *false* (it cannot happen in a block).
-5. The signature hash is computed for the script code (section 5.6) and the result is `ecdsa_verify` of chapter 02.
+5. The signature hash is computed for the script code (section 5.5.3) and the result is `ecdsa_verify` of chapter 02.
 
 A *false* result is not an error: `OP_CHECKSIG` pushes false and execution continues. (Requiring failed signatures to be empty, `NULLFAIL`, is policy.)
 
@@ -336,16 +339,16 @@ pub fn is_valid_signature_encoding(sig: &[u8]) -> bool {
     if len_r + len_s + 7 != sig.len() {
         return false;
     }
-    if sig[2] != 0x02 || len_r == 0 || sig[4] & 0x80 != 0 {
+    if sig[2] != 0x02 || len_r == 0 || (sig[4] & 0x80) != 0 {
         return false;
     }
-    if len_r > 1 && sig[4] == 0x00 && sig[5] & 0x80 == 0 {
+    if len_r > 1 && sig[4] == 0x00 && (sig[5] & 0x80) == 0 {
         return false;
     }
-    if sig[len_r + 4] != 0x02 || len_s == 0 || sig[len_r + 6] & 0x80 != 0 {
+    if sig[len_r + 4] != 0x02 || len_s == 0 || (sig[len_r + 6] & 0x80) != 0 {
         return false;
     }
-    if len_s > 1 && sig[len_r + 6] == 0x00 && sig[len_r + 7] & 0x80 == 0 {
+    if len_s > 1 && sig[len_r + 6] == 0x00 && (sig[len_r + 7] & 0x80) == 0 {
         return false;
     }
     true
@@ -406,7 +409,7 @@ impl<'a> TxChecker<'a> {
 
 ### 5.5.3 The script code
 
-ECDSA signature hashes commit to a *script code*: the bytes of the executing script from just after the last executed `OP_CODESEPARATOR` (or from the start if none has executed) to the end. In `Base` only, every occurrence of the signature itself, encoded as a canonical push (`push_data(sig)`, chapter 04), is first removed from the script code with `find_and_delete` (chapter 06). For `OP_CHECKMULTISIG` every signature in the operation is removed before any of them is checked, so an *empty* signature among them removes every `OP_0` byte from the script code. (Core: `EvalChecksigPreTapscript`, the `OP_CHECKMULTISIG` case of `EvalScript`.)
+ECDSA signature hashes commit to a *script code*: the bytes of the executing script from just after the last executed `OP_CODESEPARATOR` (or from the start if none has executed) to the end. In `Base` only, every occurrence of the signature itself, encoded as a canonical push (`push_data(sig)`, chapter 04), is first removed from the script code with `find_and_delete` (chapter 06). For `OP_CHECKMULTISIG` every signature in the operation is removed before any of them is checked, so an *empty* signature among them removes every `OP_0` operation from the script code (a zero byte inside pushed data is not an operation and stays). (Core: `EvalChecksigPreTapscript`, the `OP_CHECKMULTISIG` case of `EvalScript`.)
 
 ### 5.5.4 Tapscript signature opcodes
 
@@ -432,7 +435,7 @@ fn eval_checksig_pre_tapscript(
     if sigversion == SigVersion::Base {
         script_code = find_and_delete(&script_code, &push_data(sig));
     }
-    if flags & VERIFY_DERSIG != 0 && !sig.is_empty() && !is_valid_signature_encoding(sig) {
+    if (flags & VERIFY_DERSIG) != 0 && !sig.is_empty() && !is_valid_signature_encoding(sig) {
         return Err(ScriptError::SigDer);
     }
     Ok(checker.check_ecdsa_signature(sig, pubkey, &script_code, sigversion))
@@ -465,7 +468,7 @@ fn eval_checksig_tapscript(sig: &[u8], pubkey: &[u8], execdata: &mut ExecData, c
 
 ## 5.6 The interpreter
 
-`eval_script` executes `script` on `stack` (which the caller supplies and inspects afterwards). It returns `Ok(())` or the first error. The rules below are all implemented by the code that follows; they are listed because each one has been gotten wrong by some implementation.
+`eval_script` executes `script` on `stack` (which the caller supplies and inspects afterwards). It returns `Ok(())` or the first error. The alternate stack is local to one call: it starts empty for every script executed (signature script, output script, redeem script, witness script or tapscript), and nothing on it carries over to the next script. How the main stack passes from one script to the next is specified in chapter 07. The rules below are all implemented by the code that follows; they are listed because each one has been gotten wrong by some implementation.
 
 **Before execution.** In `Base` and `WitnessV0`, a script longer than 10,000 bytes fails with `SCRIPT_SIZE`. Tapscript has no script size limit.
 
@@ -488,13 +491,13 @@ fn eval_checksig_tapscript(sig: &[u8], pubkey: &[u8], execdata: &mut ExecData, c
 
 **`OP_CODESEPARATOR`** (when executed) sets the script code start to just after itself, and records its *opcode position* (the zero-based index of the operation in the script, counting every operation including pushes) for tapscript signature hashes.
 
-**Lock time opcodes.** Without their flag, `OP_CHECKLOCKTIMEVERIFY` and `OP_CHECKSEQUENCEVERIFY` do nothing (they are `OP_NOP2` and `OP_NOP3`). With it, they need a stack element (else `INVALID_STACK_OPERATION`), decode it as a 5-byte number, fail with `NEGATIVE_LOCKTIME` if negative, and fail with `UNSATISFIED_LOCKTIME` if the check of section 5.4 fails. `OP_CHECKSEQUENCEVERIFY` does nothing at all if the operand has bit 31 set. Neither pops its operand.
+**Lock time opcodes.** Without their flag, `OP_CHECKLOCKTIMEVERIFY` and `OP_CHECKSEQUENCEVERIFY` do nothing (they are `OP_NOP2` and `OP_NOP3`). With it, they need a stack element (else `INVALID_STACK_OPERATION`), decode it as a 5-byte number, and fail with `NEGATIVE_LOCKTIME` if it is negative. Only after that check, an `OP_CHECKSEQUENCEVERIFY` operand with bit 31 (the disable flag) set makes the operation succeed without the check of section 5.4; so `-1 OP_CHECKSEQUENCEVERIFY` fails with `NEGATIVE_LOCKTIME`, although -1 has bit 31 set as a 64-bit two's complement integer. Otherwise each fails with `UNSATISFIED_LOCKTIME` if the check of section 5.4 fails. Neither pops its operand.
 
 **`OP_NOP1`, `OP_NOP4` to `OP_NOP10`** do nothing.
 
 **Hash opcodes** replace the top element by its hash: `OP_RIPEMD160` (20 bytes), `OP_SHA1` (20), `OP_SHA256` (32), `OP_HASH160` (20), `OP_HASH256` (32).
 
-**`OP_CHECKMULTISIG`** (not in tapscript, where it fails with `TAPSCRIPT_CHECKMULTISIG`) takes from the top: a key count n (0 to 20, else `PUBKEY_COUNT`), n public keys, a signature count m (0 to n, else `SIG_COUNT`), m signatures, and one more element, the *dummy*, which a historical bug consumes. Signatures are matched to keys in order: the first signature (deepest) is checked against keys starting with the first key, and each key is tried once; whenever more signatures remain than keys, the result is false. With `NULLDUMMY` the dummy must be empty, else `SIG_NULLDUMMY`.
+**`OP_CHECKMULTISIG`** (not in tapscript, where it fails with `TAPSCRIPT_CHECKMULTISIG`) takes from the top: a key count n (0 to 20, else `PUBKEY_COUNT`), n public keys, a signature count m (0 to n, else `SIG_COUNT`), m signatures, and one more element, the *dummy*, which a historical bug consumes. Signatures are matched to keys from the top of the stack down: the last signature pushed (just below m) is checked first, against the last key pushed (just below n). A failed check moves to the next deeper key; a successful one moves to the next deeper signature and key. Each key is tried at most once, and as soon as more signatures remain than keys the result is false and the remaining signatures are not examined. With `DERSIG` the strict encoding check applies to a signature only when it is reached, so a badly encoded signature that is never reached does not fail the script. With `NULLDUMMY` the dummy must be empty, else `SIG_NULLDUMMY`.
 
 **`OP_CHECKSIGADD`** (tapscript only; `BAD_OPCODE` elsewhere) takes a signature, a number n and a public key, and pushes n + 1 if the check succeeded or n if the signature was empty.
 
@@ -611,7 +614,7 @@ pub fn eval_script(
                 OP_NOP => {}
 
                 OP_CHECKLOCKTIMEVERIFY => {
-                    if flags & VERIFY_CHECKLOCKTIMEVERIFY != 0 {
+                    if (flags & VERIFY_CHECKLOCKTIMEVERIFY) != 0 {
                         if stack.is_empty() {
                             return Err(ScriptError::InvalidStackOperation);
                         }
@@ -626,7 +629,7 @@ pub fn eval_script(
                 }
 
                 OP_CHECKSEQUENCEVERIFY => {
-                    if flags & VERIFY_CHECKSEQUENCEVERIFY != 0 {
+                    if (flags & VERIFY_CHECKSEQUENCEVERIFY) != 0 {
                         if stack.is_empty() {
                             return Err(ScriptError::InvalidStackOperation);
                         }
@@ -634,7 +637,7 @@ pub fn eval_script(
                         if sequence < 0 {
                             return Err(ScriptError::NegativeLocktime);
                         }
-                        if sequence & SEQUENCE_LOCKTIME_DISABLE_FLAG as i64 == 0 && !checker.check_sequence(sequence) {
+                        if (sequence & SEQUENCE_LOCKTIME_DISABLE_FLAG as i64) == 0 && !checker.check_sequence(sequence) {
                             return Err(ScriptError::UnsatisfiedLocktime);
                         }
                     }
@@ -1048,7 +1051,7 @@ pub fn eval_script(
                     while success && sigs_count > 0 {
                         let sig = top(stack, isig).clone();
                         let pubkey = top(stack, ikey).clone();
-                        if flags & VERIFY_DERSIG != 0 && !sig.is_empty() && !is_valid_signature_encoding(&sig) {
+                        if (flags & VERIFY_DERSIG) != 0 && !sig.is_empty() && !is_valid_signature_encoding(&sig) {
                             return Err(ScriptError::SigDer);
                         }
                         if checker.check_ecdsa_signature(&sig, &pubkey, &script_code, sigversion) {
@@ -1069,7 +1072,7 @@ pub fn eval_script(
                     if stack.is_empty() {
                         return Err(ScriptError::InvalidStackOperation);
                     }
-                    if flags & VERIFY_NULLDUMMY != 0 && !top(stack, 1).is_empty() {
+                    if (flags & VERIFY_NULLDUMMY) != 0 && !top(stack, 1).is_empty() {
                         return Err(ScriptError::SigNullDummy);
                     }
                     stack.pop();

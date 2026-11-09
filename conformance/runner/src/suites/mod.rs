@@ -18,6 +18,10 @@
 
 pub mod bip340;
 pub mod bip341;
+pub mod corpus;
+pub mod custom;
+pub mod headers_live;
+pub mod interop;
 pub mod script_assets;
 pub mod script_tests;
 pub mod sighash;
@@ -30,23 +34,32 @@ use crate::harness::CallError;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
-/// All suites, in run order: (name, description).
-pub const SUITES: &[(&str, &str)] = &[
-    ("script-tests", "src/test/data/script_tests.json: one input per row, Core's crediting and spending transactions"),
-    ("tx-valid", "src/test/data/tx_valid.json: tx_check plus every input"),
-    ("tx-invalid", "src/test/data/tx_invalid.json: tx_check plus every input"),
-    ("sighash", "src/test/data/sighash.json: legacy signature hashes plus tx_check"),
-    ("bip341", "BIP341 wallet vectors: key path sighashes, signed inputs, script path control blocks"),
-    ("bip340", "BIP340 test-vectors.csv: the verification column"),
-    ("script-assets", "qa-assets script_assets_test.json: success and failure witnesses"),
+/// A suite: name, description, whether a plain run includes it, whether it needs `--impl`.
+pub struct SuiteInfo {
+    pub name: &'static str,
+    pub what: &'static str,
+    pub default: bool,
+    pub needs_harness: bool,
+}
+
+/// All suites, in run order.
+pub const SUITES: &[SuiteInfo] = &[
+    SuiteInfo { name: "script-tests", what: "src/test/data/script_tests.json: one input per row, Core's crediting and spending transactions", default: true, needs_harness: true },
+    SuiteInfo { name: "tx-valid", what: "src/test/data/tx_valid.json: tx_check plus every input", default: true, needs_harness: true },
+    SuiteInfo { name: "tx-invalid", what: "src/test/data/tx_invalid.json: tx_check plus every input", default: true, needs_harness: true },
+    SuiteInfo { name: "sighash", what: "src/test/data/sighash.json: legacy signature hashes plus tx_check", default: true, needs_harness: true },
+    SuiteInfo { name: "bip341", what: "BIP341 wallet vectors: key path sighashes, signed inputs, script path control blocks", default: true, needs_harness: true },
+    SuiteInfo { name: "bip340", what: "BIP340 test-vectors.csv: the verification column", default: true, needs_harness: true },
+    SuiteInfo { name: "script-assets", what: "qa-assets script_assets_test.json: success and failure witnesses", default: true, needs_harness: true },
+    SuiteInfo { name: "custom", what: "vectors/custom/*.jsonl: targeted request and expected response pairs", default: true, needs_harness: true },
+    SuiteInfo { name: "corpus", what: "vectors/blocks/*.jsonl.gz: block scenarios recorded from Core's functional tests (CORPUS.md)", default: true, needs_harness: true },
+    SuiteInfo { name: "headers-live", what: "the full header chain of a live peer (--peer, --network), fed to the harness", default: false, needs_harness: true },
+    SuiteInfo { name: "interop", what: "the implementation as a live node next to a regtest bitcoind (--bitcoind, --node)", default: false, needs_harness: false },
 ];
 
-/// Stubs for suites that are specified later.
-pub const PLANNED: &[(&str, &str)] = &[
-    ("corpus", "block corpus replay"),
-    ("headers-live", "live header synchronization"),
-    ("interop", "live node interoperability"),
-];
+pub fn suite(name: &str) -> Option<&'static SuiteInfo> {
+    SUITES.iter().find(|s| s.name == name)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {

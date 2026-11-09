@@ -81,7 +81,7 @@ pub struct NetworkParams {
 | Message start | `f9beb4d9` | `0b110907` | `1c163f28` | derived | `fabfb5da` |
 | Default port | 8333 | 18333 | 48333 | 38333 | 18444 |
 
-Taproot (BIP341/342) has no activation height: its rules apply to every block except one listed exception (chapter 10). There are no soft-fork deployments in progress in Bitcoin Core v32.1, so no version bits state machine (BIP9) is needed to validate any network.
+Taproot (BIP341/342) has no activation height: its rules apply to every block except the script flag exceptions listed in chapter 10 section 10.6 (two blocks on mainnet, one on testnet3). There are no soft-fork deployments in progress in Bitcoin Core v32.1, so no version bits state machine (BIP9) is needed to validate any network.
 
 ## 12.3 Genesis blocks
 
@@ -128,7 +128,7 @@ pub const DEFAULT_SIGNET_CHALLENGE: &str = "512103ad5e0edad18cb1f0fc0d28a3d4f1f3
 
 ## 12.5 Test overrides
 
-For testing, Bitcoin Core lets the deployment heights of non-mainnet networks be overridden (`-testactivationheight=name@height` with `name` one of `bip34`, `dersig`, `cltv`, `csv`, `segwit`), and lets regtest enforce BIP94 (`-test=bip94`). Signet accepts a custom challenge (`-signetchallenge`). The conformance suite's recorded scenarios use these options, so implementations that want to pass the suite MUST support them for non-mainnet networks. (Core: `HandleDeploymentArgs`, `ReadRegTestArgs`, `ReadSigNetArgs`, `src/chainparams.cpp`.)
+For testing, Bitcoin Core lets the deployment heights of non-mainnet networks be overridden (`-testactivationheight=name@height` with `name` one of `bip34`, `dersig`, `cltv`, `csv`, `segwit`), and lets regtest enforce BIP94 (`-test=bip94`). Signet accepts a custom challenge (`-signetchallenge`). The conformance suite's recorded scenarios use these options, so implementations that want to pass the suite MUST support them for non-mainnet networks. (Core: `HandleDeploymentArgs`, `ReadTestNetArgs`, `ReadSigNetArgs`, `ReadRegTestArgs`, `src/chainparams.cpp`; mainnet refuses `-testactivationheight` in `AppInitParameterInteraction`, `src/init.cpp`.)
 
 ```rust
 /// Test overrides. Core: `CChainParams::DeploymentOptions`, `RegTestOptions`, `SigNetOptions`.

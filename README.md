@@ -22,10 +22,12 @@ The reference (the specification's own code) passes:
 | Bitcoin Core `sighash.json` | 1,000 | pass |
 | BIP341 wallet vectors, BIP340 vectors | 26 / 19 | pass |
 | Bitcoin Core qa-assets `script_assets_test.json` (taproot and more), 64 flag combinations | 239,168 | pass, identical error codes |
-| Live regtest: blocks mined by Bitcoin Core v32.1, synced over P2P | tip and UTXO set hash | identical |
-| Mainnet header chain, synced over P2P and fully validated | every header | identical tip and chain work |
+| Edge cases found by mutation testing, expectations from Bitcoin Core's own code | 21 | pass |
+| Block corpus: 20 scenarios recorded from Bitcoin Core's functional tests and this project's own tests (17,150 events) | 5,275 normative tip checks, 1,230 chain tip sets, 2,288 UTXO set hashes | identical |
+| Live interop: the reference node synchronizes each scenario's chain from Bitcoin Core v32.1 over P2P, with no whitelist | tip, height and UTXO set hash for 20 chains | identical, no misbehaviour logged |
+| Mainnet and testnet4 header chains from public peers, fully validated | every header | identical tip and chain work |
 
-Every expectation above comes from Bitcoin Core v32.1 itself: the "derived" vectors were produced by running Bitcoin Core's own interpreter (compiled from the pinned source) under every consensus flag combination. Further suites (Bitcoin Core's functional tests recorded as block scenarios, and a blind implementation built only from this document, synchronizing mainnet next to Bitcoin Core) are in progress; see `RESULTS.md`.
+Every expectation above comes from Bitcoin Core v32.1 itself: the "derived" vectors were produced by running Bitcoin Core's own interpreter (compiled from the pinned source) under every consensus flag combination, and the block corpus was recorded from official v32.1 binaries. `RESULTS.md` has the details, the independent reviews, the mutation audit, and the blind implementation experiment (a node built only from this document, synchronizing mainnet next to Bitcoin Core).
 
 ## Layout
 
@@ -56,7 +58,7 @@ Every expectation above comes from Bitcoin Core v32.1 itself: the "derived" vect
 
 ## Quick start
 
-Requirements: a Rust toolchain. The reference has no dependencies outside the Rust standard library.
+Requirements: a Rust toolchain. The reference has no dependencies outside the Rust standard library; the test runner uses a few crates from crates.io (JSON, gzip, SHA-256, libsecp256k1). The live suites also need network access to Bitcoin Core peers, and `interop` needs a `bitcoind` v32.1 binary.
 
 ```sh
 # Build the specification's code and run its known-answer tests.
@@ -68,6 +70,10 @@ cargo build --release
 
 # Synchronize from a Bitcoin Core node over P2P (regtest example).
 ./target/release/reference-node --network regtest --connect 127.0.0.1:18444 --stop-at <block hash>
+
+# Run the reference node against fresh bitcoind instances, one per recorded scenario.
+./target/release/bcs-conformance interop --bitcoind /path/to/bitcoind \
+  --node "$PWD/target/release/reference-node --network {network} --connect {peer} --stop-at {stop_at} --options {options}"
 ```
 
 To test your own implementation, give it a harness that speaks [`conformance/PROTOCOL.md`](conformance/PROTOCOL.md) and run `bcs-conformance --impl "<your harness command>"`. See [`conformance/README.md`](conformance/README.md) for the suites and their rules.

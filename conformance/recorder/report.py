@@ -39,8 +39,10 @@ def main():
     w = lines.append
     w("# Recording report")
     w("")
-    w("Bitcoin Core v32.1 (commit `f0de87f040621468b956f01f526a43a010310501`), official aarch64 Linux release binaries, every node of each test except the pruned mining_basic node 2. "
-      "Recorded twice with `--randomseed=1 --portseed=1 --v1transport` (feature_block with `--skipreorg`); the corpus comes from the first recording. "
+    w("Bitcoin Core v32.1 (commit `f0de87f040621468b956f01f526a43a010310501`), official aarch64 Linux release binaries. "
+      "Scenarios: Core's consensus functional tests (every node except the pruned mining_basic node 2), feature_block once with `--skipreorg` "
+      "and once with its 1088-block reorg (feature_block_reorg), and the recorder's own test extra/feature_spec_pitfalls.py. "
+      "Each was recorded twice with `--randomseed=1 --portseed=1 --v1transport`; the corpus comes from the first recording. "
       "Verification replays every file through the Core chain harness (a fresh v32.1 regtest node) as CORPUS.md section 4 prescribes. "
       "Reproduce with `make all CORE_SRC=<v32.1 checkout> -j6` (README.md).")
     w("")
@@ -57,7 +59,8 @@ def main():
     blobs = sorted(os.listdir(blob_dir)) if os.path.isdir(blob_dir) else []
     blob_size = sum(os.path.getsize(os.path.join(blob_dir, b)) for b in blobs)
     w("")
-    w("Sidecar blobs (blocks over 1,000,000 bytes): %d files, %d bytes. Total corpus size: %d bytes (%.1f MB)." % (
+    w("Sidecar blobs (blocks over 1,000,000 bytes; over 100,000 bytes in feature_block_reorg): %d files, %d bytes. "
+      "Total corpus size: %d bytes (%.1f MB)." % (
         len(blobs), blob_size, total_size + blob_size, (total_size + blob_size) / 1e6))
     w("")
     w("## Verification")
@@ -89,7 +92,7 @@ def main():
     w("")
     w("## Exclusions and adjustments")
     w("")
-    w("- feature_block: the 1088-block reorg (over 1 GB of block data) is skipped with `--skipreorg`; `make reorg` records it locally into `work/reorg`.")
+    w("- feature_block is recorded with `--skipreorg`; its 1088-block reorg (over 1 GB of block data, mostly zero bytes) is the separate scenario feature_block_reorg.")
     w("- mining_basic: node 2 (pruned) is excluded. Every other node of every test is included.")
     for s in stats:
         for k, v in sorted(s["stats"].items()):

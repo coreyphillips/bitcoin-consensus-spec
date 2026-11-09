@@ -155,11 +155,11 @@ pub fn calculate_sequence_locks(tx: &Transaction, enforce_bip68: bool, coin_heig
         return (min_height, min_time);
     }
     for (input, &coin_height) in tx.inputs.iter().zip(coin_heights) {
-        if input.sequence & SEQUENCE_LOCKTIME_DISABLE_FLAG != 0 {
+        if (input.sequence & SEQUENCE_LOCKTIME_DISABLE_FLAG) != 0 {
             continue;
         }
         let value = input.sequence & SEQUENCE_LOCKTIME_MASK;
-        if input.sequence & SEQUENCE_LOCKTIME_TYPE_FLAG != 0 {
+        if (input.sequence & SEQUENCE_LOCKTIME_TYPE_FLAG) != 0 {
             let coin_time = mtp_at((coin_height - 1).max(0));
             min_time = min_time.max(coin_time + ((value << SEQUENCE_LOCKTIME_GRANULARITY) as i64) - 1);
         } else {
@@ -268,7 +268,7 @@ fn witness_sig_ops(version: u8, program: &[u8], witness: &[Vec<u8>]) -> u64 {
 
 /// Core: `CountWitnessSigOps`.
 pub fn witness_sig_op_count(script_sig: &[u8], script_pubkey: &[u8], witness: &[Vec<u8>], flags: ScriptFlags) -> u64 {
-    if flags & VERIFY_WITNESS == 0 {
+    if (flags & VERIFY_WITNESS) == 0 {
         return 0;
     }
     if let Some((version, program)) = witness_program(script_pubkey) {
@@ -294,7 +294,7 @@ pub fn transaction_sig_op_cost(tx: &Transaction, coins: &[Coin], flags: ScriptFl
     if tx.is_coinbase() {
         return cost;
     }
-    if flags & VERIFY_P2SH != 0 {
+    if (flags & VERIFY_P2SH) != 0 {
         cost += p2sh_sig_op_count_tx(tx, coins) as i64 * WITNESS_SCALE_FACTOR as i64;
     }
     for (input, coin) in tx.inputs.iter().zip(coins) {
