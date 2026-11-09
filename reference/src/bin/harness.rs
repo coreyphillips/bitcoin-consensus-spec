@@ -258,7 +258,15 @@ fn handle(op: &str, req: &Fields, chain: &mut Option<ChainState>) -> Result<Opti
                             if via == "p2p" && segwit.is_some() && is_block_mutated(&block, segwit.unwrap()) {
                                 ("mutated", "block-mutated".to_string())
                             } else if via == "p2p" && !p2p_block_work_acceptable(state, &block.header) {
-                                ("invalid", "too-little-chainwork".to_string())
+                                let failure = p2p_low_work_failure(state, &block, now);
+                                (
+                                    match failure.kind {
+                                        FailureKind::Invalid => "invalid",
+                                        FailureKind::Mutated => "mutated",
+                                        FailureKind::Temporary => "temporary",
+                                    },
+                                    failure.reason,
+                                )
                             } else {
                                 let had_data = state.tree.get(&block.hash()).map_or(false, |e| e.block.is_some());
                                 let hash = block.hash();

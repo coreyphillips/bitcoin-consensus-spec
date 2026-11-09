@@ -335,11 +335,11 @@ Blocks are requested with `getdata`, whose payload is a CompactSize count (at mo
 
 Bitcoin Core answers a block request with a `block` message, or **not at all**: it never sends `notfound` for blocks. It stays silent for a block it does not know, does not have the data for, or will not serve (an old block on a side branch), and it disconnects a peer that asks for pruned blocks or historical blocks beyond what it is willing to serve. A requester MUST therefore time out every block request and ask another peer. Bitcoin Core's own downloader gives a peer 2 seconds, doubling up to 64 seconds, before it considers the peer stalling (Core: `BLOCK_STALLING_TIMEOUT_DEFAULT`, `BLOCK_STALLING_TIMEOUT_MAX`).
 
-Blocks are requested along the best header chain, oldest first. Bitcoin Core itself keeps at most 16 blocks in flight per peer; a node downloading from Bitcoin Core should do the same, because Bitcoin Core answers `getdata` requests one at a time and large batches only delay other messages.
+Blocks are requested along the best header chain, oldest first. Bitcoin Core itself keeps at most 16 blocks in flight per peer; a node downloading from Bitcoin Core should do the same, because Bitcoin Core answers `getdata` requests one at a time and large batches only delay other messages. For the same reason a node SHOULD finish synchronizing headers with a peer before requesting blocks from it: a peer busy serving blocks answers `getheaders` slowly.
 
 Bitcoin Core announces new blocks with `inv` entries of type `MSG_BLOCK`, or with `headers` messages if the peer sent `sendheaders` (empty payload; Bitcoin Core accepts it before or after `verack`). On an `inv` for an unknown block, send `getheaders`; on new headers, request the blocks.
 
-A block received from a peer is first checked with `is_block_mutated` (chapter 11) when its parent is known; a mutated block is dropped and the peer is misbehaving. Then, if the block's header is new and its parent is known, Bitcoin Core drops the block (reason `too-little-chainwork`, nothing stored) when the parent's chain work plus the block's own proof is below an anti-denial-of-service threshold: the active tip's work minus 144 blocks of work at the tip's difficulty, but at least the minimum chain work (`p2p_block_work_acceptable`). Core reports this only after the context-free block checks and the header checks have passed; nothing is stored in either case. Blocks the node requested always have known headers, so the check matters only for unrequested blocks. Finally the block goes to `process_block`, as *requested* if the node had asked for it and as unrequested otherwise. A peer that sends a block that fails validation is misbehaving (section 14.2).
+A block received from a peer is first checked with `is_block_mutated` (chapter 11) when its parent is known; a mutated block is dropped and the peer is misbehaving. Then, if the block's header is new and its parent is known, Bitcoin Core drops the block (reason `too-little-chainwork`, nothing stored) when the parent's chain work plus the block's own proof is below an anti-denial-of-service threshold: the active tip's work minus 144 blocks of work at the tip's difficulty, but at least the minimum chain work (`p2p_block_work_acceptable`). Core reports this only after the context-free block checks and the header checks have passed (`p2p_low_work_failure` gives the reason Core reports); nothing is stored in either case. Blocks the node requested always have known headers, so the check matters only for unrequested blocks. Finally the block goes to `process_block`, as *requested* if the node had asked for it and as unrequested otherwise. A peer that sends a block that fails validation is misbehaving (section 14.2).
 
 ```rust
 pub const MSG_TX: u32 = 1;
@@ -370,6 +370,24 @@ pub fn p2p_block_work_acceptable(state: &ChainState, header: &BlockHeader) -> bo
         None => true,
         Some(parent) => parent.chain_work.wrapping_add(block_proof(header.bits)) >= anti_dos_work_threshold(state),
     }
+}
+
+/// The failure Bitcoin Core reports for a block that `p2p_block_work_acceptable` rejects. Core runs
+/// the context-free block checks and the header checks first and reports `too-little-chainwork` only
+/// if they pass; nothing is stored either way, so only the reason depends on the order. Core:
+/// `ProcessNewBlock` (`CheckBlock`), `AcceptBlockHeader`.
+pub fn p2p_low_work_failure(state: &ChainState, block: &Block, now: i64) -> Failure {
+    if let Err(failure) = check_block(block, &state.params.consensus) {
+        return failure;
+    }
+    let parent = state.tree.get(&block.header.prev_block).expect("the work check needs a known parent");
+    if parent.failed {
+        return invalid("bad-prevblk");
+    }
+    if let Err(failure) = contextual_check_block_header(&block.header, parent, &state.tree, &state.params.consensus, now) {
+        return failure;
+    }
+    invalid("too-little-chainwork")
 }
 
 pub fn encode_inv(items: &[(u32, Hash256)]) -> Vec<u8> {

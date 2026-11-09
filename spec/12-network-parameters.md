@@ -83,6 +83,15 @@ pub struct NetworkParams {
 
 Taproot (BIP341/342) has no activation height: its rules apply to every block except the script flag exceptions listed in chapter 10 section 10.6 (two blocks on mainnet, one on testnet3). There are no soft-fork deployments in progress in Bitcoin Core v32.1, so no version bits state machine (BIP9) is needed to validate any network.
 
+Two more per-network values in Bitcoin Core are **not consensus** and are not part of `NetworkParams`. They are listed here because chapters 11 and 14 refer to them. Bitcoin Core updates both in most releases.
+
+| Value (Core) | main | testnet3 | testnet4 | signet (default) | regtest |
+|---|---|---|---|---|---|
+| Minimum chain work (`nMinimumChainWork`) | `0x145ec036acc5ba740052af1a0` | `0x17f49f702147f10c0eb6` | `0xe346a558455ade8eca9` | `0x1090e9dc1520` | 0 |
+| Assume-valid block (`defaultAssumeValid`) | 966,143: `00000000000000000000748969ec33043c0e52a763c6dd5193861f559f2c72e3` | 5,128,859: `00000000b318a3703d14a844c55ef507f4c2fc8f8766e24271fd43c180c51637` | 151,604: `0000000021df65b91665a342e26ceb05e54826ad7d8fcd40316230058fa3b865` | 321,295: `00000002a5e0ba0498f1e9f4591af0b66b63c654665efe65206fd0ae7bbaf923` | none |
+
+The minimum chain work protects a node against peers that feed it long chains of cheap headers or blocks (chapter 11 section 11.6 step 4, chapter 14). The reference uses zero on every network, as Bitcoin Core does with `-minimumchainwork=0`; that is safe when the node connects only to peers it trusts. A node exposed to untrusted peers SHOULD use Bitcoin Core's value, and then also needs Bitcoin Core's low-work headers synchronization (chapter 14 section 14.3), because with a nonzero minimum every header message of an honest chain is below the threshold until the node has most of the chain. A custom signet uses zero. The assume-valid block is the optimization described in chapter 11 section 11.12. (Core: `consensus.nMinimumChainWork`, `consensus.defaultAssumeValid`, `src/kernel/chainparams.cpp`.)
+
 ## 12.3 Genesis blocks
 
 Every genesis block has one transaction: version 1, lock time 0, one input with a null outpoint, sequence `0xffffffff` and a `script_sig` of `push_int(486604799) || push_data([4]) || push_data(message)`, and one output of 50 BTC. The genesis block is never validated: it is the root of the chain by definition, and its coinbase output is **not** added to the UTXO set and can never be spent (chapter 10). (Core: `CreateGenesisBlock`, `src/kernel/chainparams.cpp`.)
