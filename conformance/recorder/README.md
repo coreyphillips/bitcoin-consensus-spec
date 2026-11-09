@@ -1,6 +1,6 @@
 # Block corpus recorder
 
-Records Bitcoin Core v32.1's consensus functional tests as block scenarios (format: `../CORPUS.md`), writes them to `../vectors/blocks/`, and verifies them against a fresh v32.1 node.
+Records Bitcoin Core v32.1's consensus functional tests, plus one test of its own, as block scenarios (format: `../CORPUS.md`), writes them to `../vectors/blocks/`, and verifies them against a fresh v32.1 node.
 
 ## Requirements
 
@@ -16,24 +16,29 @@ Everything Python runs inside the image (`python:3.12-slim`, pinned by digest).
 make all CORE_SRC=/path/to/bitcoin-v32.1 -j6
 ```
 
-`all` runs the stages below in order (about four minutes on 18 cores); `-j` runs the recordings in parallel. Variables: `RELEASE_DIR` (tarball directory), `WORK` (raw captures and logs, default `work/`, ignored by git), `VECTORS` (default `../vectors/blocks`), `SEED`.
+`all` runs the stages below in order (about five minutes on 18 cores); `-j` runs the recordings in parallel. Variables: `RELEASE_DIR` (tarball directory), `WORK` (raw captures and logs, default `work/`, ignored by git, a few GB), `VECTORS` (default `../vectors/blocks`), `SEED`.
 
 | Target | What it does |
 |---|---|
 | `image` | Builds `bcs-recorder:32.1` from the pinned base image and the release tarball |
-| `record`, `record2` | Runs every test twice with the same seeds (`work/raw/run1`, `work/raw/run2`) |
+| `record`, `record2` | Runs every scenario twice with the same seeds (`work/raw/run1`, `work/raw/run2`) |
 | `compare` | Post-processes both recordings and compares their skeletons (`work/racy.json`, `work/compare.json`) |
 | `corpus` | Writes `../vectors/blocks/` from the first recording, marking racy checks non-normative |
 | `verify` | Replays every corpus file through the Core chain harness; fails unless every normative check matches |
 | `verify-noop` | The same, with restarts whose options are unchanged treated as no-ops |
 | `report` | Writes `REPORT.md` |
-| `reorg` | Optional: `feature_block` including its 1088-block reorg, written to `work/reorg` only |
 
-Tests are run with `--randomseed=1 --portseed=1 --v1transport --timeout-factor=4`, fresh cache and data directories, and `feature_block` with `--skipreorg`. Each test runs in its own container, so ports never collide with anything on the host.
+A scenario is one recorded test run, listed in `SCENARIOS` in the Makefile together with its test file, arguments, nodes and blob threshold:
+
+- Core's consensus functional tests, with `feature_block` run with `--skipreorg`;
+- `feature_block_reorg`: `feature_block.py` again, including its 1088-block reorg (over 1 GB of block data, mostly zero bytes; blocks over 100,000 bytes go to blobs);
+- `feature_spec_pitfalls`: `extra/feature_spec_pitfalls.py`, a test written for this corpus in Core's framework style. It covers BIP68 with transaction versions 0xffffffff and 0x80000000, legacy sigop counting at the 80,000 limit, the subsidy at the regtest halving height, signed block versions, 64-byte transactions with a merkle-matching mutated body, the P2SH stack size limit, and the P2P anti-DoS work checks for blocks and headers messages.
+
+Every test runs with `--randomseed=1 --portseed=1 --v1transport --timeout-factor=4` and fresh cache and data directories, each in its own container, so ports never collide with anything on the host.
 
 ## How recording works
 
-`record.py` verifies the framework files against `pins.json`, installs hooks, then runs the test with `runpy` (catching `SystemExit`):
+`record.py` verifies the framework files and the test against `pins.json`, installs hooks, then runs the test with `runpy` (catching `SystemExit`):
 
 - `wait_until_helper_internal` is wrapped so the recorder knows when it is inside a wait predicate, and `p2p_lock` is replaced by an `RLock` (before the test is imported) so the recorder can tell whether the current thread holds it. The recorder never syncs from either place.
 - `P2PConnection.send_without_ping` is replaced by an equivalent that records `block`, `headers`, `cmpctblock` and `blocktxn` payloads inside `_send_lock`, so the order per connection is exact.
@@ -42,7 +47,7 @@ Tests are run with `--randomseed=1 --portseed=1 --v1transport --timeout-factor=4
 - Checkpoints are taken after `send_blocks_and_test`, `send_and_ping`/`sync_with_ping`, every state-changing RPC, `sync_blocks`, node start and node shutdown. Before a checkpoint or a state-changing RPC, every connection that sent block data since it last synced is pinged, so everything sent has been processed.
 - At every checkpoint the node's block index is walked back from `getchaintips`; blocks and headers that did not pass through the framework (other bitcoind peers, the pre-mined chain cache) are fetched and recorded.
 
-`postprocess.py` then works from the node's own `debug.log` (the tests run with `-debug`): it matches each recorded send to the line where Core started processing it (dropping sends Core never processed), takes `requested` (was the block in flight) and `now` (mock time or wall-clock second) from the log, orders events between checkpoints by log position (a block or header from another node that arrived inside a batch, without a log line of its own, is moved after its parent), and collapses byte-identical re-deliveries whose outcome cannot depend on state (mutated blocks and context-free `CheckBlock` failures, which Core re-requested from noban peers hundreds of times). Restarts become `restart` events; checks are deduplicated; the full chain tip set is kept where it has at most 64 entries and at the last check before each restart and at the end.
+Payloads over 256 KiB are kept as side files in the raw capture. `postprocess.py` then works from the node's own `debug.log` (the tests run with `-debug`): it matches each recorded send to the line where Core started processing it (dropping sends Core never processed), takes `requested` (was the block in flight) and `now` (mock time or wall-clock second) from the log, orders events between checkpoints by log position (a block or header from another node that arrived inside a batch, without a log line of its own, is moved after its parent), and collapses byte-identical re-deliveries whose outcome cannot depend on state (mutated blocks and context-free `CheckBlock` failures, which Core re-requested from noban peers hundreds of times). Restarts become `restart` events; checks are deduplicated; the full chain tip set is kept where it has at most 64 entries and at the last check before each restart and at the end.
 
 `compare_runs.py` reduces each file to a skeleton (hashes replaced by order of first appearance) and reports checks inside regions where the two recordings differ; `postprocess.py --racy` marks those non-normative.
 
@@ -62,8 +67,9 @@ It sets `setmocktime(now)` before each event and uses `submitblock`, `submithead
 
 - `blocklib.py`: block and transaction codec, merkle roots, `IsBlockMutated`, `CheckBlock`, proof of work, mirroring v32.1.
 - `report.py`: builds `REPORT.md` from the post-processing, comparison and verification outputs.
-- `pins.json`: SHA256 of every functional test framework file and each recorded test at v32.1, the release tarballs and the base image.
+- `pins.json`: SHA256 of every functional test framework file and each recorded test (Core's at v32.1, and `extra/feature_spec_pitfalls.py`), the release tarballs and the base image. Update the test's entry when editing it.
+- `extra/feature_spec_pitfalls.py`: the corpus's own functional test.
 - `config.ini`: the test framework configuration for the release binaries.
 - `REPORT.md`: results of the committed recording.
 
-The corpus has one file per node: the `NODES_<test>` variables in the Makefile list the nodes written for multi-node tests (all of them except the pruned node 2 of `mining_basic`).
+The corpus has one file per node: the `NODES_<scenario>` variables in the Makefile list the nodes written for multi-node tests (all of them except the pruned node 2 of `mining_basic`).

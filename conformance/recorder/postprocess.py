@@ -677,7 +677,7 @@ def main():
         meta = {
             "type": "meta", "format": FORMAT, "format_version": FORMAT_VERSION,
             "scenario": a.scenario, "node": node,
-            "source": {"test": "test/functional/" + rs["test"], "test_sha256": rs["test_sha256"],
+            "source": {"test": rs.get("test_path", "test/functional/" + rs["test"]), "test_sha256": rs["test_sha256"],
                        "test_args": [x for x in rs["argv"] if not x.startswith(("--cachedir=", "--tmpdir=", "--configfile="))]},
             "core": {"version": rs["core"]["version"], "commit": rs["core"]["commit"],
                      "bitcoind_sha256": rs["bitcoind_sha256"], "release_tarball_sha256": rs["tarball_sha256"]},

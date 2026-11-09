@@ -4,7 +4,7 @@ The block corpus turns Bitcoin Core's own consensus functional tests into frozen
 
 An implementation replays the events through the harness protocol (`PROTOCOL.md`, sections 4.8 to 4.13) and must reproduce every normative checkpoint.
 
-Ground truth is Bitcoin Core v32.1 (commit `f0de87f040621468b956f01f526a43a010310501`). The scenarios were recorded from the official v32.1 release binaries running the unmodified v32.1 functional tests, and every file was then replayed through a fresh v32.1 node (`recorder/core_chain_harness.py`), which reproduced every normative checkpoint. How the corpus is produced is described in `recorder/README.md`; per-scenario figures are in `recorder/REPORT.md`.
+Ground truth is Bitcoin Core v32.1 (commit `f0de87f040621468b956f01f526a43a010310501`). The scenarios were recorded from the official v32.1 release binaries running the unmodified v32.1 functional tests, plus one test written for this corpus in the same framework (`recorder/extra/feature_spec_pitfalls.py`), and every file was then replayed through a fresh v32.1 node (`recorder/core_chain_harness.py`), which reproduced every normative checkpoint. How the corpus is produced is described in `recorder/README.md`; per-scenario figures are in `recorder/REPORT.md`.
 
 ## 1. Files
 
@@ -13,9 +13,9 @@ conformance/vectors/blocks/<scenario>.node<N>.jsonl.gz
 conformance/vectors/blocks/blobs/<sha256>.blk.gz
 ```
 
-- One file per functional test and node. `<scenario>` is the test name without `.py` (for example `feature_block`), `<N>` the node index in the test. Node 0 is the node the tests drive directly; the other nodes of multi-node tests mostly receive blocks relayed from their peers. Every node of every test is included except the pruned node 2 of `mining_basic`.
+- One file per scenario and node. `<scenario>` is usually the functional test name without `.py` (for example `feature_block`). Two scenarios are named differently: `feature_block_reorg` is `feature_block.py` run with its 1088-block reorganization (which `feature_block` skips), and `feature_spec_pitfalls` is the corpus's own test. `<N>` is the node index in the test. Node 0 is the node the tests drive directly; the other nodes of multi-node tests mostly receive blocks relayed from their peers. Every node of every test is included except the pruned node 2 of `mining_basic`. The `meta` event names the source file.
 - Each file is gzip-compressed JSON Lines: UTF-8, one JSON object per line, no line spans more than one event. The first line is a `meta` event; every other line is an event with a `type` field, in replay order.
-- `blobs/` holds sidecar files for very large blocks (raw serialization larger than 1,000,000 bytes). A blob file is the gzip-compressed raw block, named by the SHA256 of the uncompressed bytes. Blobs are shared between scenarios.
+- `blobs/` holds sidecar files for large blocks, so that lines stay short: a `block` event carries either `hex` or `blob`. In this corpus, blocks larger than 1,000,000 bytes use blobs, and in `feature_block_reorg` blocks larger than 100,000 bytes. A blob file is the gzip-compressed raw block, named by the SHA256 of the uncompressed bytes. Blobs are shared between scenarios.
 - Unknown fields must be ignored. Field names starting with an underscore never appear.
 
 Encodings follow `PROTOCOL.md` section 3: bytes are lowercase hex, hashes are in display order, integers are JSON numbers, times are Unix seconds.
@@ -31,7 +31,7 @@ Always the first line. Describes provenance; a runner only needs `format`, `form
 | `format` | `"bcs-block-corpus"` |
 | `format_version` | `1` |
 | `scenario`, `node` | Test name and node index |
-| `source` | Test file path in the Bitcoin Core tree, its SHA256, and the test arguments used |
+| `source` | Test file path (in the Bitcoin Core tree, or `conformance/recorder/extra/`), its SHA256, and the test arguments used |
 | `core` | Version, commit, SHA256 of the `bitcoind` binary and of the release tarball |
 | `recorder` | Base image digest, built image ID, Python version, SHA256 of every functional test framework file |
 | `recorded_at` | UTC time the recording started |
@@ -136,7 +136,7 @@ Per-event responses (`result`, `reason`, `best_header`) are diagnostics. Conform
 Bitcoin Core treats a block differently depending on how it arrives. `via` and `requested` record the path so that implementations can reproduce Core exactly; the Core chain harness applies these rules (see its source for the precise conditions):
 
 1. **Mutated blocks over P2P.** If the parent is known and the block is mutated (chapter 11: merkle root mismatch or duplicated transactions, invalid witness commitment or reserved value, witness data without a commitment, or a 64-byte transaction in a block without a coinbase), Core drops it without recording anything, not even the header.
-2. **Anti-DoS work threshold over P2P.** A block with a new header, or a headers message, whose chain work is below the tip's work minus 144 blocks' worth of work is ignored. No scenario in this corpus reaches this threshold.
+2. **Anti-DoS work threshold over P2P.** The threshold is the tip's chain work minus 144 times the tip's block proof (and at least the minimum chain work, 0 on regtest). A block whose header is new and whose claimed work (parent work plus its own proof) is below it is dropped with nothing stored, not even the header. A headers message of fewer than 2,000 headers whose claimed work (work of the first header's parent plus every header's proof) is below it is ignored entirely, unless its last header is already on the best header chain or the active chain. Core skips the headers check (not the block check) for peers with the noban permission. Only `feature_spec_pitfalls` (part g, from a peer without that permission) reaches the threshold. Five scenarios run with noban peers (`-whitelist=noban` in `reset.args`: `p2p_invalid_block`, `feature_cltv`, `feature_dersig`, `feature_csv_activation`, `p2p_segwit`); none of their headers messages falls below the threshold, so the exemption changes nothing in this corpus.
 3. **Unrequested blocks over P2P.** A block Core did not ask for is only fully processed if it passes the context-free block checks and its chain has at least as much work as the active tip and it is at most 288 blocks ahead; otherwise only its header is stored.
 4. **Headers messages.** If any header in the message fails proof of work, or the headers are not a continuous chain, nothing is processed. If the first header's parent is unknown, nothing is processed.
 
@@ -150,7 +150,8 @@ Checks are also non-normative when the recorder saw the chain state change while
 
 ## 7. Notes for runner authors
 
-- `PROTOCOL.md` 4.10 `chain_process_headers` does not list a `via` field. Runners should pass it like `via` in 4.9; a harness that does not understand it may ignore it.
+- An event `type` not listed in section 4 is an error. New event types come with a new `format_version` (section 8).
+- Some scenarios end with blocks dated more than two hours after the wall clock at replay time (tests use mock time). They replay correctly through `PROTOCOL.md`, where `now` is given, but a live node judges time by its own clock, so the interop suite excludes them as a stated rule.
 - `now` is never 0.
 - Blocks are self-describing: `hash` must equal the double SHA256 of the first 80 bytes of the block, displayed in reverse byte order. Runners may verify this and the blob `sha256` before sending.
 - When Core found a block delivered over P2P mutated, or failing the context-free block checks, later byte-identical deliveries of that block cannot change anything and are collapsed into the first one. Core keeps such a block's header valid and re-requests the block, sometimes hundreds of times from the same peer, a timing-dependent number.

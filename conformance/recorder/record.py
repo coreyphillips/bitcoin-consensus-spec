@@ -776,6 +776,14 @@ def install_hooks(functional_dir):
 
 # ---------------------------------------------------------------- main
 
+def test_file(functional_dir, test):
+    """Core's functional tests are named by file name; the recorder's own
+    tests live under extra/ next to this script."""
+    if test.startswith("extra/"):
+        return os.path.join(HERE, test), "conformance/recorder/" + test
+    return os.path.join(functional_dir, test), "test/functional/" + test
+
+
 def verify_pins(functional_dir, test, allow_unpinned):
     with open(os.path.join(HERE, "pins.json")) as f:
         pins = json.load(f)
@@ -790,7 +798,7 @@ def verify_pins(functional_dir, test, allow_unpinned):
                   for p in glob.glob(os.path.join(functional_dir, "test_framework", "**", "*.py"), recursive=True))
     for rel in sorted(present - set(pins["framework"])):
         problems.append("%s: not pinned" % rel)
-    test_sha = sha256_file(os.path.join(functional_dir, test))
+    test_sha = sha256_file(test_file(functional_dir, test)[0])
     if pins["tests"].get(test) != test_sha:
         problems.append("%s: %s not pinned (%s)" % (test, test_sha, pins["tests"].get(test)))
     if problems and not allow_unpinned:
@@ -800,7 +808,8 @@ def verify_pins(functional_dir, test, allow_unpinned):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--test", required=True, help="functional test file name, e.g. feature_block.py")
+    ap.add_argument("--test", required=True,
+                    help="functional test file name (feature_block.py) or a recorder test (extra/feature_spec_pitfalls.py)")
     ap.add_argument("--out", required=True, help="raw capture directory (created)")
     ap.add_argument("--work", required=True, help="scratch directory for the test cache and datadirs (created)")
     ap.add_argument("--core-src", default=os.environ.get("BCS_CORE_SRC", "/core"))
@@ -830,11 +839,11 @@ def main():
             tarball_sha = f.read().strip()
     except OSError:
         pass
-    test_path = os.path.join(functional, a.test)
+    test_path, test_label = test_file(functional, a.test)
     argv = [test_path, "--cachedir=" + cachedir, "--tmpdir=" + tmpdir,
             "--configfile=" + a.configfile, "--nocleanup"] + test_args
     REC.emit({
-        "ev": "run_start", "test": a.test, "argv": argv[1:], "test_sha256": test_sha,
+        "ev": "run_start", "test": a.test, "test_path": test_label, "argv": argv[1:], "test_sha256": test_sha,
         "framework_sha256": actual, "unpinned": problems,
         "bitcoind_sha256": sha256_file(bitcoind), "tarball_sha256": tarball_sha,
         "image": os.environ.get("BCS_IMAGE_ID", ""), "base_image": pins["base_image"],

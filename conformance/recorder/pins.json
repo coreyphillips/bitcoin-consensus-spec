@@ -49,6 +49,7 @@
     "test_framework/wallet_util.py": "2dee0db67ab0a32cd134329d13bac7cc3a4a93d41a310f47e6094a177585b11e"
   },
   "tests": {
+    "extra/feature_spec_pitfalls.py": "457281deeb48cdb2b47d7938be0e5c7a81ea3ee8e6ca492b82b6e7817c7528e6",
     "feature_bip68_sequence.py": "e84296532012715ab4ecc949c033fa119ab0f78aaea1276df14da33e80231496",
     "feature_block.py": "f133d848492d487c4b1ad9b3b5d965f81454643d1bce76fe957378c26b8c4ff8",
     "feature_cltv.py": "fafb9c80607369bd79dcc59d1a8f9a0eaefe058fa3957678aec403bc1fc958e1",

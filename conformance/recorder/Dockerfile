@@ -40,4 +40,5 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 COPY config.ini /opt/bcs/config.ini
 COPY pins.json *.py /opt/bcs/recorder/
+COPY extra/ /opt/bcs/recorder/extra/
 WORKDIR /opt/bcs/recorder
