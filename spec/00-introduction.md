@@ -39,7 +39,7 @@ In scope, normative:
 - Script: encoding, execution, signature hashing and verification for all script versions (chapters 04 to 07).
 - Transaction and block validity, proof of work, and chain selection (chapters 08 to 11).
 - Parameters of every network Bitcoin Core supports: main, testnet3, testnet4, signet and regtest (chapters 12 and 13).
-- The peer-to-peer messages and behaviour needed to download and serve blocks to and from Bitcoin Core (chapter 14).
+- The peer-to-peer messages and behaviour needed to download headers and blocks from Bitcoin Core and to answer the requests it sends to its peers (chapter 14).
 
 In scope, informative (testing aids):
 
@@ -53,10 +53,11 @@ Out of scope:
 - Transaction relay policy ("standardness"), the mempool, fee estimation, mining and block template construction. These differ between nodes without splitting the chain. Where policy and consensus are easy to confuse (for example script flags that exist only for policy), this specification says which side of the line a rule is on.
 - Wallets, RPC interfaces, address formats and key derivation.
 - The encrypted version 2 peer-to-peer transport (BIP324). Bitcoin Core accepts version 1 connections, which chapter 14 specifies.
+- Serving blocks to other nodes, and the other peer-to-peer features chapter 14 leaves out (compact blocks, transaction and address relay, block filters).
 
 ## 0.4 What "consensus valid" means
 
-A *chain* is a sequence of blocks starting with the network's genesis block, where each block's header names the previous block's hash. A chain is **valid** if every block in it, applied in order to the state produced by the blocks before it, satisfies every rule in chapters 08 to 10. Bitcoin nodes follow the valid chain with the most cumulative proof of work (chapter 11).
+A *chain* is a sequence of blocks starting with the network's genesis block, where each block's header names the previous block's hash. A chain is **valid** if every block in it, applied in order to the state produced by the blocks before it, satisfies every rule in chapters 08 to 10 (and, on signet, chapter 13). Bitcoin nodes follow the valid chain with the most cumulative proof of work (chapter 11).
 
 Two kinds of disagreement are possible between implementations, and both are consensus failures:
 
@@ -67,15 +68,17 @@ Some rejections are not about validity at all. A block whose timestamp is too fa
 
 ## 0.5 Conformance
 
-The repository's `conformance/` directory contains a test runner, the test vectors, and a JSON-lines protocol (`conformance/PROTOCOL.md`) through which the runner drives any implementation. An implementation conforms at a level if it passes every test of that level:
+The repository's `conformance/` directory contains a test runner, the test vectors, and a JSON-lines protocol (`conformance/PROTOCOL.md`) through which the runner drives any implementation. The suites form three conformance classes, and an implementation conforms to a class if it passes every suite of that class:
 
-| Level | Covers | Runner suites |
+| Class | Covers | Runner suites |
 |---|---|---|
-| 1. Script and transaction | Chapters 02 to 08 for single transactions | `script-tests`, `tx-valid`, `tx-invalid`, `sighash`, `bip341`, `bip340`, `script-assets` |
-| 2. Chain | Chapters 09 to 13 and 15 | `corpus`, `headers-live` |
-| 3. Network | Chapter 14 | `interop` |
+| Script | Chapters 02 to 08 for single transactions | `script-tests`, `tx-valid`, `tx-invalid`, `sighash`, `bip341`, `bip340`, `script-assets`, `custom` |
+| Chain | Chapters 09 to 13 and 15 | `corpus`, `headers-live` |
+| Network | Chapter 14 | `interop` |
 
-Passing every suite is necessary but not sufficient. The suites are strong (they include every consensus test from Bitcoin Core's own test suite, Core's functional tests replayed as block scenarios, and comparisons against real Bitcoin Core nodes) but no finite test set covers every input. An implementation MUST follow the normative definitions, not merely pass the tests.
+Separately from the classes, the runner grades how closely each result matches. A suite passes when every verdict matches (for the block corpus, every active tip). Differences in error identifiers, and in the corpus' UTXO set hashes, are counted as a further match *level* and fail the run only with `--fail-on-level2`; differences in the corpus' chain tips are only reported (`conformance/README.md`).
+
+Passing every suite is necessary but not sufficient. The suites are strong, but no finite test set covers every input. They contain Bitcoin Core's script and transaction test data (`script_tests.json`, `tx_valid.json`, `tx_invalid.json`, `sighash.json`) and its BIP341 wallet vectors, the qa-assets script tests and the BIP340 test vectors, with every script query of the script and transaction files also checked under all 64 combinations of consensus flags against results computed by Bitcoin Core's own interpreter; edge cases those vectors miss; Bitcoin Core's functional tests replayed as block scenarios; and comparisons against real Bitcoin Core nodes. An implementation MUST follow the normative definitions, not merely pass the tests.
 
 ## 0.6 Chapter map
 

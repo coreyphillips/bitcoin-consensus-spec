@@ -111,7 +111,7 @@ The reason is the identifier Bitcoin Core uses for the same failure (`bad-txns-v
 
 The kind is a MUST, because it decides what a node remembers:
 
-- **`Invalid`**: the object violates a consensus rule. Its hash (and, for blocks, every descendant) can be remembered as invalid forever, because the hash commits to everything that was checked.
+- **`Invalid`**: the object violates a consensus rule. For a block, whether this may be remembered depends on which check failed. Failures of the header checks, the contextual block checks and the connection checks are determined by data the block hash commits to, so the hash (and every descendant) may be recorded as invalid forever. Failures of the context-free body checks (`check_block`, chapter 10 section 10.5) are `Invalid` too, but must not be recorded, because the body that failed may not be the body the header commits to (chapter 11 section 11.1, rule 4).
 - **`Mutated`**: the data received does not match what the block header commits to. Block hashes commit to the header only, and the header commits to transactions through the merkle root and the witness commitment; a peer can therefore send a corrupted body for a perfectly valid header. Nothing may be remembered about the block hash, or a single malicious peer could make the node reject the real block forever. Chapter 11 lists exactly which failures are `Mutated`.
 - **`Temporary`**: the object is rejected only because of the current time (a block timestamp too far in the future). Nothing may be remembered.
 
@@ -119,7 +119,8 @@ The kind is a MUST, because it decides what a node remembers:
 /// What a node may remember about a failed block or header (chapter 11).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FailureKind {
-    /// Breaks a consensus rule. The hash, and every descendant, is invalid forever.
+    /// Breaks a consensus rule. Whether a block hash may be recorded as invalid depends on which check
+    /// failed (chapter 11 section 11.1, rule 4).
     Invalid,
     /// The body does not match the header's commitments. Nothing about the hash may be recorded.
     Mutated,
@@ -165,3 +166,15 @@ pub fn money_range(value: i64) -> bool {
     value >= 0 && value <= MAX_MONEY
 }
 ```
+
+## 1.8 Reading the Rust
+
+The reference code is Rust. Most of it reads like any language of the C family, but a few rules differ, and a literal translation that misses them changes behaviour:
+
+- **Precedence.** Comparisons bind more loosely than `&`, `|` and `^`: in Rust `x & M != 0` means `(x & M) != 0`, while in C and C++ it means `x & (M != 0)`. The reference parenthesizes such expressions; check any you translate.
+- **`!` on an integer** is bitwise NOT (`~` in C); on a `bool` it is logical NOT.
+- **Casts.** `as` between integer types never fails. Widening an unsigned value zero-extends it, widening a signed value sign-extends it, narrowing keeps the low bits, and a cast between signed and unsigned types of the same width keeps the bits: `0xffu8 as i32` is 255, `-1i8 as i32` is -1, and `-1i32 as u32` is `0xffffffff`.
+- **Overflow.** Arithmetic that overflows aborts (section 1.2), so an overflow in the reference would be a defect of this specification, not behaviour to copy. Where modular arithmetic is intended, the reference says so and uses `wrapping_*` or `overflowing_*` operations or a wider intermediate type.
+- **Shifts and division.** `>>` fills with the sign bit on signed types and with zeros on unsigned types. Integer division truncates toward zero.
+- **Ranges and slices.** `a..b` excludes `b` and `a..=b` includes it; `v[a..b]` is the elements of `v` from index `a` up to, but not including, `b`. Indexing outside a slice aborts. The reference only indexes where the length has been checked or is guaranteed, so an abort would be a defect of this specification.
+- **`?`** returns the error (or `None`) from the enclosing function at once. `Option` and `Result` take the place of null values and error codes.

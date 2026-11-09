@@ -141,7 +141,7 @@ pub fn check_witness_malleation(block: &Block, expect_witness_commitment: bool) 
 4. The timestamp must not exceed the current time plus two hours (`MAX_FUTURE_BLOCK_TIME = 7200` seconds), else `time-too-new`. This failure is `Temporary`: the same header becomes acceptable later. "Current time" is the node's local clock (Bitcoin Core v32.1 no longer adjusts it by peers' clocks).
 5. The version, read as a **signed** 32-bit integer, must be at least 2 from the BIP34 height, at least 3 from the BIP66 height, and at least 4 from the BIP65 height, else `bad-version(0x%08x)` (the version as 8 lowercase hex digits). A version with the top bit set is negative and therefore fails all three.
 
-There is no upper bound on timestamps relative to the parent (other than the two-hour rule), and no checkpoint rule: Bitcoin Core removed checkpoints in v30.
+There is no upper bound on timestamps relative to the parent (other than the two-hour rule), and no checkpoint rule: Bitcoin Core v32.1 has no checkpoints.
 
 ```rust
 /// Core: `MAX_FUTURE_BLOCK_TIME`, `src/chain.h`.
@@ -308,7 +308,7 @@ Before BIP34, two coinbase transactions could be identical and so have the same 
 The rule applies to every block except:
 
 - the two historical violators: height 91842 with hash `00000000000a4d0a398161ffc163c503763b1f4360639393e0e4c8e300e0caec`, and height 91880 with hash `00000000000743f190a18c5577a3c2d2a1f610ae9601ac046a38084ccb7cd721`;
-- blocks below height 1,983,702 whose chain contains the network's `bip34_hash` at the BIP34 height. Once BIP34 forces unique coinbases, duplicates are impossible until a pre-BIP34 coinbase that happens to start with a push of a future height can be repeated at that height; the first such height on mainnet is 1,983,702. Skipping the check below it is only an optimization: an implementation that always checks BIP30 gets identical results.
+- blocks above the BIP34 height and below height 1,983,702 whose parent's chain contains the network's `bip34_hash` at the BIP34 height. The block at the BIP34 height itself is still checked. Once BIP34 forces unique coinbases, a duplicate needs a pre-BIP34 coinbase that happens to start with a push of a later height, repeated at that height. On mainnet the lowest such heights are 209,921 (below the BIP34 height, where the check still applies), 490,897 and 1,983,702; on testnet3 the first is near height 486,000,000. A repeat at 490,897 of the coinbase of block 176,684 cannot conflict, because that coinbase was spent in block 185,956, before the BIP34 height, so it is no longer in the UTXO set of any chain that contains the BIP34 block. Skipping the check in this range is therefore only an optimization: an implementation that always checks BIP30 gets identical results. (Core: the comments on BIP30 in `ConnectBlock`.)
 
 The check is made against the UTXO set *before* the block's transactions are applied, and unspendable outputs (chapter 04) are never in the UTXO set, so they never conflict.
 
@@ -335,11 +335,11 @@ pub const BIP34_IMPLIES_BIP30_LIMIT: i32 = 1_983_702;
    3. Queue verification of every input's scripts (non-coinbase transactions).
    4. Update the UTXO set: remove the coins spent, then add the outputs, skipping unspendable ones. A coinbase output replaces an existing entry with the same outpoint (only possible for the two BIP30 exceptions); for any other transaction such a conflict cannot occur.
 4. The coinbase's total output value must not exceed the subsidy plus the total fees (`bad-cb-amount`). The coinbase may claim less; the difference is destroyed.
-5. Run the queued script verifications, in order. The first failure fails the block with `block-script-verify-flag-failed (<error message>)`, using the script error's message from chapter 05.
+5. Run the queued script verifications. A failure fails the block with `block-script-verify-flag-failed (<error message>)`, using the script error's message from chapter 05; the reference reports the first failing input in block order.
 
 Because transactions are applied in order, a transaction can spend outputs of earlier transactions in the same block but not of later ones. Every failure here is `Invalid`.
 
-Bitcoin Core runs script verification on parallel threads and reports a script failure only after all other checks of the block (step 5). With script threads disabled it reports a script failure in the transaction where it occurs, before checks of later transactions. The validity of the block is the same either way; only the reported reason can differ for blocks that break several rules.
+Bitcoin Core normally runs script verification on parallel threads and reports a script failure only after all other checks of the block (step 5). When several inputs fail, it reports whichever failing check a thread finishes first, so its message is not deterministic; the reference reports the first failing input in block order. With script threads disabled (`-par=1`), Bitcoin Core checks each transaction's scripts as it connects the transaction, and reports the first failing input of the first failing transaction before the checks of later transactions and before `bad-cb-amount`. The validity of the block is the same in every case; only the reported reason can differ, for blocks that break several rules or have several failing inputs. (Core: `CCheckQueue`, `src/checkqueue.h`.)
 
 ```rust
 /// Undo data of one block: for each non-coinbase transaction, the coins its inputs spent, in input order.
@@ -500,4 +500,4 @@ pub fn connect_block(
 }
 ```
 
-Note that `coins` is computed before any of the transaction's own inputs are spent, so a transaction cannot spend the same coin twice (that is also excluded by `check_transaction`), and that the sigop cost is computed with the coins the transaction spends.
+Note that `coins` is looked up before any of the transaction's own inputs are spent, so two inputs spending the same coin would both find it: what prevents a transaction from spending one coin twice is `check_transaction` (`bad-txns-inputs-duplicate`, chapter 08), which `check_block` applies to every transaction before the block is connected. The sigop cost is computed with the coins the transaction spends.

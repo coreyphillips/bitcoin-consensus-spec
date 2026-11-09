@@ -26,17 +26,18 @@ Consequences that implementations get wrong:
 ```rust
 /// Core: `VerifyScript`.
 pub fn verify_script(script_sig: &[u8], script_pubkey: &[u8], witness: &[Vec<u8>], flags: ScriptFlags, checker: &TxChecker) -> Result<(), ScriptError> {
+    assert!((flags & VERIFY_WITNESS) == 0 || (flags & VERIFY_P2SH) != 0, "WITNESS requires P2SH");
     let mut had_witness = false;
     let mut stack: Vec<Vec<u8>> = Vec::new();
 
     eval_script(&mut stack, script_sig, flags, checker, SigVersion::Base, &mut ExecData::default())?;
-    let stack_copy = if flags & VERIFY_P2SH != 0 { stack.clone() } else { Vec::new() };
+    let stack_copy = if (flags & VERIFY_P2SH) != 0 { stack.clone() } else { Vec::new() };
     eval_script(&mut stack, script_pubkey, flags, checker, SigVersion::Base, &mut ExecData::default())?;
     if stack.is_empty() || !cast_to_bool(&stack[stack.len() - 1]) {
         return Err(ScriptError::EvalFalse);
     }
 
-    if flags & VERIFY_WITNESS != 0 {
+    if (flags & VERIFY_WITNESS) != 0 {
         if let Some((version, program)) = witness_program(script_pubkey) {
             had_witness = true;
             if !script_sig.is_empty() {
@@ -46,7 +47,7 @@ pub fn verify_script(script_sig: &[u8], script_pubkey: &[u8], witness: &[Vec<u8>
         }
     }
 
-    if flags & VERIFY_P2SH != 0 && is_p2sh(script_pubkey) {
+    if (flags & VERIFY_P2SH) != 0 && is_p2sh(script_pubkey) {
         if !is_push_only(script_sig) {
             return Err(ScriptError::SigPushOnly);
         }
@@ -57,7 +58,7 @@ pub fn verify_script(script_sig: &[u8], script_pubkey: &[u8], witness: &[Vec<u8>
         if stack.is_empty() || !cast_to_bool(&stack[stack.len() - 1]) {
             return Err(ScriptError::EvalFalse);
         }
-        if flags & VERIFY_WITNESS != 0 {
+        if (flags & VERIFY_WITNESS) != 0 {
             if let Some((version, program)) = witness_program(&redeem_script) {
                 had_witness = true;
                 if script_sig != push_data(&redeem_script).as_slice() {
@@ -68,7 +69,7 @@ pub fn verify_script(script_sig: &[u8], script_pubkey: &[u8], witness: &[Vec<u8>
         }
     }
 
-    if flags & VERIFY_WITNESS != 0 && !had_witness && !witness.is_empty() {
+    if (flags & VERIFY_WITNESS) != 0 && !had_witness && !witness.is_empty() {
         return Err(ScriptError::WitnessUnexpected);
     }
     Ok(())
@@ -195,7 +196,7 @@ pub fn taproot_merkle_root(control: &[u8], leaf_hash: &Hash256) -> Hash256 {
 pub fn verify_taproot_commitment(control: &[u8], program: &[u8], leaf_hash: &Hash256) -> bool {
     let internal_key = &control[1..TAPROOT_CONTROL_BASE_SIZE];
     let merkle_root = taproot_merkle_root(control, leaf_hash);
-    taproot_tweak_check(&program[..32], control[0] & 1 == 1, internal_key, &merkle_root)
+    taproot_tweak_check(&program[..32], (control[0] & 1) == 1, internal_key, &merkle_root)
 }
 
 /// True if the control block length is valid. Core: the size check in `VerifyWitnessProgram`.
@@ -247,7 +248,7 @@ fn verify_witness_program(
             Err(ScriptError::WitnessProgramWrongLength)
         }
     } else if version == 1 && program.len() == WITNESS_V1_TAPROOT_SIZE && !is_p2sh {
-        if flags & VERIFY_TAPROOT == 0 {
+        if (flags & VERIFY_TAPROOT) == 0 {
             return Ok(());
         }
         if witness.is_empty() {

@@ -18,7 +18,7 @@ A signature does not sign a transaction directly. It signs a 32-byte *signature 
 | `SIGHASH_ANYONECANPAY` | 0x80 (flag) | Only the input being signed is covered, not the other inputs |
 | `SIGHASH_DEFAULT` | 0 | Taproot only: same as `SIGHASH_ALL`, signalled by a 64-byte signature |
 
-In legacy and BIP143 hashing, **any** hash type byte is valid. A base type other than 2 or 3 (including 0 and values like 0x41 or 0x65, all of which appear in real blocks) behaves like `SIGHASH_ALL`, and the full byte, extended to 32 bits, is included in the hash. Restricting hash types to the defined values (`STRICTENC`) is policy.
+In legacy and BIP143 hashing, **any** hash type byte is valid. A base type other than 2 or 3 (including 0 and values like 0x41 or 0x65, all of which appear in real blocks) behaves like `SIGHASH_ALL`, and the full byte, zero-extended to 32 bits, is included in the hash. Restricting hash types to the defined values (`STRICTENC`) is policy.
 
 In taproot hashing, only 0x00, 0x01, 0x02, 0x03, 0x81, 0x82 and 0x83 are valid; any other value makes the signature check fail.
 
@@ -123,7 +123,7 @@ fn legacy_sighash(script_code: &[u8], tx: &Transaction, n_in: usize, hash_type: 
         one[0] = 1;
         return one;
     }
-    let anyone_can_pay = hash_type & SIGHASH_ANYONECANPAY != 0;
+    let anyone_can_pay = (hash_type & SIGHASH_ANYONECANPAY) != 0;
     let hash_single = base_type == SIGHASH_SINGLE;
     let hash_none = base_type == SIGHASH_NONE;
 
@@ -238,7 +238,7 @@ impl PrecomputedTx {
 
 fn bip143_sighash(script_code: &[u8], tx: &Transaction, n_in: usize, hash_type: i32, amount: i64, pre: &PrecomputedTx) -> Hash256 {
     let base_type = hash_type & 0x1f;
-    let anyone_can_pay = hash_type & SIGHASH_ANYONECANPAY != 0;
+    let anyone_can_pay = (hash_type & SIGHASH_ANYONECANPAY) != 0;
     let mut hash_prevouts = ZERO_HASH;
     let mut hash_sequence = ZERO_HASH;
     let mut hash_outputs = ZERO_HASH;

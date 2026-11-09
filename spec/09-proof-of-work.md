@@ -22,7 +22,7 @@ pub fn compact_to_target(bits: u32) -> (U256, bool, bool) {
     } else {
         U256::from_u64(word as u64).shl(8 * (size - 3))
     };
-    let negative = word != 0 && bits & 0x0080_0000 != 0;
+    let negative = word != 0 && (bits & 0x0080_0000) != 0;
     let overflow = word != 0 && (size > 34 || (word > 0xff && size > 33) || (word > 0xffff && size > 32));
     (value, negative, overflow)
 }
@@ -35,7 +35,7 @@ pub fn target_to_compact(target: U256) -> u32 {
     } else {
         target.shr(8 * (size - 3)).low_u64() as u32
     };
-    if compact & 0x0080_0000 != 0 {
+    if (compact & 0x0080_0000) != 0 {
         compact >>= 8;
         size += 1;
     }
@@ -114,7 +114,7 @@ The target changes only at heights that are multiples of the *adjustment interva
 3. The new target is `old_target * actual_timespan / target_timespan` (integer division), using 256-bit arithmetic, where `old_target` is decoded from P's `bits`, except under BIP94 (testnet4) where it is decoded from F's `bits`, so that a minimum-difficulty block at the end of a period cannot drag the next period down.
 4. If the result exceeds the proof-of-work limit, it is the limit. The required `bits` is its canonical compact encoding.
 
-The multiplication cannot overflow on any defined network: every network that retargets has a proof-of-work limit below 2^224 and timespans below 2^23, so the product stays below 2^247 (regtest, whose limit is close to 2^255, never retargets).
+The multiplication cannot overflow on any defined network, because `old_target` is at most the proof-of-work limit and the clamped timespan at most 4,838,400 (below 2^23). On mainnet, testnet3 and testnet4 the limit is below 2^224, so the product stays below 2^247. Signet's limit, `0x377ae * 2^216`, is below 2^234, and the largest product, `0x377ae * 4,838,400 * 2^216 = 1,099,507,046,400 * 2^216`, is just below 2^256 (`2^40 * 2^216`); there is no overflow, but only just. Regtest, whose limit is close to 2^255, never retargets.
 
 ```rust
 /// Core: `GetNextWorkRequired`. `parent` is P; `ancestor(height)` returns the header of P's ancestor
