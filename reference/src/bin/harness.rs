@@ -471,7 +471,12 @@ fn handle(op: &str, req: &Fields, chain: &mut Option<ChainState>) -> Result<Opti
                             if via == "p2p" && segwit.is_some() && is_block_mutated(&block, segwit.unwrap()) {
                                 ("mutated", "block-mutated".to_string())
                             } else {
+                                let had_data = state.tree.get(&block.hash()).map_or(false, |e| e.block.is_some());
+                                let hash = block.hash();
                                 match state.process_block(block, now, requested) {
+                                    BlockOutcome::Accepted if !had_data && state.tree.get(&hash).map_or(false, |e| e.block.is_none()) => {
+                                        ("accepted", "unrequested-header-only".to_string())
+                                    }
                                     BlockOutcome::Accepted => ("accepted", String::new()),
                                     BlockOutcome::Duplicate => ("duplicate", String::new()),
                                     BlockOutcome::Orphan => ("orphan", "prev-blk-not-found".to_string()),
@@ -514,6 +519,15 @@ fn handle(op: &str, req: &Fields, chain: &mut Option<ChainState>) -> Result<Opti
                             return Err(BadRequest("header must be 80 bytes".into()));
                         }
                         headers.push(read_block_header(&mut Reader::new(&bytes)).map_err(|_| BadRequest("bad header".into()))?);
+                    }
+                    let via_p2p = !matches!(req.get("via"), Some(Json::Str(v)) if v == "rpc");
+                    if via_p2p && !headers_message_acceptable(state, &headers) {
+                        let mut fields = obj(vec![
+                            ("result", Json::Str("invalid".into())),
+                            ("reason", Json::Str("headers-message-rejected".into())),
+                        ]);
+                        fields.insert("best_header".into(), Json::Str(hash_to_display(&state.best_header().hash)));
+                        return Ok(Some(fields));
                     }
                     let mut fields = match state.process_headers(&headers, now) {
                         Ok(()) => obj(vec![("result", Json::Str("accepted".into()))]),

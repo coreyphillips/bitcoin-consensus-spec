@@ -235,6 +235,25 @@ pub fn decode_headers(payload: &[u8]) -> Result<Vec<BlockHeader>, DecodeError> {
     Ok(headers)
 }
 
+/// Whether a received `headers` message is processed at all. Bitcoin Core drops the whole message,
+/// processing none of it, if any header fails its own proof of work, if the headers do not form a
+/// continuous chain, or if the first header's parent is unknown. (It then also applies an anti-denial-
+/// of-service threshold to chains with little work, which never triggers for honest peers near the
+/// tip.) Core: `PeerManagerImpl::ProcessHeadersMessage`, `CheckHeadersPoW`.
+pub fn headers_message_acceptable(state: &ChainState, headers: &[BlockHeader]) -> bool {
+    if headers.is_empty() {
+        return true;
+    }
+    let pow_limit = state.params.consensus.pow_limit;
+    if headers.iter().any(|header| !check_proof_of_work(&header.hash(), header.bits, pow_limit)) {
+        return false;
+    }
+    if headers.windows(2).any(|pair| pair[1].prev_block != pair[0].hash()) {
+        return false;
+    }
+    state.tree.get(&headers[0].prev_block).is_some()
+}
+
 /// The headers to send in answer to `getheaders`. Core: the `GETHEADERS` case of `ProcessMessage`.
 pub fn answer_getheaders(tree: &BlockTree, locator: &[Hash256], stop: &Hash256) -> Vec<BlockHeader> {
     let start = locator
@@ -400,7 +419,9 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
                         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.0))?;
                     let full_batch = headers.len() == MAX_HEADERS_RESULTS;
                     headers_synced = !full_batch;
-                    let _ = state.process_headers(&headers, unix_now());
+                    if headers_message_acceptable(state, &headers) {
+                        let _ = state.process_headers(&headers, unix_now());
+                    }
                     if full_batch {
                         let last = headers.last().unwrap().hash();
                         let locator = block_locator(&state.tree, &last);
