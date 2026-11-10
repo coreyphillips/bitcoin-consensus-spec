@@ -564,6 +564,14 @@
   "expect": "caught"
  },
  {
+  "name": "der-at-or-above-n-script-error",
+  "kind": "script",
+  "file": "05-script-execution.md",
+  "old": "    if len_s > 1 && sig[len_r + 6] == 0x00 && (sig[len_r + 7] & 0x80) == 0 {\n        return false;\n    }\n    true\n}",
+  "new": "    if len_s > 1 && sig[len_r + 6] == 0x00 && (sig[len_r + 7] & 0x80) == 0 {\n        return false;\n    }\n    let at_or_above_n = |value: &[u8]| {\n        let value = if value[0] == 0 { &value[1..] } else { value };\n        value.len() == 32 && U256::from_be_bytes(value) >= CURVE_N\n    };\n    !(at_or_above_n(&sig[4..4 + len_r]) || at_or_above_n(&sig[len_r + 6..len_r + 6 + len_s]))\n}",
+  "expect": "caught"
+ },
+ {
   "name": "multisig-der-upfront",
   "kind": "script",
   "file": "05-script-execution.md",

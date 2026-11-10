@@ -80,7 +80,7 @@ Every item below is a place where a natural implementation differs from Bitcoin 
 | 52 | Weight is checked after the witness commitment, so witness padding is `Mutated`, not `Invalid`. | 10 section 10.5 |
 | 53 | BIP30 applies to all blocks except blocks 91842 and 91880 and (as an optimization) blocks below 1,983,702 on a chain with the BIP34 block; unspendable outputs never conflict. | 10 section 10.7 |
 | 54 | Unspendable outputs (`OP_RETURN` first, or longer than 10,000 bytes) are never added to the UTXO set. | 10 section 10.8 |
-| 55 | The genesis block's own coinbase output is not in the UTXO set. Its outpoint is not reserved: a byte-identical coinbase at height 486,604,799 would create it. | 10 section 10.8, 12 section 12.3 |
+| 55 | The genesis block's own coinbase output is not in the UTXO set. Its outpoint is not reserved: a byte-identical coinbase at height 486,604,799, in a block with at least 50 BTC of fees, would create it. | 10 section 10.8, 12 section 12.3 |
 | 56 | Transactions are applied in order: a transaction can spend outputs of earlier transactions in the same block only. | 10 section 10.8 |
 | 57 | The coinbase may claim less than allowed; it may not claim more. | 10 section 10.8 |
 
@@ -115,7 +115,7 @@ Each item below was found missing or wrong in another published consensus implem
 
 | # | Quirk | Where |
 |---|---|---|
-| 73 | Signature operation counting has no 520-byte limit: a longer push, for example in an output script, does not stop the count; only a push that runs past the end of the script does. | 04 section 4.9 |
+| 73 | Signature operation counting has no 520-byte limit: a longer push, for example in an output script, does not stop the count; only a push whose length field or data runs past the end of the script does. | 04 section 4.9 |
 | 74 | The coinbase's legacy signature operations count toward the 80,000 cost when the block is connected, not only in the early legacy check. | 08 section 8.8, 10 section 10.8 |
 | 75 | An ECDSA R or S that is not below the group order, or has more than 32 significant bytes, makes the signature parse as `(0, 0)`, which never verifies. It is never reduced modulo the order. | 02 section 2.8 |
 | 76 | With `DERSIG`, a well-formed signature whose R or S is too large passes the encoding check; `OP_CHECKSIG` then returns false, it does not fail the script. | 05 section 5.5.1 |

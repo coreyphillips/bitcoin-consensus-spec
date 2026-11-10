@@ -125,6 +125,34 @@ for size in (520, 521):
     out = padd(G, pmul(tweak, G))
     control = bytes([0xc0 | (out[1] & 1)]) + G[0].to_bytes(32, "big")
     sv("tapscript %d-byte push in an unexecuted branch" % size, b"", b"\x51\x20" + out[0].to_bytes(32, "big"), [leaf, control])
+# A 32-byte R or S that is not below the group order passes the encoding check too (its DER form is
+# 33 bytes with a zero pad); CHECKSIG returns false and the script does not fail.
+sv("DERSIG 32-byte R = n, CHECKSIG NOT", push(der(N, 1) + b"\x01"), not_checksig, [])
+sv("DERSIG 32-byte S = n, CHECKSIG NOT", push(der(1, N) + b"\x01"), not_checksig, [])
+# The same unexecuted push in a leaf of the common signed shape (<key> CHECKSIG after the branch)
+# with a valid BIP340 signature, so that fast paths for that template are exercised as well.
+def bip340_sign(d, msg):
+    pt = pmul(d, G)
+    if pt[1] & 1: d = N - d
+    px = pt[0].to_bytes(32, "big")
+    t = (d ^ int.from_bytes(tagged("BIP0340/aux", bytes(32)), "big")).to_bytes(32, "big")
+    k = int.from_bytes(tagged("BIP0340/nonce", t + px + msg), "big") % N
+    rp = pmul(k, G)
+    if rp[1] & 1: k = N - k
+    rx = rp[0].to_bytes(32, "big")
+    c = int.from_bytes(tagged("BIP0340/challenge", rx + px + msg), "big") % N
+    return rx + ((k + c * d) % N).to_bytes(32, "big")
+leaf_key = 3
+for size in (520, 521):
+    leaf = b"\x00\x63" + push(bytes(size)) + b"\x68" + push(pmul(leaf_key, G)[0].to_bytes(32, "big")) + b"\xac"
+    leaf_hash = tagged("TapLeaf", b"\xc0" + cs(len(leaf)) + leaf)
+    tweak = int.from_bytes(tagged("TapTweak", G[0].to_bytes(32, "big") + leaf_hash), "big")
+    out = padd(G, pmul(tweak, G))
+    control = bytes([0xc0 | (out[1] & 1)]) + G[0].to_bytes(32, "big")
+    spk = b"\x51\x20" + out[0].to_bytes(32, "big")
+    msg = bytes.fromhex(ask({"op": "sighash_taproot", "tx": tx(2, [(FUND, 0, b"", 0xffffffff)], OUTS, 0).hex(), "index": 0,
+                             "spent_outputs": [{"amount": 5000, "script_pubkey": spk.hex()}], "hash_type": 0, "leaf_hash": leaf_hash.hex()})["sighash"])
+    sv("tapscript %d-byte push in an unexecuted branch, signed key leaf" % size, b"", spk, [bip340_sign(leaf_key, msg), leaf, control])
 with open(OUT, "w") as f:
     for name, req in cases:
         resp = ask(req)
