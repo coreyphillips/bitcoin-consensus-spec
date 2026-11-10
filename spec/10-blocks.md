@@ -331,7 +331,7 @@ pub const BIP34_IMPLIES_BIP30_LIMIT: i32 = 1_983_702;
 2. **BIP30** (section 10.7): `bad-txns-BIP30`.
 3. For each transaction, in block order:
    1. For non-coinbase transactions: `check_tx_inputs` (chapter 08) against the UTXO set as modified by the earlier transactions of this block, then add the fee to the running total, which must stay within range (`bad-txns-accumulated-fee-outofrange`), then BIP68 relative lock times from the CSV height on (`bad-txns-nonfinal`).
-   2. Add the transaction's signature operation cost (chapter 08) to the running total; more than 80,000 fails with `bad-blk-sigops`.
+   2. Add the transaction's signature operation cost (chapter 08) to the running total; more than 80,000 fails with `bad-blk-sigops`. The coinbase is included: the running total starts with its legacy count times 4.
    3. Queue verification of every input's scripts (non-coinbase transactions).
    4. Update the UTXO set: remove the coins spent, then add the outputs, skipping unspendable ones. A coinbase output replaces an existing entry with the same outpoint (only possible for the two BIP30 exceptions); for any other transaction such a conflict cannot occur.
 4. The coinbase's total output value must not exceed the subsidy plus the total fees (`bad-cb-amount`). The coinbase may claim less; the difference is destroyed.

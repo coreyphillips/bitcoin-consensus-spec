@@ -546,5 +546,69 @@
   "old": "        cost += witness_sig_op_count(&input.script_sig, &coin.output.script_pubkey, &input.witness, flags) as i64;",
   "new": "        let _ = flags;",
   "expect": "caught"
+ },
+ {
+  "name": "ecdsa-reduce-mod-n",
+  "kind": "script",
+  "file": "02-cryptography.md",
+  "old": "    if overflow || r >= CURVE_N || s >= CURVE_N {\n        return Some((U256::ZERO, U256::ZERO));\n    }\n    Some((r, s))",
+  "new": "    if overflow {\n        return Some((U256::ZERO, U256::ZERO));\n    }\n    Some((sc_reduce(r), sc_reduce(s)))",
+  "expect": "caught"
+ },
+ {
+  "name": "der-oversize-script-error",
+  "kind": "script",
+  "file": "05-script-execution.md",
+  "old": "    if len_s > 1 && sig[len_r + 6] == 0x00 && (sig[len_r + 7] & 0x80) == 0 {\n        return false;\n    }\n    true\n}",
+  "new": "    if len_s > 1 && sig[len_r + 6] == 0x00 && (sig[len_r + 7] & 0x80) == 0 {\n        return false;\n    }\n    let r_size = if sig[4] == 0 { len_r - 1 } else { len_r };\n    let s_size = if sig[len_r + 6] == 0 { len_s - 1 } else { len_s };\n    r_size <= 32 && s_size <= 32\n}",
+  "expect": "caught"
+ },
+ {
+  "name": "multisig-der-upfront",
+  "kind": "script",
+  "file": "05-script-execution.md",
+  "old": "                    let mut success = true;\n                    while success && sigs_count > 0 {",
+  "new": "                    if (flags & VERIFY_DERSIG) != 0 {\n                        for k in 0..sigs_count as usize {\n                            let sig = top(stack, isig + k);\n                            if !sig.is_empty() && !is_valid_signature_encoding(sig) {\n                                return Err(ScriptError::SigDer);\n                            }\n                        }\n                    }\n                    let mut success = true;\n                    while success && sigs_count > 0 {",
+  "expect": "caught"
+ },
+ {
+  "name": "p2sh-redeem-no-push-limit",
+  "kind": "script",
+  "file": "07-script-verification.md",
+  "old": "    eval_script(&mut stack, script_sig, flags, checker, SigVersion::Base, &mut ExecData::default())?;\n    let stack_copy",
+  "new": "    let data_pushes_only = {\n        let mut pos = 0;\n        let mut ok = true;\n        while pos < script_sig.len() {\n            match get_op(script_sig, &mut pos) {\n                Some(op) if op.opcode <= OP_PUSHDATA4 => {}\n                _ => { ok = false; break; }\n            }\n        }\n        ok\n    };\n    if (flags & VERIFY_P2SH) != 0 && is_p2sh(script_pubkey) && data_pushes_only {\n        let mut pos = 0;\n        while pos < script_sig.len() {\n            stack.push(get_op(script_sig, &mut pos).unwrap().data.to_vec());\n        }\n    } else {\n        eval_script(&mut stack, script_sig, flags, checker, SigVersion::Base, &mut ExecData::default())?;\n    }\n    let stack_copy",
+  "expect": "caught"
+ },
+ {
+  "name": "tapscript-pushsize-only-executed",
+  "kind": "script",
+  "file": "05-script-execution.md",
+  "old": "        if op.data.len() > MAX_SCRIPT_ELEMENT_SIZE {\n            return Err(ScriptError::PushSize);\n        }\n        if legacy_limits",
+  "new": "        if (executing || sigversion != SigVersion::Tapscript) && op.data.len() > MAX_SCRIPT_ELEMENT_SIZE {\n            return Err(ScriptError::PushSize);\n        }\n        if legacy_limits",
+  "expect": "caught"
+ },
+ {
+  "name": "sigops-stop-at-oversize-push",
+  "kind": "block",
+  "file": "04-script-encoding.md",
+  "old": "        let op = match get_op(script, &mut pos) {\n            Some(op) => op,\n            None => break,\n        };\n",
+  "new": "        let op = match get_op(script, &mut pos) {\n            Some(op) => op,\n            None => break,\n        };\n        if op.data.len() > MAX_SCRIPT_ELEMENT_SIZE {\n            break;\n        }\n",
+  "expect": "caught"
+ },
+ {
+  "name": "coinbase-sigops-excluded",
+  "kind": "block",
+  "file": "10-blocks.md",
+  "old": "        sigops_cost += transaction_sig_op_cost(tx, &spent, flags);\n",
+  "new": "        if !tx.is_coinbase() {\n            sigops_cost += transaction_sig_op_cost(tx, &spent, flags);\n        }\n",
+  "expect": "caught"
+ },
+ {
+  "name": "tx-output-cap-100k",
+  "kind": "block",
+  "file": "08-transactions.md",
+  "old": "    if tx.outputs.is_empty() {\n        return Err(\"bad-txns-vout-empty\");\n    }\n",
+  "new": "    if tx.outputs.is_empty() {\n        return Err(\"bad-txns-vout-empty\");\n    }\n    if tx.outputs.len() > 100_000 {\n        return Err(\"bad-txns-vout-toomany\");\n    }\n",
+  "expect": "caught"
  }
 ]

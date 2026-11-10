@@ -315,7 +315,7 @@ An ECDSA signature on the stack is a DER signature followed by one *hash type* b
 
 A *false* result is not an error: `OP_CHECKSIG` pushes false and execution continues. (Requiring failed signatures to be empty, `NULLFAIL`, is policy.)
 
-Before the check, with `DERSIG` set, a **non-empty** signature must have strict DER encoding (`is_valid_signature_encoding` below, which includes the hash type byte), or the script fails with `SIG_DER`. An empty signature is always allowed, as a compact way to provide a signature that fails. (Core: `CheckSignatureEncoding`, `IsValidSignatureEncoding`, `GenericTransactionSignatureChecker::CheckECDSASignature`.)
+Before the check, with `DERSIG` set, a **non-empty** signature must have strict DER encoding (`is_valid_signature_encoding` below, which includes the hash type byte), or the script fails with `SIG_DER`. An empty signature is always allowed, as a compact way to provide a signature that fails. The check constrains the form of R and S, not their size: a signature whose R or S has more than 32 significant bytes, or is not below the group order, passes it when otherwise well formed, and then fails verification because chapter 02's lax parser reads it as `(0, 0)`. The result is *false*, not an error. (Core: `CheckSignatureEncoding`, `IsValidSignatureEncoding`, `GenericTransactionSignatureChecker::CheckECDSASignature`.)
 
 ```rust
 /// BIP66 strict DER encoding, including the trailing hash type byte.

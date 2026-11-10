@@ -23,7 +23,7 @@ The signet rows are for the default signet (no custom challenge). To compare, sy
 
 ## 15.1 Definition
 
-The UTXO set contains every unspent output of the active chain except unspendable ones (chapter 04) and the genesis coinbase output (chapter 10). Each coin is serialized as
+The UTXO set contains every unspent output of the active chain except unspendable ones (chapter 04) and the genesis block's own coinbase output (chapter 10). Each coin is serialized as
 
 ```text
 outpoint (txid:32 raw order, vout:u32) | code:u32 | value:i64 | var_bytes(script_pubkey)

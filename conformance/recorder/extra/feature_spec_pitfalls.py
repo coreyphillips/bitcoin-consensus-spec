@@ -33,8 +33,11 @@ g. Peer-to-peer anti-DoS work checks (net_processing). The threshold is the
    claimed work is below it is ignored entirely, from a peer without the noban
    permission; one more header in the same message reaches the threshold and
    every header is stored.
+j. A transaction with 100,001 outputs (zero-value outputs with empty scripts,
+   about 900,000 bytes) is valid: nothing but the size rules limits the number
+   of outputs.
 
-Parts a to g run on node 0 (default regtest parameters). Two more nodes, never
+Parts a to g and j run on node 0 (default regtest parameters). Two more nodes, never
 connected to anything but the test, each get their own corpus file:
 
 h. Node 1 activates BIP34 at height 2 and BIP66 and BIP65 only at 300, so the
@@ -121,6 +124,7 @@ class SpecPitfallsTest(BitcoinTestFramework):
         self.test_bip68_unsigned_version()
         self.test_subsidy_halving()
         self.test_anti_dos_work()
+        self.test_output_count()
 
         self.node = self.nodes[1]
         self.test_version_floor_before_dersig()
@@ -396,6 +400,17 @@ class SpecPitfallsTest(BitcoinTestFramework):
         self.peer.send_and_ping(msg_headers([CBlockHeader(b) for b in blocks]))
         assert_equal(self.chain_tip_entry(blocks[-1].hash_hex)["status"], "headers-only")
         assert_equal(self.tip()[1], tip_height)
+
+    # ------------------------------------------------------------ j
+
+    def test_output_count(self):
+        self.log.info("j. A transaction with 100,001 outputs is valid")
+        outpoint, value = self.take_coin()
+        outputs = [CTxOut(value, ANYONE_CAN_SPEND)] + [CTxOut(0, b"")] * 100_000
+        block = self.make_block([self.spend(outpoint, value, outputs=outputs)])
+        assert_equal(len(block.vtx[1].vout), 100_001)
+        self.send([block])
+        assert_equal(self.node.getbestblockhash(), block.hash_hex)
 
     # ------------------------------------------------------------ h (node 1)
 
