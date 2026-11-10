@@ -51,6 +51,8 @@ impl Transaction {
 
 The duplicate input rule matters even though a later rule requires every input's coin to exist: without it, one coin could be spent twice inside one transaction, creating money (CVE-2018-17144).
 
+There is no limit on the number of inputs or outputs other than the size rule: a transaction with 100,001 outputs of zero value and empty scripts weighs about 3,600,000 and is valid.
+
 ```rust
 /// Core: `CheckTransaction`.
 pub fn check_transaction(tx: &Transaction) -> Result<(), &'static str> {
@@ -228,6 +230,8 @@ Blocks limit the total *signature operation cost* of their transactions to 80,00
 - **4 times the legacy count**: chapter 04's `sig_op_count(script, false)` over every input's `script_sig` and every output's `script_pubkey` (output scripts count even though nothing executes them yet);
 - for non-coinbase transactions, if `P2SH` is in force, **4 times the P2SH count**: for each input whose spent `script_pubkey` is P2SH, `p2sh_sig_op_count(script_pubkey, script_sig)`;
 - for non-coinbase transactions, if `WITNESS` is in force, **1 times the witness count**: for each input, if the spent `script_pubkey` is a witness program, or is P2SH with a push-only `script_sig` whose last push is a witness program, then a version 0 20-byte program counts 1 and a version 0 32-byte program counts the accurate count of the witness script (the last witness item, if the witness is non-empty). Other versions count 0; tapscript signature operations are limited per input by the validation weight budget instead (chapter 05).
+
+A coinbase's cost is its legacy count only, and it counts toward the block's limit like any other transaction's (chapter 10 section 10.8): its outputs can carry signature operations.
 
 The flags are the block's script flags (chapter 10). Because `WITNESS` is set for nearly every historical block, witness sigops are counted for spends of witness-program-shaped outputs even before segwit activated.
 

@@ -21,11 +21,11 @@ Bitcoin Core v32.1 (commit `f0de87f040621468b956f01f526a43a010310501`), official
 | feature_bip68_sequence.node1 | 459 | 445 | 0 | 0 | 0 | 13 | 13 | 65385 |
 | mining_basic.node0 | 1007 | 582 | 16 | 0 | 33 | 375 | 375 | 109959 |
 | mining_basic.node1 | 672 | 367 | 300 | 0 | 0 | 4 | 3 | 76326 |
-| feature_spec_pitfalls.node0 | 273 | 216 | 19 | 0 | 0 | 37 | 37 | 35681 |
+| feature_spec_pitfalls.node0 | 276 | 217 | 20 | 0 | 0 | 38 | 38 | 40121 |
 | feature_spec_pitfalls.node1 | 23 | 14 | 1 | 0 | 0 | 7 | 7 | 4837 |
-| feature_spec_pitfalls.node2 | 295 | 146 | 1 | 0 | 0 | 147 | 147 | 31738 |
+| feature_spec_pitfalls.node2 | 295 | 146 | 1 | 0 | 0 | 147 | 147 | 31741 |
 
-Sidecar blobs (blocks over 1,000,000 bytes; over 100,000 bytes in feature_block_reorg): 1097 files, 2948272 bytes. Total corpus size: 13492443 bytes (13.5 MB).
+Sidecar blobs (blocks over 1,000,000 bytes; over 100,000 bytes in feature_block_reorg): 1097 files, 2948272 bytes. Total corpus size: 13496886 bytes (13.5 MB).
 
 ## Verification
 
@@ -50,7 +50,7 @@ Level 0 is the active tip and height at normative checks; level 1 the chain tip 
 | feature_bip68_sequence.node1 | 13/13 | 0/0 | 13/13 | 13/13 | 13/13 |
 | mining_basic.node0 | 375/375 | 0/0 | 375/375 | 328/328 | 375/375 |
 | mining_basic.node1 | 3/3 | 1/1 | 4/4 | 4/4 | 3/3 |
-| feature_spec_pitfalls.node0 | 37/37 | 0/0 | 37/37 | 18/18 | 37/37 |
+| feature_spec_pitfalls.node0 | 38/38 | 0/0 | 38/38 | 19/19 | 38/38 |
 | feature_spec_pitfalls.node1 | 7/7 | 0/0 | 7/7 | 4/4 | 7/7 |
 | feature_spec_pitfalls.node2 | 147/147 | 0/0 | 147/147 | 145/145 | 147/147 |
 

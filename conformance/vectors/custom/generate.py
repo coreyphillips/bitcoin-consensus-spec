@@ -63,13 +63,99 @@ tc("witness flag with only empty witnesses", good[:4] + b"\x00\x01" + good[4:-4]
 tc("unknown flag 0x02", good[:4] + b"\x00\x02" + good[4:])
 tc("trailing byte", good + b"\x00")
 tc("output count above MAX_SIZE", good[:4] + good[4:4+1+36+2+4] + b"\xfe\x01\x00\x00\x02" + good[4+1+36+2+4+1:])
+# Found by reviewing other implementations (Appendix A items 75, 76 and 79, and quirk 17 in
+# tapscript): each case below separates Bitcoin Core from a published implementation.
 h = subprocess.Popen([ORACLE], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+next_id = [0]
+def ask(req):
+    next_id[0] += 1
+    req2 = dict(req); req2["id"] = next_id[0]
+    h.stdin.write(json.dumps(req2) + "\n"); h.stdin.flush()
+    resp = json.loads(h.stdout.readline())
+    assert resp.get("ok"), (req, resp)
+    return resp
+# secp256k1 arithmetic, enough to build keys and the forgeries below.
+P = 2**256 - 2**32 - 977
+N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+G = (0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798, 0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8)
+def padd(a, b):
+    if a is None: return b
+    if b is None: return a
+    if a[0] == b[0] and (a[1] + b[1]) % P == 0: return None
+    if a == b: l = 3 * a[0] * a[0] * pow(2 * a[1], P - 2, P) % P
+    else: l = (b[1] - a[1]) * pow(b[0] - a[0], P - 2, P) % P
+    x = (l * l - a[0] - b[0]) % P
+    return (x, (l * (a[0] - x) - a[1]) % P)
+def pmul(k, pt):
+    r = None
+    while k:
+        if k & 1: r = padd(r, pt)
+        pt = padd(pt, pt); k >>= 1
+    return r
+def compressed(pt): return bytes([2 + (pt[1] & 1)]) + pt[0].to_bytes(32, "big")
+def der_int(v):
+    b = v.to_bytes(max(1, (v.bit_length() + 7) // 8), "big")
+    if b[0] & 0x80: b = b"\x00" + b
+    return b"\x02" + bytes([len(b)]) + b
+def der(r, s): body = der_int(r) + der_int(s); return b"\x30" + bytes([len(body)]) + body
+def tagged(tag, msg): t = sha256(tag.encode()); return sha256(t + t + msg)
+# ECDSA r or s at or above the group order is invalid; it is not reduced modulo n. R = (1, y) is a
+# curve point (8 is a square mod p). With e the message, Q = R - e*G makes (r mod n, s mod n) =
+# (1, 1) a valid signature for Q, so an implementation that reduces accepts these spends.
+checksig = b"\xac"
+y = pow(8, (P + 1) // 4, P); assert y * y % P == 8
+R = (1, y)
+e = int(ask({"op": "sighash_legacy", "tx": tx(2, [(FUND, 0, b"", 0xffffffff)], OUTS, 0).hex(), "script_code": checksig.hex(), "index": 0, "hash_type": 1})["sighash"], 16) % N
+Q = padd(R, pmul(N - e, G))
+for name, r, s in (("ecdsa r = n + 1 forged for r mod n, bare CHECKSIG", N + 1, 1), ("ecdsa s = n + 1 forged for s mod n, bare CHECKSIG", 1, N + 1)):
+    sv(name, push(der(r, s) + b"\x01") + push(compressed(Q)), checksig, [])
+# With DERSIG, an R or S longer than 32 bytes passes the encoding check; CHECKSIG returns false.
+not_checksig = push(compressed(G)) + b"\xac\x91"
+sv("DERSIG 33-byte R, CHECKSIG NOT", push(der(2**256, 1) + b"\x01"), not_checksig, [])
+sv("DERSIG 33-byte S, CHECKSIG NOT", push(der(1, 2**256) + b"\x01"), not_checksig, [])
+# A P2SH redeem script is pushed by the signature script, so it is at most 520 bytes.
+for nops in (3, 4):
+    redeem = bytes([0x4d, 0x00, 0x02]) + bytes(512) + b"\x75" + b"\x61" * nops + b"\x51"
+    sv("p2sh redeem script of %d bytes" % len(redeem), push(redeem), b"\xa9\x14" + h160(redeem) + b"\x87", [])
+# Tapscript: the 520-byte push limit applies in an unexecuted branch too.
+for size in (520, 521):
+    leaf = b"\x00\x63" + push(bytes(size)) + b"\x68\x51"
+    leaf_hash = tagged("TapLeaf", b"\xc0" + cs(len(leaf)) + leaf)
+    tweak = int.from_bytes(tagged("TapTweak", G[0].to_bytes(32, "big") + leaf_hash), "big")
+    out = padd(G, pmul(tweak, G))
+    control = bytes([0xc0 | (out[1] & 1)]) + G[0].to_bytes(32, "big")
+    sv("tapscript %d-byte push in an unexecuted branch" % size, b"", b"\x51\x20" + out[0].to_bytes(32, "big"), [leaf, control])
+# A 32-byte R or S that is not below the group order passes the encoding check too (its DER form is
+# 33 bytes with a zero pad); CHECKSIG returns false and the script does not fail.
+sv("DERSIG 32-byte R = n, CHECKSIG NOT", push(der(N, 1) + b"\x01"), not_checksig, [])
+sv("DERSIG 32-byte S = n, CHECKSIG NOT", push(der(1, N) + b"\x01"), not_checksig, [])
+# The same unexecuted push in a leaf of the common signed shape (<key> CHECKSIG after the branch)
+# with a valid BIP340 signature, so that fast paths for that template are exercised as well.
+def bip340_sign(d, msg):
+    pt = pmul(d, G)
+    if pt[1] & 1: d = N - d
+    px = pt[0].to_bytes(32, "big")
+    t = (d ^ int.from_bytes(tagged("BIP0340/aux", bytes(32)), "big")).to_bytes(32, "big")
+    k = int.from_bytes(tagged("BIP0340/nonce", t + px + msg), "big") % N
+    rp = pmul(k, G)
+    if rp[1] & 1: k = N - k
+    rx = rp[0].to_bytes(32, "big")
+    c = int.from_bytes(tagged("BIP0340/challenge", rx + px + msg), "big") % N
+    return rx + ((k + c * d) % N).to_bytes(32, "big")
+leaf_key = 3
+for size in (520, 521):
+    leaf = b"\x00\x63" + push(bytes(size)) + b"\x68" + push(pmul(leaf_key, G)[0].to_bytes(32, "big")) + b"\xac"
+    leaf_hash = tagged("TapLeaf", b"\xc0" + cs(len(leaf)) + leaf)
+    tweak = int.from_bytes(tagged("TapTweak", G[0].to_bytes(32, "big") + leaf_hash), "big")
+    out = padd(G, pmul(tweak, G))
+    control = bytes([0xc0 | (out[1] & 1)]) + G[0].to_bytes(32, "big")
+    spk = b"\x51\x20" + out[0].to_bytes(32, "big")
+    msg = bytes.fromhex(ask({"op": "sighash_taproot", "tx": tx(2, [(FUND, 0, b"", 0xffffffff)], OUTS, 0).hex(), "index": 0,
+                             "spent_outputs": [{"amount": 5000, "script_pubkey": spk.hex()}], "hash_type": 0, "leaf_hash": leaf_hash.hex()})["sighash"])
+    sv("tapscript %d-byte push in an unexecuted branch, signed key leaf" % size, b"", spk, [bip340_sign(leaf_key, msg), leaf, control])
 with open(OUT, "w") as f:
-    for i, (name, req) in enumerate(cases):
-        req2 = dict(req); req2["id"] = i + 1
-        h.stdin.write(json.dumps(req2) + "\n"); h.stdin.flush()
-        resp = json.loads(h.stdout.readline())
-        assert resp.get("ok"), (name, resp)
+    for name, req in cases:
+        resp = ask(req)
         expect = {k: v for k, v in resp.items() if k in ("valid", "script_error", "reason")}
         f.write(json.dumps({"name": name, "request": req, "expect": expect}) + "\n")
         print("%-52s %s" % (name, expect))
