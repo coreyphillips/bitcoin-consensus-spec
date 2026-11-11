@@ -116,8 +116,9 @@ does not start with `#` is `<suite> <location>`, where the location is what `FAI
 bip340 row 15
 # Equal-work tie-break after invalidateblock.
 corpus feature_block.node0 check 88
-# The corpus names a file's replay errors, which fail the file once, "<file> errors".
-corpus mining_basic.node0 errors
+# A file's replay errors fail it once, named by the event of the first one, so an
+# earlier error is not covered. "<file> errors" names them wherever they start.
+corpus mining_basic.node0 errors from event 642
 interop chain feature_spec_pitfalls.node2
 ```
 

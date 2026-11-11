@@ -7,7 +7,9 @@
 //! that ran, fails the run, so the list cannot outlive the failures it describes.
 //!
 //! The corpus suite names a level 0 failure by its check (`<file> check <n>`) and the replay
-//! errors of a file, which fail that file once, as `<file> errors`.
+//! errors of a file, which fail that file once, as `<file> errors from event <n>`: `<n>` is the
+//! event whose replay recorded the first error, so an earlier error does not pass as known.
+//! `<file> errors` names them wherever they start.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
