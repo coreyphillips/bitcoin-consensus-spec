@@ -10,7 +10,9 @@
 //!   `invalidate` request sent since the last `reset`, again (responses not scored). With
 //!   `--restart-shortcut`, a restart whose options equal the ones in force sends nothing;
 //! - `check` becomes `chain_tip` (level 0), `chain_tips` when the check carries `tips` (level 1),
-//!   and `utxo_hash` when it carries `utxo` (level 2).
+//!   and `utxo_hash` when it carries `utxo` (level 2). A harness that does not list `utxo_hash`
+//!   (an implementation that keeps no UTXO set, PROTOCOL.md section 4.13) is not asked; each such
+//!   check counts at level 2 as not compared.
 //!
 //! Level 0 at normative checks is required. Non-normative level 0 checks, level 1 and level 2 are
 //! reported separately. A harness error (`ok: false`, a crash) or a corrupt file is a failure.
@@ -194,6 +196,9 @@ pub struct FileResult {
     pub l1_fail: u64,
     pub l2: u64,
     pub l2_fail: u64,
+    /// Level 2 checks not compared because the harness does not list `utxo_hash` (also counted
+    /// in `l2_fail`).
+    pub l2_uncompared: u64,
     pub restarts: u64,
     pub restarts_skipped: u64,
     pub redelivered: u64,
@@ -511,26 +516,34 @@ pub fn replay_file(ctx: &mut Ctx, path: &Path, restart_shortcut: bool) -> FileRe
                 // Level 2.
                 if let Some(utxo) = ev.get("utxo") {
                     r.l2 += 1;
-                    match call(ctx, "utxo_hash", "") {
-                        Ok(a) => {
-                            let ok = a.get("hash_serialized_3") == utxo.get("hash_serialized_3")
-                                && a.get("txouts").and_then(Value::as_i64)
-                                    == utxo["txouts"].as_i64();
-                            if !ok {
-                                r.l2_fail += 1;
-                                if ctx.verbose && printed[2] < MAX_MISMATCH_LINES {
-                                    printed[2] += 1;
-                                    println!(
+                    if !ctx.supports("utxo_hash") {
+                        // PROTOCOL.md section 4.13: optional for an implementation that keeps no
+                        // UTXO set.
+                        r.l2_fail += 1;
+                        r.l2_uncompared += 1;
+                    } else {
+                        match call(ctx, "utxo_hash", "") {
+                            Ok(a) => {
+                                let ok = a.get("hash_serialized_3")
+                                    == utxo.get("hash_serialized_3")
+                                    && a.get("txouts").and_then(Value::as_i64)
+                                        == utxo["txouts"].as_i64();
+                                if !ok {
+                                    r.l2_fail += 1;
+                                    if ctx.verbose && printed[2] < MAX_MISMATCH_LINES {
+                                        printed[2] += 1;
+                                        println!(
                                         "LEVEL2   [corpus] {loc}: expected utxo {} ({} txouts), got {} ({} txouts)",
                                         utxo["hash_serialized_3"].as_str().unwrap_or("?"),
                                         utxo["txouts"],
                                         a.get("hash_serialized_3").and_then(Value::as_str).unwrap_or("?"),
                                         a.get("txouts").unwrap_or(&Value::Null)
                                     );
+                                    }
                                 }
                             }
+                            Err(e) => r.errors.push(format!("{loc}: utxo_hash: {e}")),
                         }
-                        Err(e) => r.errors.push(format!("{loc}: utxo_hash: {e}")),
                     }
                 }
                 recent.clear();
@@ -620,6 +633,7 @@ pub fn run(ctx: &mut Ctx, paths: &[PathBuf], restart_shortcut: bool) -> Result<(
         totals.l1_fail += fr.l1_fail;
         totals.l2 += fr.l2;
         totals.l2_fail += fr.l2_fail;
+        totals.l2_uncompared += fr.l2_uncompared;
         totals.restarts += fr.restarts;
         totals.restarts_skipped += fr.restarts_skipped;
         totals.redelivered += fr.redelivered;
@@ -648,6 +662,12 @@ pub fn run(ctx: &mut Ctx, paths: &[PathBuf], restart_shortcut: bool) -> Result<(
         totals.redelivered,
         totals.outcomes.iter().map(|(k, v)| format!("{k} {v}")).collect::<Vec<_>>().join(", ")
     ));
+    if totals.l2_uncompared > 0 {
+        ctx.stats.details.push(format!(
+            "level 2: {} UTXO set hashes not compared (the harness does not list utxo_hash, PROTOCOL.md section 4.13)",
+            totals.l2_uncompared
+        ));
+    }
     if totals.l0_other_fail > 0 || totals.l1_fail > 0 {
         ctx.stats.details.push(
             "non-normative level 0 checks and level 1 (chain tips) are reported only; they never fail the run".into(),

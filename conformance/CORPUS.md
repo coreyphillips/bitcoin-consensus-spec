@@ -129,7 +129,7 @@ Per-event responses (`result`, `reason`, `best_header`) are diagnostics. Conform
 
 - **Level 0** (required): `tip` and `height` at every check with `normative: true`.
 - **Level 1** (optional): chain tips. Bitcoin Core validates side branches lazily and keeps headers of blocks it has not downloaded, so this level depends on storage details that the specification leaves open; it is a debugging aid.
-- **Level 2** (optional): the UTXO set commitment (specification chapter 15). Whenever level 0 matches, level 2 should match too; a mismatch points at a bug in UTXO set maintenance even if the tip is right.
+- **Level 2** (optional): the UTXO set commitment (specification chapter 15). Whenever level 0 matches, level 2 should match too; a mismatch points at a bug in UTXO set maintenance even if the tip is right. An implementation that keeps no UTXO set cannot be checked at this level (PROTOCOL.md section 4.13).
 
 ## 5. Delivery paths
 

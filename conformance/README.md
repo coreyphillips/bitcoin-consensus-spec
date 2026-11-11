@@ -213,7 +213,9 @@ force sends nothing. A `check` becomes `chain_tip`, plus `chain_tips` when it ca
 - Non-normative checks are compared and reported (`L0 other`) but never fail the run.
 - **Level 1** (optional): the set of (hash, height, status) chain tips. Reported only.
 - **Level 2** (optional): `hash_serialized_3` and `txouts`. Counted in `level2`/`l2-checked`;
-  fails the run only with `--fail-on-level2`.
+  fails the run only with `--fail-on-level2`. A harness that does not list `utxo_hash` (an
+  implementation that keeps no UTXO set, `PROTOCOL.md` section 4.13) is not asked; each UTXO check
+  is then counted as not compared, and the details say how many.
 
 The details list every file with its results per level, the number of restarts and re-delivered
 events, and the harness's per-event outcomes (diagnostic). With `--verbose` the first normative

@@ -255,6 +255,8 @@ Response: `{"tips": [{"hash": hash, "height": integer, "status": string}, ...]}`
 
 Response: `{"hash_serialized_3": hash, "txouts": integer}` for the active chain tip, computed as in specification chapter 15. `hash_serialized_3` is in display order, matching Bitcoin Core's `gettxoutsetinfo`.
 
+This operation is optional. A harness for an implementation that keeps no UTXO set leaves it out of `ops`. The runner then does not send it, and counts each UTXO check of the corpus at level 2 as not compared, which fails the run only with `--fail-on-level2` (as for a live node that leaves `hash_serialized_3` out, section 5).
+
 ## 5. Live node contract
 
 The interop suite runs the implementation as a real node next to Bitcoin Core. For that suite the user supplies a node command template. The runner substitutes these placeholders:
