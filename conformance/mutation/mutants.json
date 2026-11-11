@@ -618,5 +618,13 @@
   "old": "    if tx.outputs.is_empty() {\n        return Err(\"bad-txns-vout-empty\");\n    }\n",
   "new": "    if tx.outputs.is_empty() {\n        return Err(\"bad-txns-vout-empty\");\n    }\n    if tx.outputs.len() > 100_000 {\n        return Err(\"bad-txns-vout-toomany\");\n    }\n",
   "expect": "caught"
+ },
+ {
+  "name": "same-block-spend-not-persisted",
+  "kind": "block",
+  "file": "10-blocks.md",
+  "old": "pub struct UtxoView<'a> {\n    pub base: &'a UtxoSet,\n    pub changes: std::collections::HashMap<OutPoint, Option<Coin>>,\n}\n\nimpl<'a> UtxoView<'a> {\n    pub fn new(base: &'a UtxoSet) -> UtxoView<'a> {\n        UtxoView { base, changes: std::collections::HashMap::new() }\n    }\n\n    pub fn get(&self, outpoint: &OutPoint) -> Option<Coin> {\n        match self.changes.get(outpoint) {\n            Some(entry) => entry.clone(),\n            None => self.base.get(outpoint).cloned(),\n        }\n    }\n\n    pub fn spend(&mut self, outpoint: &OutPoint) -> Option<Coin> {\n        let coin = self.get(outpoint);\n        if coin.is_some() {\n            self.changes.insert(*outpoint, None);\n        }\n        coin\n    }\n",
+  "new": "pub struct UtxoView<'a> {\n    pub base: &'a UtxoSet,\n    pub changes: std::collections::HashMap<OutPoint, Option<Coin>>,\n    pub spent_here: std::collections::HashSet<OutPoint>,\n}\n\nimpl<'a> UtxoView<'a> {\n    pub fn new(base: &'a UtxoSet) -> UtxoView<'a> {\n        UtxoView { base, changes: std::collections::HashMap::new(), spent_here: std::collections::HashSet::new() }\n    }\n\n    pub fn get(&self, outpoint: &OutPoint) -> Option<Coin> {\n        if self.spent_here.contains(outpoint) {\n            return None;\n        }\n        match self.changes.get(outpoint) {\n            Some(entry) => entry.clone(),\n            None => self.base.get(outpoint).cloned(),\n        }\n    }\n\n    pub fn spend(&mut self, outpoint: &OutPoint) -> Option<Coin> {\n        let coin = self.get(outpoint);\n        if coin.is_some() {\n            if matches!(self.changes.get(outpoint), Some(Some(_))) {\n                self.spent_here.insert(*outpoint);\n            } else {\n                self.changes.insert(*outpoint, None);\n            }\n        }\n        coin\n    }\n",
+  "expect": "caught"
  }
 ]
