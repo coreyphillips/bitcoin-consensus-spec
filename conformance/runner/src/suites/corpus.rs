@@ -16,6 +16,8 @@
 //!
 //! Level 0 at normative checks is required. Non-normative level 0 checks, level 1 and level 2 are
 //! reported separately. A harness error (`ok: false`, a crash) or a corrupt file is a failure.
+//! `--known-failures` names a level 0 failure as `<file> check <n>` and a file's errors as
+//! `<file> errors`.
 
 use crate::check::{shorten, Ctx};
 use crate::hex;
@@ -190,6 +192,8 @@ pub struct FileResult {
     pub checks: u64,
     pub normative: u64,
     pub l0_fail: u64,
+    /// Normative checks that failed as `--known-failures` says (not in `l0_fail`).
+    pub l0_known: u64,
     pub l0_other: u64,
     pub l0_other_fail: u64,
     pub l1: u64,
@@ -453,7 +457,14 @@ pub fn replay_file(ctx: &mut Ctx, path: &Path, restart_shortcut: bool) -> FileRe
                 };
                 if normative {
                     r.normative += 1;
-                    if !matched {
+                    if !matched && crate::known::take("corpus", &loc) {
+                        r.l0_known += 1;
+                        if ctx.verbose {
+                            println!(
+                                "KNOWN    [corpus] {loc}: expected tip {want}, got {got_text}"
+                            );
+                        }
+                    } else if !matched {
                         r.l0_fail += 1;
                         if ctx.verbose && !diverged {
                             println!(
@@ -601,7 +612,7 @@ pub fn run(ctx: &mut Ctx, paths: &[PathBuf], restart_shortcut: bool) -> Result<(
             "{:<44} {:>7} {:>11} {:>11} {:>9} {:>9} {:>6} {:>7.1}s",
             shorten(&fr.name, 44),
             fr.checks,
-            frac(fr.normative - fr.l0_fail, fr.normative),
+            frac(fr.normative - fr.l0_fail - fr.l0_known, fr.normative),
             frac(fr.l0_other - fr.l0_other_fail, fr.l0_other),
             frac(fr.l1 - fr.l1_fail, fr.l1),
             frac(fr.l2 - fr.l2_fail, fr.l2),
@@ -616,17 +627,23 @@ pub fn run(ctx: &mut Ctx, paths: &[PathBuf], restart_shortcut: bool) -> Result<(
         }
         // Scoring: every normative check is a case; an error fails the file once.
         ctx.stats.cases += fr.normative;
-        ctx.stats.passed += fr.normative - fr.l0_fail;
+        ctx.stats.passed += fr.normative - fr.l0_fail - fr.l0_known;
         ctx.stats.failed += fr.l0_fail;
+        ctx.stats.known += fr.l0_known;
         if !fr.errors.is_empty() {
             ctx.stats.cases += 1;
-            ctx.stats.failed += 1;
+            if crate::known::take("corpus", &format!("{} errors", fr.name)) {
+                ctx.stats.known += 1;
+            } else {
+                ctx.stats.failed += 1;
+            }
         }
         ctx.stats.l2_checked += fr.l2;
         ctx.stats.l2_mismatches += fr.l2_fail;
         totals.checks += fr.checks;
         totals.normative += fr.normative;
         totals.l0_fail += fr.l0_fail;
+        totals.l0_known += fr.l0_known;
         totals.l0_other += fr.l0_other;
         totals.l0_other_fail += fr.l0_other_fail;
         totals.l1 += fr.l1;
@@ -646,7 +663,11 @@ pub fn run(ctx: &mut Ctx, paths: &[PathBuf], restart_shortcut: bool) -> Result<(
         "{:<44} {:>7} {:>11} {:>11} {:>9} {:>9}",
         format!("total ({} files, {} events)", files.len(), totals.events),
         totals.checks,
-        format!("{}/{}", totals.normative - totals.l0_fail, totals.normative),
+        format!(
+            "{}/{}",
+            totals.normative - totals.l0_fail - totals.l0_known,
+            totals.normative
+        ),
         format!(
             "{}/{}",
             totals.l0_other - totals.l0_other_fail,

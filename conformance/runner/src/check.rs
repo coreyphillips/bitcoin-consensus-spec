@@ -166,6 +166,8 @@ pub struct Stats {
     pub passed: u64,
     /// Level 1 failures: wrong validity, wrong hash, or no usable answer.
     pub failed: u64,
+    /// Failures `--known-failures` names. Counted in `cases`, not in `failed`.
+    pub known: u64,
     /// Passed checks whose expectation includes an error identifier.
     pub l2_checked: u64,
     /// Passed checks whose error identifier differs from the expected one.
@@ -188,6 +190,13 @@ impl Stats {
 
     pub fn fail(&mut self, suite: &str, verbose: bool, loc: &str, detail: &str) {
         self.cases += 1;
+        if crate::known::take(suite, loc) {
+            self.known += 1;
+            if verbose {
+                println!("KNOWN    [{suite}] {loc}: {detail}");
+            }
+            return;
+        }
         self.failed += 1;
         if verbose {
             println!("FAIL     [{suite}] {loc}: {detail}");
