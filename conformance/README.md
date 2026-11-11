@@ -257,10 +257,19 @@ free ports from `--port-range` (default 29000-29999; ports something listens on 
 loads the chain, and runs the node command (`sh -c`) with `{network}` (`regtest`), `{datadir}` (an
 empty directory), `{peer}` (`127.0.0.1:<port>`) and `{stop_at}` (bitcoind's tip) substituted. It
 waits for the node's `{"event":"stopped",...}` line (`--node-timeout`, default 600 seconds), checks
-that the node exits with status 0, and compares `tip`, `height` and `hash_serialized_3` with
-`getbestblockhash`, `getblockcount` and `gettxoutsetinfo`. Without a whitelist, bitcoind disconnects
-a node that misbehaves; in addition, any `Misbehaving` line in bitcoind's debug log fails the chain,
-even if the sync completed. One case per chain:
+that the node exits with status 0, and compares `tip` and `height` with `getbestblockhash` and
+`getblockcount`, and `hash_serialized_3`, when the node reports it, with `gettxoutsetinfo`. A node
+that keeps no UTXO set may leave `hash_serialized_3` out (PROTOCOL.md section 5); the chain is then
+counted in `level2`/`l2-checked` as not compared, which fails the run only with
+`--fail-on-level2`. Without a whitelist, bitcoind disconnects a node that misbehaves; in addition,
+any `Misbehaving` line in bitcoind's debug log fails the chain, even if the sync completed. The
+detail line of each chain shows the transport of the node's connections (`v1`, `v2`, or both), read
+from bitcoind's `New inbound peer connected: transport: ...` log lines.
+
+`--v2transport` starts `bitcoind` with `-v2transport=1` instead, for nodes that speak only the
+BIP324 version 2 transport (which this specification does not define). bitcoind then still accepts
+version 1 connections, so a version 1 node passes the same way; the transport shown per chain says
+which one was used. One case per chain:
 
 - `generate-300`: `generatetodescriptor 300 "raw(51)"`;
 - one chain per corpus scenario (`--corpus`, default `vectors/blocks`): the blocks of its final

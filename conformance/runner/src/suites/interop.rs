@@ -1,11 +1,14 @@
 //! The `interop` suite (conformance/PROTOCOL.md section 5): the implementation runs as a live node
-//! and synchronizes from a regtest Bitcoin Core node over the version 1 peer-to-peer protocol.
+//! and synchronizes from a regtest Bitcoin Core node over the version 1 peer-to-peer protocol, or
+//! with `--v2transport` over BIP324 version 2 if the node chooses to.
 //!
 //! For each chain the runner starts a fresh `bitcoind -regtest` (temporary data directory, free
-//! ports, `-debug=net`, no whitelist, `-listen=1`), loads the chain, runs the node command with
-//! `{network}`, `{datadir}`, `{peer}` and `{stop_at}` substituted, waits for its `stopped` line and
-//! compares tip, height and `hash_serialized_3` with `bitcoind` (`getbestblockhash`,
-//! `getblockcount`, `gettxoutsetinfo`). Chains:
+//! ports, `-debug=net`, no whitelist, `-listen=1`, `-v2transport=0`, or `-v2transport=1` with
+//! `--v2transport`), loads the chain, runs the node command with `{network}`, `{datadir}`, `{peer}`
+//! and `{stop_at}` substituted, waits for its `stopped` line and compares tip and height with
+//! `bitcoind` (`getbestblockhash`, `getblockcount`). `hash_serialized_3` is compared with
+//! `gettxoutsetinfo` when the node reports it; a node that keeps no UTXO set may leave it out,
+//! which is counted at level 2 (it fails the run only with `--fail-on-level2`). Chains:
 //!
 //! - `generate-300`: 300 blocks from `generatetodescriptor 300 "raw(51)"`;
 //! - one per corpus scenario: the blocks of the scenario's final active chain (the tip of its last
@@ -16,7 +19,8 @@
 //!
 //! `{options}` in the node command (PROTOCOL.md section 5) becomes the scenario's `reset` options as
 //! a single shell-quoted JSON object (the `options` of `chain_reset`). A `Misbehaving` line in
-//! bitcoind's debug log fails the chain.
+//! bitcoind's debug log fails the chain. The transport of the node's connections, from the same
+//! log, is shown with each chain.
 
 use crate::bitcoind::{free_ports, Bitcoind};
 use crate::check::Stats;
@@ -25,7 +29,7 @@ use crate::p2p::unix_now;
 use crate::suites::corpus;
 use crate::tx::sha256d;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -44,6 +48,7 @@ pub struct Config {
     pub port_range: (u16, u16),
     pub node_timeout: Duration,
     pub keep_temp: bool,
+    pub v2transport: bool,
 }
 
 enum Load {
@@ -300,8 +305,12 @@ fn stderr_tail(path: &Path) -> String {
 enum ChainOutcome {
     /// A stated rule excludes the chain.
     Excluded(&'static str),
-    /// The node ran; no problem means it matched `bitcoind`.
-    Done(Vec<String>),
+    /// The node ran; no problem means it matched `bitcoind`. `utxo_reported` is `Some(false)` when
+    /// the node stopped without `hash_serialized_3` (level 2), `None` when it never stopped.
+    Done {
+        problems: Vec<String>,
+        utxo_reported: Option<bool>,
+    },
 }
 
 fn run_chain(
@@ -328,7 +337,14 @@ fn run_chain(
     let node_dir = root.join("node");
     std::fs::create_dir_all(&node_dir)
         .map_err(|e| format!("cannot create {}: {e}", node_dir.display()))?;
-    let mut core = Bitcoind::start(&cfg.bitcoind, &core_dir, ports[0], ports[1], &extra)?;
+    let mut core = Bitcoind::start(
+        &cfg.bitcoind,
+        &core_dir,
+        ports[0],
+        ports[1],
+        cfg.v2transport,
+        &extra,
+    )?;
 
     match &chain.load {
         Load::Generate(n) => {
@@ -401,6 +417,8 @@ fn run_chain(
             misbehaving[0].trim()
         ));
     }
+    let transport = transports(&log);
+    let mut utxo_reported = None;
     match &outcome.stopped {
         Some(v) => {
             if v["tip"].as_str() != Some(tip.as_str()) {
@@ -409,11 +427,15 @@ fn run_chain(
             if v["height"].as_i64() != Some(height) {
                 problems.push(format!("node height {}, bitcoind {height}", v["height"]));
             }
-            if v["hash_serialized_3"].as_str() != Some(utxo_hash.as_str()) {
-                problems.push(format!(
-                    "node hash_serialized_3 {}, bitcoind {utxo_hash}",
-                    v["hash_serialized_3"]
-                ));
+            match v.get("hash_serialized_3") {
+                // PROTOCOL.md section 5: optional for a node that keeps no UTXO set.
+                None | Some(Value::Null) => utxo_reported = Some(false),
+                Some(h) => {
+                    utxo_reported = Some(true);
+                    if h.as_str() != Some(utxo_hash.as_str()) {
+                        problems.push(format!("node hash_serialized_3 {h}, bitcoind {utxo_hash}"));
+                    }
+                }
             }
         }
         None => {
@@ -437,12 +459,38 @@ fn run_chain(
         },
         started.elapsed().as_secs_f64(),
         if problems.is_empty() {
-            format!("tip {}", &tip[..16])
+            format!(
+                "tip {}, transport {transport}{}",
+                &tip[..16],
+                if utxo_reported == Some(false) {
+                    ", UTXO hash not reported (level 2)"
+                } else {
+                    ""
+                }
+            )
         } else {
-            problems.join("; ")
+            format!("{} (transport {transport})", problems.join("; "))
         }
     ));
-    Ok(ChainOutcome::Done(problems))
+    Ok(ChainOutcome::Done {
+        problems,
+        utxo_reported,
+    })
+}
+
+/// The transports of the node's connections, from bitcoind's `-debug=net` lines
+/// `New inbound peer connected: transport: v2, ...`, joined with `+`; `none` without a connection.
+fn transports(log: &str) -> String {
+    let seen: BTreeSet<&str> = log
+        .lines()
+        .filter_map(|l| l.split("peer connected: transport: ").nth(1))
+        .map(|rest| rest.split(',').next().unwrap_or("").trim())
+        .collect();
+    if seen.is_empty() {
+        "none".into()
+    } else {
+        seen.into_iter().collect::<Vec<_>>().join("+")
+    }
 }
 
 fn final_chain_checked(file: &Path) -> Result<FinalChain, String> {
@@ -497,7 +545,18 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
         let _ = std::fs::remove_dir_all(&root);
         let loc = format!("chain {}", chain.name);
         eprintln!("interop: {} ({} of {})", chain.name, i + 1, chains.len());
-        match run_chain(cfg, chain, &root, &mut stats.details) {
+        let outcome = run_chain(cfg, chain, &root, &mut stats.details);
+        if let Ok(ChainOutcome::Done {
+            utxo_reported: Some(reported),
+            ..
+        }) = &outcome
+        {
+            stats.l2_checked += 1;
+            if !reported {
+                stats.l2_mismatches += 1;
+            }
+        }
+        match outcome {
             Ok(ChainOutcome::Excluded(rule)) => {
                 stats.rule(rule, 1);
                 stats.details.push(format!(
@@ -514,13 +573,13 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
                 ));
                 let _ = std::fs::remove_dir_all(&root);
             }
-            Ok(ChainOutcome::Done(problems)) if problems.is_empty() => {
+            Ok(ChainOutcome::Done { problems, .. }) if problems.is_empty() => {
                 stats.pass();
                 if !cfg.keep_temp {
                     let _ = std::fs::remove_dir_all(&root);
                 }
             }
-            Ok(ChainOutcome::Done(problems)) => {
+            Ok(ChainOutcome::Done { problems, .. }) => {
                 stats.fail(
                     SUITE,
                     verbose,
@@ -551,6 +610,15 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transports_come_from_bitcoind_connection_lines() {
+        let log = "2026-11-09T03:09:33Z [net] New inbound peer connected: transport: v2, version: 70016, peer=0\n\
+                   2026-11-09T03:09:34Z [net] New inbound peer connected: transport: v1, version: 70016, peer=1\n\
+                   2026-11-09T03:09:34Z [net] New inbound peer connected: transport: v2, version: 70016, peer=2\n";
+        assert_eq!(transports(log), "v1+v2");
+        assert_eq!(transports("no connections\n"), "none");
+    }
 
     #[test]
     fn options_become_bitcoind_arguments() {

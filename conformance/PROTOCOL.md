@@ -271,9 +271,10 @@ The runner skips, as a stated rule, every scenario that needs network options wh
 
 Required behavior:
 
-1. Start from an empty data directory, apply the network options, connect only to `{peer}` using the version 1 transport (specification chapter 14), and synchronize.
+1. Start from an empty data directory, apply the network options, connect only to `{peer}` using the version 1 transport (specification chapter 14), and synchronize. When the runner is given `--v2transport`, the peer also accepts the BIP324 version 2 transport, and the node may use either.
 2. When the active tip equals `{stop_at}`, write one line to standard output and exit with status 0:
    `{"event":"stopped","tip":hash,"height":integer,"hash_serialized_3":hash}`
+   `hash_serialized_3` (specification chapter 15) may be left out by a node that keeps no UTXO set. The runner then reports the chain at level 2 (UTXO hash not compared), which fails the run only with `--fail-on-level2`. When present, it must equal Bitcoin Core's.
 3. When the node cannot reach `{stop_at}` (the peer does not offer it, sends a block the node finds invalid, stops answering, or nothing changes for a while), exit with a non-zero status, after writing at most one line `{"event":"error","message":string,"tip":hash,"height":integer}` (`tip` and `height` optional). It must not wait forever: the runner kills the node after its `--node-timeout` and counts that as a failure.
 4. Progress lines `{"event":"tip","tip":hash,"height":integer}` may be written at any time. Lines whose `event` starts with `x_` are implementation extensions, which the runner ignores. No other line on standard output may start with `{`.
 
