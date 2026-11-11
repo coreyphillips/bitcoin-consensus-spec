@@ -11,6 +11,7 @@ mod derived;
 mod flags;
 mod harness;
 mod hex;
+mod known;
 mod p2p;
 mod script;
 mod suites;
@@ -44,6 +45,11 @@ RUN OPTIONS:
                       consensus-only flags, instead of the derived expectations
   --verbose           Print every failure and level 2 mismatch with its row, flags and values
   --fail-on-level2    Also exit non-zero when error identifiers or corpus UTXO hashes differ
+  --known-failures FILE
+                      Checks the implementation is known to fail, one \"<suite> <location>\" per
+                      line (# starts a comment line). A failure the file names is counted as
+                      known, not failed; an entry that names no failure, in a suite that ran,
+                      fails the run
   --vectors DIR       Vector directory (default: conformance/vectors)
   --derived DIR       Derived vector directory (default: <vectors>/derived)
   --timeout SECS      Seconds to wait for each harness response (default: 120)
@@ -85,6 +91,7 @@ struct Options {
     raw: bool,
     verbose: bool,
     fail_on_level2: bool,
+    known_failures: Option<PathBuf>,
     vectors: Option<PathBuf>,
     derived: Option<PathBuf>,
     timeout: Duration,
@@ -122,6 +129,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         raw: false,
         verbose: false,
         fail_on_level2: false,
+        known_failures: None,
         vectors: None,
         derived: None,
         timeout: Duration::from_secs(120),
@@ -175,6 +183,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--raw" => o.raw = true,
             "--verbose" | "-v" => o.verbose = true,
             "--fail-on-level2" => o.fail_on_level2 = true,
+            "--known-failures" => o.known_failures = Some(PathBuf::from(value(&mut i, a)?)),
             "--vectors" => o.vectors = Some(PathBuf::from(value(&mut i, a)?)),
             "--derived" => o.derived = Some(PathBuf::from(value(&mut i, a)?)),
             "--timeout" => o.timeout = secs(value(&mut i, a)?, a)?,
@@ -355,6 +364,11 @@ fn cmd_run(opts: &Options) -> ExitCode {
     if selected.is_empty() {
         return usage_error("no suite selected");
     }
+    if let Some(path) = &opts.known_failures {
+        if let Err(e) = known::load(path, &all) {
+            return usage_error(&e);
+        }
+    }
     if selected.contains(&"headers-live") && opts.peer.is_none() {
         return usage_error("headers-live needs --peer HOST[:PORT]");
     }
@@ -466,8 +480,8 @@ fn cmd_run(opts: &Options) -> ExitCode {
 }
 
 /// Prints the per-suite table and each suite's detail lines. Returns true when any suite failed
-/// at level 1 (level 0 for the corpus), could not run, or has checks the harness does not
-/// support.
+/// at level 1 (level 0 for the corpus), could not run, has checks the harness does not support,
+/// or when a `--known-failures` entry of a suite that ran named no failure.
 fn print_report(results: &[(&str, Stats, Duration)], mode: &str) -> bool {
     println!();
     println!(
@@ -528,6 +542,36 @@ fn print_report(results: &[(&str, Stats, Duration)], mode: &str) -> bool {
             for line in &s.details {
                 println!("{line}");
             }
+        }
+    }
+    let ran: Vec<&str> = results.iter().map(|r| r.0).collect();
+    if let Some((path, stale)) = known::stale(&ran) {
+        let counts: Vec<String> = results
+            .iter()
+            .filter(|r| r.1.known > 0)
+            .map(|r| format!("{} {}", r.0, r.1.known))
+            .collect();
+        println!();
+        println!(
+            "known failures ({}): {}",
+            path.display(),
+            if counts.is_empty() {
+                "none failed".to_string()
+            } else {
+                format!("{} (counted in cases, not in failed)", counts.join(", "))
+            }
+        );
+        for s in &stale {
+            println!(
+                "STALE    [{}] {}: {}:{} names no failure of this run; remove it",
+                s.suite,
+                s.location,
+                path.display(),
+                s.line
+            );
+        }
+        if !stale.is_empty() {
+            any_failure = true;
         }
     }
     println!();

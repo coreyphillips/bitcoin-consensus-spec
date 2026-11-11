@@ -103,6 +103,31 @@ headers-live and interop suites.
 (0-based index into the source file's top-level array, comment rows included), the input or
 witness, the flags, expected and actual values, and the row text.
 
+### Known failures
+
+An implementation that has a divergence it has accepted, or that cannot run a scenario (for
+example, it lacks a network option the scenario needs), can still use the runner as a regression
+gate: `--known-failures FILE` names the checks it is known to fail. Each line that is not blank and
+does not start with `#` is `<suite> <location>`, where the location is what `FAIL` prints between
+`[suite]` and the colon, or its start up to a space:
+
+```text
+# BIP340 messages that are not 32 bytes: no API for them.
+bip340 row 15
+# Equal-work tie-break after invalidateblock.
+corpus feature_block.node0 check 88
+# The corpus names a file's replay errors, which fail the file once, "<file> errors".
+corpus mining_basic.node0 errors
+interop chain feature_spec_pitfalls.node2
+```
+
+`row 15` names `row 15 (message of size 0 ...)` and not `row 150`. A failure the file names is
+printed as `KNOWN` with `--verbose`, counted in `cases` but not in `failed`, and does not fail the
+run; the line below the table counts them per suite. Every other failure fails the run as before.
+An entry that names no failure, in a suite that ran, is printed as `STALE` and fails the run, so the
+list shrinks as the implementation is fixed and never hides a check that passes. Entries of suites
+that did not run are ignored, so one file can serve runs that select different suites.
+
 ## Generating derived vectors
 
 ```sh
