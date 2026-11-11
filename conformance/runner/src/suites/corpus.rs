@@ -17,7 +17,7 @@
 //! Level 0 at normative checks is required. Non-normative level 0 checks, level 1 and level 2 are
 //! reported separately. A harness error (`ok: false`, a crash) or a corrupt file is a failure.
 //! `--known-failures` names a level 0 failure as `<file> check <n>` and a file's errors as
-//! `<file> errors`.
+//! `<file> errors from event <n>`, `<n>` being the event whose replay recorded the first one.
 
 use crate::check::{shorten, Ctx};
 use crate::hex;
@@ -207,8 +207,29 @@ pub struct FileResult {
     pub restarts_skipped: u64,
     pub redelivered: u64,
     pub errors: Vec<String>,
+    /// The 0-based index of the event whose replay recorded the first error; none for a file
+    /// that could not be read.
+    pub first_error_event: Option<usize>,
     pub outcomes: BTreeMap<String, u64>,
     pub seconds: f64,
+}
+
+impl FileResult {
+    /// Records `idx` as the event of the first error when this is the first time there is one.
+    /// Called once each event's replay is over.
+    fn note_first_error(&mut self, idx: usize) {
+        if self.first_error_event.is_none() && !self.errors.is_empty() {
+            self.first_error_event = Some(idx);
+        }
+    }
+
+    /// How `--known-failures` names this file's errors.
+    pub fn errors_location(&self) -> String {
+        match self.first_error_event {
+            Some(idx) => format!("{} errors from event {idx}", self.name),
+            None => format!("{} errors", self.name),
+        }
+    }
 }
 
 fn short(hash: &str) -> String {
@@ -331,6 +352,10 @@ pub fn replay_file(ctx: &mut Ctx, path: &Path, restart_shortcut: bool) -> FileRe
     };
 
     for (idx, ev) in events.iter().enumerate() {
+        // Here and not after the match: its arms can `continue`.
+        if let Some(prev) = idx.checked_sub(1) {
+            r.note_first_error(prev);
+        }
         if r.errors.len() > 20 {
             r.errors.push("too many errors, replay stopped".into());
             break;
@@ -565,6 +590,9 @@ pub fn replay_file(ctx: &mut Ctx, path: &Path, restart_shortcut: bool) -> FileRe
                 .push(format!("event {idx}: unknown event type {other:?}")),
         }
     }
+    if let Some(last) = events.len().checked_sub(1) {
+        r.note_first_error(last);
+    }
     if ctx.verbose && printed[0] > MAX_MISMATCH_LINES {
         println!(
             "         [corpus] {name}: {} more level 0 mismatches not shown",
@@ -632,10 +660,20 @@ pub fn run(ctx: &mut Ctx, paths: &[PathBuf], restart_shortcut: bool) -> Result<(
         ctx.stats.known += fr.l0_known;
         if !fr.errors.is_empty() {
             ctx.stats.cases += 1;
-            if crate::known::take("corpus", &format!("{} errors", fr.name)) {
+            let loc = fr.errors_location();
+            let known = crate::known::take("corpus", &loc);
+            if known {
                 ctx.stats.known += 1;
             } else {
                 ctx.stats.failed += 1;
+            }
+            if ctx.verbose {
+                println!(
+                    "{:<8} [corpus] {loc}: {} errors, the first: {}",
+                    if known { "KNOWN" } else { "FAIL" },
+                    fr.errors.len(),
+                    fr.errors[0]
+                );
             }
         }
         ctx.stats.l2_checked += fr.l2;
@@ -700,6 +738,98 @@ pub fn run(ctx: &mut Ctx, paths: &[PathBuf], restart_shortcut: bool) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::Harness;
+    use std::io::Write;
+    use std::time::Duration;
+
+    /// A harness that refuses a `chain_reset` whose options carry `"refuse":true`, answers
+    /// `chain_tip` with tip `t` at height 0, and fails every other chain op as internal.
+    const STUB: &str = r#"while IFS= read -r line; do
+  id=${line#*'"id":'}; id=${id%%[,\}]*}
+  case "$line" in
+    *'"op":"info"'*) printf '{"id":%s,"ok":true,"name":"stub","version":"0","spec_version":"0","ops":["info","chain_reset","chain_tip"]}\n' "$id";;
+    *'"refuse":true'*) printf '{"id":%s,"ok":false,"error":"bad_request","message":"refused"}\n' "$id";;
+    *'"op":"chain_reset"'*) printf '{"id":%s,"ok":true}\n' "$id";;
+    *'"op":"chain_tip"'*) printf '{"id":%s,"ok":true,"tip":"t","height":0}\n' "$id";;
+    *) printf '{"id":%s,"ok":false,"error":"internal","message":"stub"}\n' "$id";;
+  esac
+done"#;
+
+    fn replay(name: &str, events: &[Value]) -> FileResult {
+        let dir = std::env::temp_dir().join(format!("bcs-corpus-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stub = dir.join(format!("{name}.sh"));
+        std::fs::write(&stub, STUB).unwrap();
+        let path = dir.join(format!("{name}.jsonl.gz"));
+        let mut gz = flate2::write::GzEncoder::new(
+            std::fs::File::create(&path).unwrap(),
+            flate2::Compression::fast(),
+        );
+        writeln!(
+            gz,
+            "{}",
+            json!({"type": "meta", "format": FORMAT, "format_version": FORMAT_VERSION})
+        )
+        .unwrap();
+        for ev in events {
+            writeln!(gz, "{ev}").unwrap();
+        }
+        gz.finish().unwrap();
+        let mut harness =
+            Harness::start(&format!("sh '{}'", stub.display()), Duration::from_secs(10)).unwrap();
+        let mut ctx = Ctx::new(&mut harness, "corpus", false);
+        let r = replay_file(&mut ctx, &path, false);
+        let _ = std::fs::remove_dir_all(&dir);
+        r
+    }
+
+    #[test]
+    fn errors_are_named_from_the_first_event_that_recorded_one() {
+        let reset = json!({"type": "reset", "network": "regtest"});
+        let check = |n: u64| json!({"type": "check", "n": n, "tip": "t", "height": 0});
+        let refused_restart = json!({"type": "restart", "options": {"refuse": true}});
+        let invalidate = json!({"type": "invalidate", "hash": "ab", "now": 7});
+
+        let clean = replay("clean", &[reset.clone(), check(1)]);
+        assert!(clean.errors.is_empty());
+        assert_eq!(clean.first_error_event, None);
+
+        // A restart whose chain_reset is refused ends its event with `continue`.
+        let r = replay(
+            "late",
+            &[reset.clone(), check(1), refused_restart.clone(), check(2)],
+        );
+        assert_eq!(r.first_error_event, Some(2), "{:?}", r.errors);
+        assert_eq!(r.errors_location(), "late errors from event 2");
+        assert!(
+            crate::known::Known::parse(Path::new("k"), "corpus late errors", &["corpus"])
+                .unwrap()
+                .take("corpus", &r.errors_location())
+        );
+
+        // An error before the refused restart moves the location, so an entry for the
+        // restart no longer covers the file.
+        let r = replay(
+            "early",
+            &[reset, invalidate, check(1), refused_restart, check(2)],
+        );
+        assert_eq!(r.first_error_event, Some(1), "{:?}", r.errors);
+        assert_eq!(r.errors.len(), 2);
+        assert!(!crate::known::Known::parse(
+            Path::new("k"),
+            "corpus early errors from event 3",
+            &["corpus"]
+        )
+        .unwrap()
+        .take("corpus", &r.errors_location()));
+
+        // The last event recording the first error.
+        let r = replay(
+            "last",
+            &[json!({"type": "reset", "network": "regtest", "options": {"refuse": true}})],
+        );
+        assert_eq!(r.errors_location(), "last errors from event 0");
+    }
 
     #[test]
     fn event_requests() {
