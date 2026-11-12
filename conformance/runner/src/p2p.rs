@@ -1,5 +1,6 @@
 //! A minimal peer-to-peer client (version 1 transport, specification chapter 14): handshake,
-//! `ping`/`pong`, `getheaders`/`headers`. Used by the headers-live suite.
+//! `ping`/`pong`, `getheaders`/`headers`. Used by the headers-live suite; the message helpers also
+//! serve the peer-sync suite (`listen.rs`).
 
 use crate::hex;
 use crate::tx::{sha256d, write_compact_size};
@@ -97,7 +98,7 @@ fn invalid(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.into())
 }
 
-fn read_compact_size(data: &[u8], pos: &mut usize) -> io::Result<u64> {
+pub fn read_compact_size(data: &[u8], pos: &mut usize) -> io::Result<u64> {
     let take = |pos: &mut usize, n: usize| -> io::Result<u64> {
         if data.len() < *pos + n {
             return Err(invalid("truncated message"));
@@ -115,6 +116,24 @@ fn read_compact_size(data: &[u8], pos: &mut usize) -> io::Result<u64> {
         255 => take(pos, 8),
         n => Ok(n),
     }
+}
+
+/// A `version` payload: protocol 70016, the given services and start height, no relay.
+pub fn version_payload(services: u64, start_height: i32) -> Vec<u8> {
+    let mut version = Vec::new();
+    version.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
+    version.extend_from_slice(&services.to_le_bytes());
+    version.extend_from_slice(&unix_now().to_le_bytes());
+    version.extend_from_slice(&[0u8; 26]); // receiver: services, address, port
+    version.extend_from_slice(&[0u8; 26]); // sender
+    let nonce = sha256d(&format!("{:?}{}", Instant::now(), std::process::id()).into_bytes());
+    version.extend_from_slice(&nonce[..8]);
+    let agent = format!("/bcs-conformance:{}/", env!("CARGO_PKG_VERSION"));
+    write_compact_size(&mut version, agent.len() as u64);
+    version.extend_from_slice(agent.as_bytes());
+    version.extend_from_slice(&start_height.to_le_bytes());
+    version.push(0); // relay: no transaction announcements
+    version
 }
 
 /// A connected peer after a completed handshake.
@@ -141,20 +160,7 @@ impl Peer {
             user_agent: String::new(),
             start_height: -1,
         };
-        let mut version = Vec::new();
-        version.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
-        version.extend_from_slice(&NODE_WITNESS.to_le_bytes());
-        version.extend_from_slice(&unix_now().to_le_bytes());
-        version.extend_from_slice(&[0u8; 26]); // receiver: services, address, port
-        version.extend_from_slice(&[0u8; 26]); // sender
-        let nonce = sha256d(&format!("{:?}{}", Instant::now(), std::process::id()).into_bytes());
-        version.extend_from_slice(&nonce[..8]);
-        let agent = format!("/bcs-conformance:{}/", env!("CARGO_PKG_VERSION"));
-        write_compact_size(&mut version, agent.len() as u64);
-        version.extend_from_slice(agent.as_bytes());
-        version.extend_from_slice(&0i32.to_le_bytes()); // start height
-        version.push(0); // relay: no transaction announcements
-        peer.send("version", &version)?;
+        peer.send("version", &version_payload(NODE_WITNESS, 0))?;
 
         let deadline = Instant::now() + timeout;
         let (mut got_version, mut got_verack) = (false, false);

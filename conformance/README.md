@@ -82,7 +82,7 @@ the harness lists at least one needed operation; checks needing an unlisted oper
 as unsupported, and unsupported checks (or a suite with no supported operation) fail the run unless
 the suite is left out with `--suite` or `--exclude` (`PROTOCOL.md` section 6). A plain run selects
 every suite marked `default` by `bcs-conformance suites`: the vector suites, `custom` and `corpus`.
-`headers-live` and `interop` need extra arguments and run only when named. Options: `--vectors DIR`
+`headers-live`, `interop` and `peer-sync` need extra arguments and run only when named. Options: `--vectors DIR`
 (default `conformance/vectors`), `--derived DIR` (default `<vectors>/derived`), `--timeout SECS` per
 response (default 120; a harness that dies or stalls is restarted, at most 5 times),
 `--fail-on-level2`.
@@ -119,6 +119,8 @@ corpus feature_block.node0 check 88
 # The corpus names a file's replay errors, which fail the file once, "<file> errors".
 corpus mining_basic.node0 errors
 interop chain feature_spec_pitfalls.node2
+# A block the node accepts during initial sync although Core rejects it.
+peer-sync feature_spec_pitfalls.node0 ibd 149b7d9071007e7058afe5fbfff577b06a07131dc8a24d884435fe781fd7f3fb
 ```
 
 `row 15` names `row 15 (message of size 0 ...)` and not `row 150`. A failure the file names is
@@ -314,3 +316,77 @@ activation heights cannot accept that chain over P2P; or its final chain has blo
 two hours after the current time, which a live node with a real clock rejects. Data directories of
 failing chains are kept (their path is printed); `--keep-temp` keeps all of them. The node's
 standard error goes to `node-stderr.log` there, and its tail is shown on failure.
+
+## Peer-sync suite
+
+```sh
+B=/path/to/bitcoind
+target/release/bcs-conformance peer-sync --bitcoind "$B" --sync-node \
+  "python3 conformance/recorder/core_sync_node.py --bitcoind $B --network {network} --datadir {datadir} --peer {peer} --options {options}"
+```
+
+The interop suite gives a node only valid blocks, and the corpus suite gives an implementation its
+blocks through its harness, one call at a time. Neither reaches the code a node runs when it
+validates blocks it downloaded itself, which may batch them (rbitcoin-org/rbitcoin#1537 was a
+consensus split in that code). In this suite the runner is the node's only peer and serves each
+scenario's blocks, including the ones Bitcoin Core rejects, through the node's own
+synchronization. The node command (`--sync-node`, `PROTOCOL.md` section 5.1) is given
+`{network}`, `{datadir}`, `{peer}` (the runner) and `{options}`; it has no `{stop_at}`, because the
+node answers tip requests on its standard input and stops when told to.
+
+**Cases.** For each scenario (`--corpus`, default `vectors/blocks`; the interop suite's two
+exclusion rules apply), the final chain is the interop suite's. Every other recorded block whose
+parent is on it is a candidate. A fresh `bitcoind -regtest` with the scenario's options gets the
+final chain with `submitblock`, and while each chain block is its tip, every candidate child of it
+goes to `getblocktemplate` in proposal mode: Core's checks for a block on its tip, all but proof of
+work. A candidate that Core rejects in every recorded byte variant is a case, with Core's reason;
+candidates Core accepts (valid side branches) and the rest are left out and counted in the
+details. The corpus has 2,922 candidates; feature_taproot alone has 2,577.
+
+**Serving.** The runner accepts the version 1 transport and BIP324 version 2 (through the
+`bip324` crate; the specification does not define it), answers `version` (with `NODE_NETWORK` and
+`NODE_WITNESS`), `ping` and `getheaders` (from the chain it has announced, ending with the current
+case's header; a header Core rejects goes in a `headers` message of its own), and answers
+`getdata` for announced blocks, `notfound` for anything else. Requested blocks go out in bursts,
+all of them back to back in chain order once the node has sent no `getdata` for 50 ms. The burst
+holding a case's parent also waits, up to 2 seconds, for the node to ask for the case block, which
+then goes last, so the parent and the rejected block reach the node together at the end of a run
+of blocks, as in initial block download.
+
+**Checks.** Once every chain block up to the parent is delivered, and the case block too (or the
+node has not asked for it within 2 seconds of having the rest), the runner sends `ping`, waits for
+the `pong`, and asks for the tip. It must be the parent. When the answer is anything else, and in
+the ibd mode for every answer, the runner keeps serving, asks again once the node has requested
+no chain block for a second, and decides on two answers in a row that agree with no chain block
+requested between them, all on one connection. A node that drops downloaded blocks after a
+rejection and fetches them again, or drops the runner and connects again, is judged on where it
+ends; a node asking again for a rejected block (Core does, for a block
+it dropped as mutated) is still served.
+
+Each scenario runs in two modes:
+
+- **follow**: one node takes every case in chain order (the chain up to the parent announced with
+  unsolicited `headers` messages, then the case header), then the rest of the chain, after which
+  its tip must be the final tip and, after `{"op":"stop"}`, its `stopped` line must name it and it
+  must exit with status 0. A failed check ends the node and the next check starts a fresh one.
+  Locations: `<scenario> follow <block hash>` and `<scenario> follow final tip`.
+- **ibd**: a fresh node per case, offered the chain up to the parent and the case block as its
+  peer's best chain from the start, so the rejected block ends the node's initial block download.
+  `--ibd-limit N` (default 32; `all` for every case) bounds the cases per scenario, evenly spaced;
+  the cases left out are counted as a stated rule (the follow mode still checks them). Location:
+  `<scenario> ibd <block hash>`.
+
+A check that fails because the node did not answer (no connection, no `pong`, no tip, an `error`
+line) counts like a wrong tip; after three such checks in a row the rest of the mode is reported as
+`<scenario> <mode> not run`. The detail line of each scenario shows the cases, each mode's
+passes, the nodes started, the transports and what was left out. `--node-timeout` (default 600
+seconds) bounds each wait for the node; a node that requests nothing while blocks it needs are
+missing fails after 120 seconds. A node gets the same case block at most once a second: Core asks
+again, as soon as it has it, for a block that fails its context-free checks (a peer may have sent a
+damaged copy), for as long as that block is on its best header chain. The data directory of a node with a failed
+check is kept (the scenario's path is printed); `--keep-temp` keeps all of them.
+
+`recorder/core_sync_node.py` runs Bitcoin Core v32.1 itself as the node (`-connect` to the runner:
+a manual peer, which Core never disconnects for an invalid block), which shows that the cases and
+the serving are right. The reference node cannot take this suite: its synchronization loop
+(specification chapter 14 section 14.5) stops at the first invalid block, by design.

@@ -22,6 +22,7 @@ pub mod corpus;
 pub mod custom;
 pub mod headers_live;
 pub mod interop;
+pub mod peer_sync;
 pub mod script_assets;
 pub mod script_tests;
 pub mod sighash;
@@ -55,6 +56,7 @@ pub const SUITES: &[SuiteInfo] = &[
     SuiteInfo { name: "corpus", what: "vectors/blocks/*.jsonl.gz: block scenarios recorded from Core's functional tests (CORPUS.md)", default: true, needs_harness: true },
     SuiteInfo { name: "headers-live", what: "the full header chain of a live peer (--peer, --network), fed to the harness", default: false, needs_harness: true },
     SuiteInfo { name: "interop", what: "the implementation as a live node next to a regtest bitcoind (--bitcoind, --node)", default: false, needs_harness: false },
+    SuiteInfo { name: "peer-sync", what: "the implementation as a live node synchronizing from the runner, which serves every corpus block Core rejects (--bitcoind, --sync-node)", default: false, needs_harness: false },
 ];
 
 pub fn suite(name: &str) -> Option<&'static SuiteInfo> {

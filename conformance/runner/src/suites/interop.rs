@@ -117,7 +117,7 @@ fn final_chain(file: &Path) -> Result<FinalChain, String> {
     })
 }
 
-fn bitcoind_args(options: &Value) -> Result<Vec<String>, String> {
+pub fn bitcoind_args(options: &Value) -> Result<Vec<String>, String> {
     let mut args = Vec::new();
     let Some(obj) = options.as_object() else {
         return Err("options is not an object".into());

@@ -259,7 +259,7 @@ This operation is optional. A harness for an implementation that keeps no UTXO s
 
 ## 5. Live node contract
 
-The interop suite runs the implementation as a real node next to Bitcoin Core. For that suite the user supplies a node command template. The runner substitutes these placeholders:
+The interop suite runs the implementation as a real node next to Bitcoin Core (the peer-sync suite has its own contract, section 5.1). For that suite the user supplies a node command template. The runner substitutes these placeholders:
 
 | Placeholder | Value |
 |---|---|
@@ -279,6 +279,32 @@ Required behavior:
    `hash_serialized_3` (specification chapter 15) may be left out by a node that keeps no UTXO set. The runner then reports the chain at level 2 (UTXO hash not compared), which fails the run only with `--fail-on-level2`. When present, it must equal Bitcoin Core's.
 3. When the node cannot reach `{stop_at}` (the peer does not offer it, sends a block the node finds invalid, stops answering, or nothing changes for a while), exit with a non-zero status, after writing at most one line `{"event":"error","message":string,"tip":hash,"height":integer}` (`tip` and `height` optional). It must not wait forever: the runner kills the node after its `--node-timeout` and counts that as a failure.
 4. Progress lines `{"event":"tip","tip":hash,"height":integer}` may be written at any time. Lines whose `event` starts with `x_` are implementation extensions, which the runner ignores. No other line on standard output may start with `{`.
+
+## 5.1 Peer-sync node contract
+
+The peer-sync suite also runs the implementation as a real node, but the runner itself is its only peer. It serves the blocks of each corpus scenario, including blocks Bitcoin Core rejects, through the node's own synchronization, and asks the node for its tip along the way. The user supplies a second node command template, `--sync-node`:
+
+| Placeholder | Value |
+|---|---|
+| `{network}` | `regtest` |
+| `{datadir}` | An empty directory for the node's data |
+| `{peer}` | `127.0.0.1:port` of the runner |
+| `{options}` | As in section 5 |
+
+There is no `{stop_at}`: the runner says when to stop, and refuses a template that has one.
+
+Required behavior:
+
+1. Start from an empty data directory, apply the network options, connect only to `{peer}`, and synchronize. The runner accepts the version 1 transport and the BIP324 version 2 transport. Keep running when the peer sends a block the node finds invalid. A node that disconnects the peer for it must connect to `{peer}` again; the runner keeps listening.
+2. Read requests from standard input, one JSON object per line:
+   - `{"op":"tip","id":n}`: once every block the node has received has been processed (connected, or found invalid), write `{"event":"tip","id":n,"tip":hash,"height":integer}`. The runner sends `ping` and waits for the `pong` before each request, so every block it sent before is received.
+   - `{"op":"stop"}`: write `{"event":"stopped","tip":hash,"height":integer,"hash_serialized_3":hash}` (`hash_serialized_3` optional, as in section 5) and exit with status 0.
+   - When standard input closes, exit. The runner starts the command in a process group of its own and gives it 10 seconds; then every process left in the group gets SIGTERM, and 10 seconds later SIGKILL.
+3. Standard output follows section 5, item 4. A `tip` line without `id` is a progress line. An `error` line fails the check in progress.
+
+Corpus blocks carry the times they were recorded, usually days or more before the run. A node whose "initial block download" state depends on the age of its tip (Bitcoin Core's `-maxtipage`, 24 hours by default) stays in that state for the whole scenario, so a node command must not wait for it to clear before answering, unless it raises that limit.
+
+A node whose answers can run ahead of its validation still gets a fair verdict: when an answer is not the expected tip, and in the suite's ibd mode for every answer, the runner keeps serving requests and asks again once the node has requested no block of the chain for one second, and it judges the node by two answers in a row that agree with no block of the chain requested between them. The quiet second and both answers must fall on one connection: a node that drops the runner and connects again is still synchronizing.
 
 ## 6. Versioning
 

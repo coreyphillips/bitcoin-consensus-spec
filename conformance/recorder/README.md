@@ -63,6 +63,10 @@ It sets `setmocktime(now)` before each event and uses `submitblock`, `submithead
 
 `replay.py` feeds corpus files to any harness command (`--harness "..."`), maps every event as `../CORPUS.md` section 4 describes, and scores levels 0, 1 and 2.
 
+## Core sync node
+
+`core_sync_node.py` is the node command of the peer-sync suite (`../PROTOCOL.md` section 5.1) for Bitcoin Core itself: it starts `bitcoind -regtest` on the given data directory with `-connect` to the runner (a manual peer, which Core never disconnects for an invalid block) and the scenario's options, and answers tip and stop requests over RPC. Core handles one peer's messages in order and connects a block before it reads the next message, so after the runner's `pong` every block sent before is processed. It runs on the host, with the bitcoind binary given by `--bitcoind` (see `../README.md`, peer-sync suite).
+
 ## Other files
 
 - `blocklib.py`: block and transaction codec, merkle roots, `IsBlockMutated`, `CheckBlock`, proof of work, mirroring v32.1.
