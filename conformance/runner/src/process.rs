@@ -3,10 +3,11 @@
 //! process group of its own, so ending one reaches every process it started: a wrapper killed
 //! while its node runs on leaves nothing behind.
 //!
-//! A process group of its own is also out of the terminal's reach, so a Ctrl-C would no longer
-//! stop it. While a group runs it is registered, and SIGINT, SIGTERM or SIGHUP to the runner sends
-//! SIGTERM to every registered group before the runner exits by the same signal. A signal the
-//! runner was started ignoring (a shell's background job ignores SIGINT) stays ignored.
+//! A process group of its own is also out of the terminal's reach, so a Ctrl-C or Ctrl-\ would no
+//! longer stop it. While a group runs it is registered, and SIGINT, SIGQUIT, SIGTERM or SIGHUP to
+//! the runner sends SIGTERM to every registered group before the runner exits by the same signal.
+//! A signal the runner was started ignoring (a shell's background job ignores SIGINT and SIGQUIT)
+//! stays ignored.
 
 use std::io;
 use std::os::unix::process::CommandExt;
@@ -99,7 +100,7 @@ fn install_handlers() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         let handler: extern "C" fn(libc::c_int) = on_signal;
-        for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+        for signal in [libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGHUP] {
             // SAFETY: the handler only touches atomics and async-signal-safe calls.
             let previous = unsafe { libc::signal(signal, handler as libc::sighandler_t) };
             if previous == libc::SIG_IGN {
