@@ -62,7 +62,7 @@ Every expectation above comes from Bitcoin Core v32.1 itself: the "derived" vect
 
 ## Quick start
 
-Requirements: a Rust toolchain. The reference has no dependencies outside the Rust standard library; the test runner uses a few crates from crates.io (JSON, gzip, SHA-256, libsecp256k1, BIP324). The live suites also need network access to Bitcoin Core peers, and `interop` and `peer-sync` need a `bitcoind` v32.1 binary.
+Requirements: a Rust toolchain on Linux, macOS or another Unix-like system (WSL on Windows). The test runner starts harnesses and nodes with `sh` and stops them with Unix signals, so it does not build for Windows. The reference has no dependencies outside the Rust standard library; the test runner uses a few crates from crates.io (JSON, gzip, SHA-256, libsecp256k1, BIP324). The live suites also need network access to Bitcoin Core peers, and `interop` and `peer-sync` need a `bitcoind` v32.1 binary.
 
 ```sh
 # Build the specification's code and run its known-answer tests.
