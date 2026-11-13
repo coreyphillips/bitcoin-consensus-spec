@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How many times the runner restarts a harness that died before giving up.
 const MAX_RESTARTS: u32 = 5;
@@ -33,6 +33,10 @@ pub enum CallError {
     Protocol(String),
     /// The harness exited, closed its output or did not answer in time.
     Died(String),
+    /// A process in the harness's process group is stopped, most likely by a read of the
+    /// terminal ([`crate::process::stopped`]). A restarted harness would stop again, so the
+    /// harness is ended for good.
+    Stopped(String),
 }
 
 impl std::fmt::Display for CallError {
@@ -43,6 +47,7 @@ impl std::fmt::Display for CallError {
             CallError::Internal(m) => write!(f, "internal: {m}"),
             CallError::Protocol(m) => write!(f, "protocol violation: {m}"),
             CallError::Died(m) => write!(f, "harness died: {m}"),
+            CallError::Stopped(m) => write!(f, "the harness command {m}"),
         }
     }
 }
@@ -59,6 +64,8 @@ pub struct Harness {
     next_id: u64,
     timeout: Duration,
     restarts: u32,
+    /// Set once a call found the harness stopped: every later call fails the same way.
+    stopped: Option<String>,
     pub info: Info,
 }
 
@@ -107,6 +114,7 @@ impl Harness {
             next_id: 1,
             timeout,
             restarts: 0,
+            stopped: None,
             info: Info {
                 name: String::new(),
                 version: String::new(),
@@ -115,7 +123,16 @@ impl Harness {
                 raw: Map::new(),
             },
         };
-        h.info = h.fetch_info().map_err(|e| format!("info failed: {e}"))?;
+        match h.fetch_info() {
+            Ok(info) => h.info = info,
+            Err(e) => {
+                if let CallError::Stopped(_) = e {
+                    // It cannot exit when its input closes, so Drop's wait would be wasted.
+                    h.kill();
+                }
+                return Err(format!("info failed: {e}"));
+            }
+        }
         Ok(h)
     }
 
@@ -148,26 +165,43 @@ impl Harness {
 
     /// Sends one request and returns the result fields of a successful response. `body` is the
     /// list of request fields after `id` and `op`, already JSON encoded (for example
-    /// `"tx":"00","index":0`), or empty. A harness that died is restarted for the next call.
+    /// `"tx":"00","index":0`), or empty. A harness that died is restarted for the next call; one
+    /// that was stopped is not.
     pub fn call(&mut self, op: &str, body: &str) -> Result<Map<String, Value>, CallError> {
+        if let Some(m) = &self.stopped {
+            return Err(CallError::Stopped(m.clone()));
+        }
         let r = self.call_once(op, body);
-        if let Err(CallError::Died(_)) = &r {
-            self.kill();
-            if self.restarts < MAX_RESTARTS {
-                self.restarts += 1;
-                eprintln!(
-                    "bcs-conformance: restarting harness (restart {} of at most {MAX_RESTARTS})",
-                    self.restarts
-                );
-                if let Ok(p) = spawn(&self.command) {
-                    self.process = Some(p);
-                    if let Ok(info) = self.fetch_info() {
-                        self.info = info;
+        match &r {
+            Err(CallError::Died(_)) => {
+                self.kill();
+                if self.restarts < MAX_RESTARTS {
+                    self.restarts += 1;
+                    eprintln!(
+                        "bcs-conformance: restarting harness (restart {} of at most {MAX_RESTARTS})",
+                        self.restarts
+                    );
+                    if let Ok(p) = spawn(&self.command) {
+                        self.process = Some(p);
+                        match self.fetch_info() {
+                            Ok(info) => self.info = info,
+                            Err(CallError::Stopped(m)) => self.give_up(m),
+                            Err(_) => {}
+                        }
                     }
                 }
             }
+            Err(CallError::Stopped(m)) => self.give_up(m.clone()),
+            _ => {}
         }
         r
+    }
+
+    /// Ends a stopped harness for good.
+    fn give_up(&mut self, why: String) {
+        eprintln!("bcs-conformance: the harness command {why}");
+        self.stopped = Some(why);
+        self.kill();
     }
 
     fn call_once(&mut self, op: &str, body: &str) -> Result<Map<String, Value>, CallError> {
@@ -188,21 +222,33 @@ impl Harness {
             .write_all(line.as_bytes())
             .and_then(|_| process.stdin.flush())
             .map_err(|e| CallError::Died(format!("cannot write request: {e}")))?;
-        let text = match process.lines.recv_timeout(timeout) {
-            Ok(Ok(text)) => text,
-            Ok(Err(e)) => return Err(CallError::Died(format!("cannot read response: {e}"))),
-            Err(RecvTimeoutError::Timeout) => {
-                return Err(CallError::Died(format!(
-                    "no response within {} s",
-                    timeout.as_secs()
-                )))
-            }
-            Err(RecvTimeoutError::Disconnected) => {
-                let status = process.child.try_wait().ok().flatten();
-                return Err(CallError::Died(match status {
-                    Some(s) => format!("harness exited ({s})"),
-                    None => "harness closed its standard output".into(),
-                }));
+        let deadline = Instant::now() + timeout;
+        let text = loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match process
+                .lines
+                .recv_timeout(left.min(crate::process::STOP_CHECK))
+            {
+                Ok(Ok(text)) => break text,
+                Ok(Err(e)) => return Err(CallError::Died(format!("cannot read response: {e}"))),
+                Err(RecvTimeoutError::Timeout) => {
+                    if let Some(stop) = crate::process::stopped(&process.child) {
+                        return Err(CallError::Stopped(stop.to_string()));
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(CallError::Died(format!(
+                            "no response within {} s",
+                            timeout.as_secs()
+                        )));
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    let status = process.child.try_wait().ok().flatten();
+                    return Err(CallError::Died(match status {
+                        Some(s) => format!("harness exited ({s})"),
+                        None => "harness closed its standard output".into(),
+                    }));
+                }
             }
         };
         let value: Value = serde_json::from_str(text.trim_end()).map_err(|e| {
@@ -268,5 +314,41 @@ impl Drop for Harness {
             // Then whatever is left, the harness itself or a process it started.
             crate::process::end(&mut child);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A harness stopped before it answers `info` fails the start at once, not after the timeout.
+    #[test]
+    fn start_fails_at_once_when_the_harness_is_stopped() {
+        let started = Instant::now();
+        let e = Harness::start("kill -STOP $$", Duration::from_secs(60))
+            .err()
+            .expect("start succeeded");
+        assert!(
+            e.starts_with("info failed: the harness command was stopped"),
+            "{e}"
+        );
+        assert!(e.contains("SIGSTOP"), "{e}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    /// A harness stopped after `info` is not restarted, and later calls fail without waiting.
+    #[test]
+    fn a_stopped_harness_is_not_restarted() {
+        let mut h = Harness::start(
+            r#"read l; echo '{"id":1,"ok":true,"ops":["x"]}'; kill -STOP $$"#,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        assert!(matches!(h.call("x", ""), Err(CallError::Stopped(_))));
+        assert_eq!(h.restarts(), 0);
+        assert!(h.process.is_none());
+        let started = Instant::now();
+        assert!(matches!(h.call("x", ""), Err(CallError::Stopped(_))));
+        assert!(started.elapsed() < Duration::from_millis(100));
     }
 }

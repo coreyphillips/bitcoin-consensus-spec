@@ -66,8 +66,10 @@ included). `derive` uses it to replay Core's own unit tests; nothing else needs 
 
 The runner needs Linux, macOS or another Unix-like system (WSL on Windows). It starts the harness
 and the node commands with `sh -c`, each in a process group of its own, and ends them with Unix
-signals. The harness protocol is plain JSON lines over standard input and output, so a harness
-built for Windows can still be named in `--impl` from WSL, which can start Windows programs.
+signals. Such a command has no use of the terminal, so it must not prompt for a password or a
+passphrase (`PROTOCOL.md` section 1). The harness protocol is plain JSON lines over standard input
+and output, so a harness built for Windows can still be named in `--impl` from WSL, which can start
+Windows programs.
 
 ```sh
 cargo build --release -p conformance-runner
