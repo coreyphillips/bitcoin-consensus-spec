@@ -14,6 +14,7 @@ mod hex;
 mod known;
 mod listen;
 mod p2p;
+mod process;
 mod script;
 mod suites;
 mod taproot;

@@ -2,7 +2,7 @@
 
 use serde_json::{Map, Value};
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::Duration;
 
@@ -63,14 +63,13 @@ pub struct Harness {
 }
 
 fn spawn(command: &str) -> Result<Process, String> {
-    let mut child = Command::new("sh")
-        .arg("-c")
-        .arg(command)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|e| format!("cannot start harness `{command}`: {e}"))?;
+    let mut child = crate::process::spawn(
+        crate::process::shell(command)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit()),
+    )
+    .map_err(|e| format!("cannot start harness `{command}`: {e}"))?;
     let stdin = child.stdin.take().expect("piped stdin");
     let stdout = child.stdout.take().expect("piped stdout");
     let (tx, rx) = mpsc::channel();
@@ -244,10 +243,10 @@ impl Harness {
         }
     }
 
+    /// Ends the harness and every process it started ([`crate::process::end`]).
     fn kill(&mut self) {
         if let Some(mut p) = self.process.take() {
-            let _ = p.child.kill();
-            let _ = p.child.wait();
+            crate::process::end(&mut p.child);
         }
     }
 }
@@ -262,12 +261,12 @@ impl Drop for Harness {
             drop(stdin);
             for _ in 0..50 {
                 if let Ok(Some(_)) = child.try_wait() {
-                    return;
+                    break;
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
-            let _ = child.kill();
-            let _ = child.wait();
+            // Then whatever is left, the harness itself or a process it started.
+            crate::process::end(&mut child);
         }
     }
 }
