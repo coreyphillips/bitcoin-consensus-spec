@@ -12,7 +12,7 @@ The protocol is deliberately narrow. It exposes the consensus functions defined 
 - For every request the harness writes exactly one response line, in request order. The runner sends the next request only after it has read the previous response.
 - Standard error is free for logging. The runner may save it but never parses it.
 - When standard input reaches end of file, the harness exits with status 0.
-- The runner starts the harness, and the node commands of sections 5 and 5.1, through `sh -c` in a process group of its own. When it ends one (a harness that stopped answering, a node past its timeout, the end of the run), every process left in that group gets SIGTERM, and 10 seconds later SIGKILL, so a wrapper and the processes it started end together. When the runner itself gets SIGINT, SIGTERM or SIGHUP, it sends SIGTERM to every such group before it exits.
+- The runner starts the harness, and the node commands of sections 5 and 5.1, through `sh -c` in a process group of its own. When it ends one (a harness that stopped answering, a node past its timeout, the end of the run), every process left in that group gets SIGTERM, and 10 seconds later SIGKILL, so a wrapper and the processes it started end together. When the runner itself gets SIGINT, SIGQUIT, SIGTERM or SIGHUP, it sends SIGTERM to every such group before it exits.
 - Blank input lines are ignored and produce no response.
 
 ## 2. Requests and responses
