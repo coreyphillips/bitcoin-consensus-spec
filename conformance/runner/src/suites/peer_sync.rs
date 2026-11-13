@@ -46,15 +46,15 @@ use crate::check::{shorten, Stats};
 use crate::hex;
 use crate::listen::{self, Event, Writer};
 use crate::p2p::{self, Message};
+use crate::process;
 use crate::suites::{corpus, interop};
 use crate::tx::{sha256d, write_compact_size};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
@@ -404,16 +404,13 @@ impl<'a> Session<'a> {
         let stderr_path = dir.join("node-stderr.log");
         let stderr = std::fs::File::create(&stderr_path)
             .map_err(|e| format!("cannot create {}: {e}", stderr_path.display()))?;
-        // Its own process group, so ending the node reaches every process the command started.
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg(&command)
-            .process_group(0)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(stderr)
-            .spawn()
-            .map_err(|e| format!("cannot start the node: {e}"))?;
+        let mut child = process::spawn(
+            process::shell(&command)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(stderr),
+        )
+        .map_err(|e| format!("cannot start the node: {e}"))?;
         let stdout = child.stdout.take().expect("piped stdout");
         let stdin = child.stdin.take();
         std::thread::spawn(move || {
@@ -1081,28 +1078,12 @@ impl<'a> Session<'a> {
         Ok((!problems.is_empty()).then(|| problems.join("; ")))
     }
 
-    /// Ends the node: standard input closed; then every process of its group that is left after
-    /// 10 seconds gets SIGTERM, and 10 seconds later SIGKILL. A node command whose own process
-    /// exits early (a wrapper killed while its node runs on) leaves no process behind.
+    /// Ends the node: standard input closed; then, after 10 seconds, whatever is left of its
+    /// process group ([`process::end`]). Ending it again does nothing.
     fn end(&mut self) {
         self.stdin = None;
-        let group = self.child.id();
         let _ = wait_exit(&mut self.child, Duration::from_secs(10));
-        for signal in ["TERM", "KILL"] {
-            if !signal_group(group, "0") {
-                break;
-            }
-            signal_group(group, signal);
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while Instant::now() < deadline {
-                let _ = self.child.try_wait();
-                if !signal_group(group, "0") {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        }
-        let _ = self.child.wait();
+        process::end(&mut self.child);
         if let Some((_, w, _)) = self.conn.take() {
             w.close();
         }
@@ -1112,22 +1093,8 @@ impl<'a> Session<'a> {
 
 impl Drop for Session<'_> {
     fn drop(&mut self) {
-        if signal_group(self.child.id(), "0") {
-            self.end();
-        }
-        self.stop_accept.store(true, Ordering::Relaxed);
+        self.end();
     }
-}
-
-/// Sends `signal` (a name such as `TERM`, or `0` to test) to the process group `group`; false when
-/// the group has no process left.
-fn signal_group(group: u32, signal: &str) -> bool {
-    Command::new("kill")
-        .args([format!("-{signal}"), "--".into(), format!("-{group}")])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
 }
 
 fn wait_exit(child: &mut Child, limit: Duration) -> Option<std::process::ExitStatus> {

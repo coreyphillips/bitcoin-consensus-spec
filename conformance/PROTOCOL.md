@@ -12,6 +12,7 @@ The protocol is deliberately narrow. It exposes the consensus functions defined 
 - For every request the harness writes exactly one response line, in request order. The runner sends the next request only after it has read the previous response.
 - Standard error is free for logging. The runner may save it but never parses it.
 - When standard input reaches end of file, the harness exits with status 0.
+- The runner starts the harness, and the node commands of sections 5 and 5.1, through `sh -c` in a process group of its own. When it ends one (a harness that stopped answering, a node past its timeout, the end of the run), every process left in that group gets SIGTERM, and 10 seconds later SIGKILL, so a wrapper and the processes it started end together. When the runner itself gets SIGINT, SIGTERM or SIGHUP, it sends SIGTERM to every such group before it exits.
 - Blank input lines are ignored and produce no response.
 
 ## 2. Requests and responses
@@ -277,7 +278,7 @@ Required behavior:
 2. When the active tip equals `{stop_at}`, write one line to standard output and exit with status 0:
    `{"event":"stopped","tip":hash,"height":integer,"hash_serialized_3":hash}`
    `hash_serialized_3` (specification chapter 15) may be left out by a node that keeps no UTXO set. The runner then reports the chain at level 2 (UTXO hash not compared), which fails the run only with `--fail-on-level2`. When present, it must equal Bitcoin Core's.
-3. When the node cannot reach `{stop_at}` (the peer does not offer it, sends a block the node finds invalid, stops answering, or nothing changes for a while), exit with a non-zero status, after writing at most one line `{"event":"error","message":string,"tip":hash,"height":integer}` (`tip` and `height` optional). It must not wait forever: the runner kills the node after its `--node-timeout` and counts that as a failure.
+3. When the node cannot reach `{stop_at}` (the peer does not offer it, sends a block the node finds invalid, stops answering, or nothing changes for a while), exit with a non-zero status, after writing at most one line `{"event":"error","message":string,"tip":hash,"height":integer}` (`tip` and `height` optional). It must not wait forever: the runner ends the node after its `--node-timeout` (section 1) and counts that as a failure.
 4. Progress lines `{"event":"tip","tip":hash,"height":integer}` may be written at any time. Lines whose `event` starts with `x_` are implementation extensions, which the runner ignores. No other line on standard output may start with `{`.
 
 ## 5.1 Peer-sync node contract
@@ -299,7 +300,7 @@ Required behavior:
 2. Read requests from standard input, one JSON object per line:
    - `{"op":"tip","id":n}`: once every block the node has received has been processed (connected, or found invalid), write `{"event":"tip","id":n,"tip":hash,"height":integer}`. The runner sends `ping` and waits for the `pong` before each request, so every block it sent before is received.
    - `{"op":"stop"}`: write `{"event":"stopped","tip":hash,"height":integer,"hash_serialized_3":hash}` (`hash_serialized_3` optional, as in section 5) and exit with status 0.
-   - When standard input closes, exit. The runner starts the command in a process group of its own and gives it 10 seconds; then every process left in the group gets SIGTERM, and 10 seconds later SIGKILL.
+   - When standard input closes, exit. The runner gives the command 10 seconds, then ends its process group (section 1).
 3. Standard output follows section 5, item 4. A `tip` line without `id` is a progress line. An `error` line fails the check in progress.
 
 Corpus blocks carry the times they were recorded, usually days or more before the run. A node whose "initial block download" state depends on the age of its tip (Bitcoin Core's `-maxtipage`, 24 hours by default) stays in that state for the whole scenario, so a node command must not wait for it to clear before answering, unless it raises that limit.

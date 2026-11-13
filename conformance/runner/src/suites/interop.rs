@@ -32,7 +32,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -164,14 +164,13 @@ struct NodeOutcome {
 fn run_node(command: &str, stderr_path: &Path, timeout: Duration) -> Result<NodeOutcome, String> {
     let stderr = std::fs::File::create(stderr_path)
         .map_err(|e| format!("cannot create {}: {e}", stderr_path.display()))?;
-    let mut child = Command::new("sh")
-        .arg("-c")
-        .arg(command)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(stderr)
-        .spawn()
-        .map_err(|e| format!("cannot start the node: {e}"))?;
+    let mut child = crate::process::spawn(
+        crate::process::shell(command)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(stderr),
+    )
+    .map_err(|e| format!("cannot start the node: {e}"))?;
     let stdout = child.stdout.take().expect("piped stdout");
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -271,8 +270,7 @@ fn run_node(command: &str, stderr_path: &Path, timeout: Duration) -> Result<Node
                     break;
                 }
                 _ if Instant::now() >= grace => {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    crate::process::end(&mut child);
                     if out.stopped.is_some() {
                         out.problems
                             .push("the node did not exit after its stopped line".into());
@@ -283,6 +281,8 @@ fn run_node(command: &str, stderr_path: &Path, timeout: Duration) -> Result<Node
             }
         }
     }
+    // Whatever the node command left running.
+    crate::process::end(&mut child);
     if out.stopped.is_some() {
         if let Some(status) = out.exit {
             if !status.success() {

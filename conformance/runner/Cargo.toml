@@ -20,3 +20,6 @@ sha2 = "0.10"
 secp256k1 = "0.31"
 flate2 = "1"
 bip324 = "0.11"
+# kill(2) on process groups and the signal handler of src/process.rs (already in the dependency
+# tree).
+libc = "0.2"
