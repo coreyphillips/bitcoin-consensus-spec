@@ -13,9 +13,15 @@
 //! it that reads the terminal (a password prompt) is stopped by SIGTTIN. Nothing would ever
 //! continue it, so the runner looks for a stopped process while it waits ([`stopped`]) and fails
 //! at once instead of waiting for its timeout.
+//!
+//! On Linux a zombie keeps its process group alive for `kill`. A process a command left behind is
+//! handed, once its parent exits, to process 1, which in a container started without an init
+//! never reaps it, so its group would never look empty. The runner makes itself a child
+//! subreaper instead, is handed those processes, and reaps them when it ends their group.
 
 use std::fmt;
 use std::io;
+use std::ops::{Deref, DerefMut};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -40,9 +46,45 @@ pub fn shell(command: &str) -> Command {
     c
 }
 
+/// A command started by [`spawn`]: its own process, the leader of its process group. It derefs to
+/// that process's [`Child`].
+pub struct Group {
+    child: Child,
+    /// Set by [`end`]. The group's id may since belong to another group, so it is not used again.
+    ended: bool,
+}
+
+impl Deref for Group {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        &self.child
+    }
+}
+
+impl DerefMut for Group {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.child
+    }
+}
+
+impl Group {
+    /// Whether any process of the group is left. The command's own process is reaped first, then
+    /// any other process of the group that exited after it was handed to the runner.
+    fn alive(&mut self) -> bool {
+        let group = self.child.id() as i32;
+        // Only once `child` is reaped: waitpid could otherwise take its exit status from it.
+        if let Ok(Some(_)) = self.child.try_wait() {
+            // SAFETY: waitpid with a null status pointer only reaps.
+            while unsafe { libc::waitpid(-group, std::ptr::null_mut(), libc::WNOHANG) } > 0 {}
+        }
+        // SAFETY: signal 0 only checks that the group exists.
+        unsafe { libc::kill(-group, 0) == 0 }
+    }
+}
+
 /// Starts `command` (from [`shell`]) and registers its process group.
-pub fn spawn(command: &mut Command) -> io::Result<Child> {
-    install_handlers();
+pub fn spawn(command: &mut Command) -> io::Result<Group> {
+    setup();
     let child = command.spawn()?;
     let group = child.id() as i32;
     for slot in &GROUPS {
@@ -53,17 +95,23 @@ pub fn spawn(command: &mut Command) -> io::Result<Child> {
             break;
         }
     }
-    Ok(child)
+    Ok(Group {
+        child,
+        ended: false,
+    })
 }
 
-/// Ends `child`'s process group and reaps `child`: SIGTERM to every process left in the group,
-/// then SIGKILL to whatever is left [`GRACE`] later. A group with no process left is only
-/// reaped, so this may be called again, and after `child` exited on its own.
-pub fn end(child: &mut Child) {
+/// Ends the command's process group and reaps its processes: SIGTERM to every process left in
+/// the group, then SIGKILL to whatever is left [`GRACE`] later. A group with no process left is
+/// only reaped, so this may be called after the command exited on its own. Calling it again does
+/// nothing.
+pub fn end(child: &mut Group) {
+    if child.ended {
+        return;
+    }
     let group = child.id() as i32;
     for signal in [libc::SIGTERM, libc::SIGKILL] {
-        let _ = child.try_wait();
-        if !group_alive(group) {
+        if !child.alive() {
             break;
         }
         // SAFETY: kill(2) with a negative pid signals that process group; no memory is involved.
@@ -75,23 +123,17 @@ pub fn end(child: &mut Child) {
         }
         let deadline = Instant::now() + GRACE;
         while Instant::now() < deadline {
-            let _ = child.try_wait();
-            if !group_alive(group) {
+            if !child.alive() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(20));
         }
     }
     let _ = child.wait();
+    child.ended = true;
     for slot in &GROUPS {
         let _ = slot.compare_exchange(group, 0, Ordering::SeqCst, Ordering::SeqCst);
     }
-}
-
-/// Whether any process of the group `group` is left (an exited child not yet reaped counts).
-fn group_alive(group: i32) -> bool {
-    // SAFETY: signal 0 only checks that the group exists.
-    unsafe { libc::kill(-group, 0) == 0 }
 }
 
 /// A stopped process in a command's process group. Displayed as the rest of a sentence that
@@ -131,6 +173,21 @@ impl fmt::Display for Stop {
 /// `child`: its exit status is still there for [`Child::try_wait`].
 pub fn stopped(child: &Child) -> Option<Stop> {
     let pid = child.id() as i32;
+    if let Some(signal) = stop_signal(pid) {
+        return Some(Stop {
+            pid,
+            signal: Some(signal),
+        });
+    }
+    // Then the rest of the group, since waitid was only asked about the command's own process.
+    let found = group_stopped(pid)?;
+    // The command's own process may have stopped since waitid looked.
+    let signal = if found == pid { stop_signal(pid) } else { None };
+    Some(Stop { pid: found, signal })
+}
+
+/// The signal that stopped the runner's child `pid`, if it is stopped.
+fn stop_signal(pid: i32) -> Option<i32> {
     // SAFETY: an all-zero siginfo_t is valid, and waitid only writes to it. Without WEXITED it
     // neither reports nor reaps an exit, and WNOWAIT leaves a stop to be reported again.
     let (r, info) = unsafe {
@@ -144,14 +201,8 @@ pub fn stopped(child: &Child) -> Option<Stop> {
         (r, info)
     };
     // SAFETY: the fields of a child state change, which is all waitid reports.
-    if r == 0 && info.si_code == libc::CLD_STOPPED && unsafe { info.si_pid() } == pid {
-        return Some(Stop {
-            pid,
-            signal: Some(unsafe { info.si_status() }),
-        });
-    }
-    // A process the command started is not the runner's child, so waitid cannot see it.
-    group_stopped(pid).map(|pid| Stop { pid, signal: None })
+    (r == 0 && info.si_code == libc::CLD_STOPPED && unsafe { info.si_pid() } == pid)
+        .then(|| unsafe { info.si_status() })
 }
 
 /// A stopped process in the process group `group`.
@@ -232,42 +283,59 @@ extern "C" fn on_signal(signal: libc::c_int) {
     }
 }
 
-fn install_handlers() {
+fn setup() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        let handler: extern "C" fn(libc::c_int) = on_signal;
-        for signal in [libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGHUP] {
-            // SAFETY: the handler only touches atomics and async-signal-safe calls.
-            let previous = unsafe { libc::signal(signal, handler as libc::sighandler_t) };
-            if previous == libc::SIG_IGN {
-                // SAFETY: as above; this puts back what the runner was started with.
-                unsafe { libc::signal(signal, libc::SIG_IGN) };
-            }
-        }
+        install_handlers();
+        become_subreaper();
     });
 }
+
+fn install_handlers() {
+    let handler: extern "C" fn(libc::c_int) = on_signal;
+    for signal in [libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGHUP] {
+        // SAFETY: the handler only touches atomics and async-signal-safe calls.
+        let previous = unsafe { libc::signal(signal, handler as libc::sighandler_t) };
+        if previous == libc::SIG_IGN {
+            // SAFETY: as above; this puts back what the runner was started with.
+            unsafe { libc::signal(signal, libc::SIG_IGN) };
+        }
+    }
+}
+
+/// Has the processes the runner's commands leave behind handed to the runner when their parent
+/// exits, so that [`end`] can reap them. Should it fail, they are handed to process 1 as before.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn become_subreaper() {
+    // SAFETY: this only sets an attribute of the runner's process.
+    unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1 as libc::c_ulong) };
+}
+
+/// Other systems: the processes are handed to process 1 as before. On macOS `kill` does not
+/// count a zombie as a member of its group.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn become_subreaper() {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::process::Stdio;
 
-    /// A command whose own process exits while a process it started runs on: ending it ends both.
-    #[test]
-    fn end_reaches_the_whole_group() {
-        let dir = std::env::temp_dir().join(format!("bcs-process-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let pid_file = dir.join("pid");
-        let mut child = spawn(
+    /// Starts `sleep 300 &` followed by `rest`, and returns the command with that `sleep`'s pid.
+    fn spawn_with_background(name: &str, rest: &str) -> (Group, i32) {
+        let pid_file =
+            std::env::temp_dir().join(format!("bcs-process-{name}-{}.pid", std::process::id()));
+        let _ = std::fs::remove_file(&pid_file);
+        let child = spawn(
             shell(&format!(
-                "sleep 300 & echo $! > {}; exec sleep 300",
+                "sleep 300 & echo $! > {}; {rest}",
                 pid_file.display()
             ))
             .stdin(Stdio::null()),
         )
         .unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
-        let orphan: i32 = loop {
+        let pid = loop {
             if let Some(pid) = std::fs::read_to_string(&pid_file)
                 .ok()
                 .and_then(|s| s.trim().parse().ok())
@@ -277,19 +345,57 @@ mod tests {
             assert!(Instant::now() < deadline, "no pid file");
             std::thread::sleep(Duration::from_millis(20));
         };
+        let _ = std::fs::remove_file(&pid_file);
+        (child, pid)
+    }
+
+    /// Ends `child` as the runner does and checks that nothing of its group is left, `background`
+    /// included, and that this did not wait for SIGKILL.
+    fn end_all(child: &mut Group, background: i32) {
         let group = child.id() as i32;
         assert!(GROUPS.iter().any(|s| s.load(Ordering::SeqCst) == group));
-        end(&mut child);
-        // SAFETY: signal 0 only checks that the process exists.
-        assert_ne!(
-            unsafe { libc::kill(orphan, 0) },
-            0,
-            "background process left"
+        let started = Instant::now();
+        end(child);
+        assert!(
+            started.elapsed() < GRACE,
+            "ending the group waited for SIGKILL"
         );
-        assert!(!group_alive(group));
+        // On Linux the runner reaped it. Elsewhere process 1 reaps it, a moment later: `end` does
+        // not wait for that, since a zombie does not count as a member of its group there.
+        let linux = cfg!(any(target_os = "linux", target_os = "android"));
+        let deadline = Instant::now() + Duration::from_secs(if linux { 0 } else { 5 });
+        // SAFETY: signal 0 only checks that the process or group exists.
+        while unsafe { libc::kill(background, 0) } == 0 {
+            assert!(Instant::now() < deadline, "background process left");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_ne!(unsafe { libc::kill(-group, 0) }, 0, "group left");
         assert!(GROUPS.iter().all(|s| s.load(Ordering::SeqCst) != group));
-        end(&mut child);
-        let _ = std::fs::remove_dir_all(&dir);
+        // Ended already: nothing is probed or signalled again.
+        end(child);
+    }
+
+    /// A command and a process it started in the background: ending the command ends both.
+    #[test]
+    fn end_reaches_the_whole_group() {
+        let (mut child, background) = spawn_with_background("whole", "exec sleep 300");
+        end_all(&mut child, background);
+    }
+
+    /// A command that exited while a process it started runs on (a wrapper and its node): ending
+    /// it ends that process. On Linux the process was handed to the runner, so it is reaped even
+    /// where process 1 reaps nothing.
+    #[test]
+    fn end_reaches_what_an_exited_command_left() {
+        let (mut child, background) = spawn_with_background("exited", "exit 0");
+        assert!(child.wait().unwrap().success());
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            let stat = std::fs::read_to_string(format!("/proc/{background}/stat")).unwrap();
+            let parent = stat.rsplit_once(')').unwrap().1.split_whitespace().nth(1);
+            assert_eq!(parent, Some(std::process::id().to_string().as_str()));
+        }
+        end_all(&mut child, background);
     }
 
     /// Waits up to 10 seconds for [`stopped`] to find a stopped process in `child`'s group.

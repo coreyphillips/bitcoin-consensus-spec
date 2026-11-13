@@ -2,7 +2,7 @@
 
 use serde_json::{Map, Value};
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Stdio};
+use std::process::{ChildStdin, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -53,7 +53,7 @@ impl std::fmt::Display for CallError {
 }
 
 struct Process {
-    child: Child,
+    child: crate::process::Group,
     stdin: ChildStdin,
     lines: Receiver<std::io::Result<String>>,
 }
