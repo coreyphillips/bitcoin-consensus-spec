@@ -11,8 +11,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - name: Known-answer tests from the specification
-        run: cargo test --release -p bitcoin-consensus-spec
+      - name: Known-answer tests from the specification and the runner's unit tests
+        run: cargo test --release --workspace
       - name: Build the reference and the runner
         run: cargo build --release
       - name: Conformance suite against the reference
