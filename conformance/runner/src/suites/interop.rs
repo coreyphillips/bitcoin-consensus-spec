@@ -187,12 +187,20 @@ fn run_node(command: &str, stderr_path: &Path, timeout: Duration) -> Result<Node
         exit: None,
     };
     let deadline = Instant::now() + timeout;
+    let mut stop_check = Instant::now();
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             out.problems
                 .push(format!("no stopped line within {} s", timeout.as_secs()));
             break;
+        }
+        if stop_check.elapsed() >= crate::process::STOP_CHECK {
+            stop_check = Instant::now();
+            if let Some(stop) = crate::process::stopped(&child) {
+                out.problems.push(format!("the node command {stop}"));
+                break;
+            }
         }
         match rx.recv_timeout(left.min(Duration::from_millis(500))) {
             Ok(Ok(line)) => {
@@ -243,10 +251,6 @@ fn run_node(command: &str, stderr_path: &Path, timeout: Duration) -> Result<Node
                         out.problems
                             .push(format!("the node exited ({status}) without a stopped line"));
                     }
-                    break;
-                }
-                if let Some(stop) = crate::process::stopped(&child) {
-                    out.problems.push(format!("the node command {stop}"));
                     break;
                 }
             }

@@ -618,6 +618,8 @@ impl<'a> Session<'a> {
         if self.stop_check.elapsed() >= process::STOP_CHECK {
             self.stop_check = Instant::now();
             if let Some(stop) = process::stopped(&self.child) {
+                // Ended here, since a stopped node cannot act on the EOF `Session::end` waits on.
+                process::end(&mut self.child);
                 return Err(self.with_stderr(format!("the node command {stop}")));
             }
         }

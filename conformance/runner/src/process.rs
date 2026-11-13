@@ -349,8 +349,26 @@ mod tests {
         end(&mut running);
 
         let mut exited = spawn(shell("exit 3").stdin(Stdio::null())).unwrap();
+        let pid = exited.id() as i32;
         let deadline = Instant::now() + Duration::from_secs(10);
-        while group_alive(exited.id() as i32) {
+        // On Linux an unreaped child keeps its group alive, so the exit is watched with waitid,
+        // which with WNOWAIT leaves it unreaped.
+        loop {
+            // SAFETY: as in `stopped`.
+            let info = unsafe {
+                let mut info: libc::siginfo_t = std::mem::zeroed();
+                libc::waitid(
+                    libc::P_PID,
+                    pid as libc::id_t,
+                    &mut info,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                );
+                info
+            };
+            // SAFETY: as in `stopped`.
+            if unsafe { info.si_pid() } == pid {
+                break;
+            }
             assert!(Instant::now() < deadline, "the command did not exit");
             assert!(stopped(&exited).is_none());
             std::thread::sleep(Duration::from_millis(20));
