@@ -24,7 +24,7 @@ The reference (the specification's own code) passes:
 | Bitcoin Core qa-assets `script_assets_test.json` (taproot and more), 64 flag combinations | 239,168 | pass, identical error codes |
 | Edge cases found by mutation testing and by reviewing other implementations, expectations from Bitcoin Core's own code | 33 | pass |
 | Block corpus: 20 scenarios recorded from Bitcoin Core's functional tests and this project's own tests (17,170 events) | 5,282 normative tip checks, 1,237 chain tip sets, 2,292 UTXO set hashes | identical |
-| Live interop: the reference node synchronizes each scenario's chain from Bitcoin Core v32.1 over P2P, with no whitelist | tip, height and UTXO set hash for 20 chains | identical, no misbehaviour logged |
+| Live interop: the reference node synchronizes each scenario's chain from Bitcoin Core v32.1 over P2P, with no whitelist | tip, height and UTXO set hash for 21 chains (2026-11-12) | identical, no misbehaviour logged |
 | Mainnet and testnet4 header chains from public peers, fully validated | every header | identical tip and chain work |
 
 The `peer-sync` suite serves a live node every recorded block that Bitcoin Core rejects, through the node's own synchronization. The reference's minimal sync loop stops at the first invalid block, so Bitcoin Core v32.1 itself is the node that checks the suite: it passes all 3,111 checks.
