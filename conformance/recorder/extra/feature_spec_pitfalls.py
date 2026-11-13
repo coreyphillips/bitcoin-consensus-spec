@@ -36,8 +36,14 @@ g. Peer-to-peer anti-DoS work checks (net_processing). The threshold is the
 j. A transaction with 100,001 outputs (zero-value outputs with empty scripts,
    about 900,000 bytes) is valid: nothing but the size rules limits the number
    of outputs.
+k. An output created and spent in one block stays spent. A block creates P
+   and spends P:0; the next block spends P:0 again and is
+   bad-txns-inputs-missingorspent, with both blocks requested and delivered
+   together as in initial sync. A different re-spend through submitblock and
+   one three blocks above are rejected too. A block that spends P:1 and
+   re-spends P:0 is rejected as a whole, and P:1 can then be spent.
 
-Parts a to g and j run on node 0 (default regtest parameters). Two more nodes, never
+Parts a to g, j and k run on node 0 (default regtest parameters). Two more nodes, never
 connected to anything but the test, each get their own corpus file:
 
 h. Node 1 activates BIP34 at height 2 and BIP66 and BIP65 only at 300, so the
@@ -125,6 +131,7 @@ class SpecPitfallsTest(BitcoinTestFramework):
         self.test_subsidy_halving()
         self.test_anti_dos_work()
         self.test_output_count()
+        self.test_respend_of_same_block_spend()
 
         self.node = self.nodes[1]
         self.test_version_floor_before_dersig()
@@ -409,6 +416,43 @@ class SpecPitfallsTest(BitcoinTestFramework):
         outputs = [CTxOut(value, ANYONE_CAN_SPEND)] + [CTxOut(0, b"")] * 100_000
         block = self.make_block([self.spend(outpoint, value, outputs=outputs)])
         assert_equal(len(block.vtx[1].vout), 100_001)
+        self.send([block])
+        assert_equal(self.node.getbestblockhash(), block.hash_hex)
+
+    # ------------------------------------------------------------ k
+
+    def test_respend_of_same_block_spend(self):
+        self.log.info("k. An output created and spent in one block stays spent")
+        outpoint, value = self.take_coin()
+        parent = self.spend(outpoint, value, outputs=[CTxOut(10 * COIN, ANYONE_CAN_SPEND),
+                                                      CTxOut(value - 10 * COIN, ANYONE_CAN_SPEND)])
+        spent, other = COutPoint(parent.txid_int, 0), COutPoint(parent.txid_int, 1)
+        first = self.spend(spent, 10 * COIN)
+
+        def respend(amount):
+            return self.spend(spent, amount)  # a different transaction for each amount
+
+        self.log.info("k1. The next block spends it again; both blocks are requested and sent together")
+        _, height, _ = self.tip()
+        block = self.make_block([parent, first])
+        child = create_block(block.hash_int, create_coinbase(height + 2), ntime=block.nTime + 1, version=4,
+                             txlist=[respend(9 * COIN)])
+        child.solve()
+        self.send([block, child], success=False, reject_reason="bad-txns-inputs-missingorspent", reconnect=True)
+        assert_equal(self.node.getbestblockhash(), block.hash_hex)
+
+        self.log.info("k2. A different re-spend through submitblock")
+        self.submit(self.make_block([respend(8 * COIN)]), "bad-txns-inputs-missingorspent")
+
+        self.log.info("k3. A re-spend three blocks above")
+        self.mine(2)
+        self.send([self.make_block([respend(7 * COIN)])], success=False,
+                  reject_reason="bad-txns-inputs-missingorspent", reconnect=True)
+
+        self.log.info("k4. A block that also spends P:1 is rejected as a whole; P:1 is then spendable")
+        spend_other = self.spend(other, value - 10 * COIN)
+        self.submit(self.make_block([spend_other, respend(6 * COIN)]), "bad-txns-inputs-missingorspent")
+        block = self.make_block([spend_other, self.spend(COutPoint(first.txid_int, 0), 10 * COIN)])
         self.send([block])
         assert_equal(self.node.getbestblockhash(), block.hash_hex)
 
