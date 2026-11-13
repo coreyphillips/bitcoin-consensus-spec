@@ -355,6 +355,8 @@ struct Session<'a> {
     outstanding: std::collections::HashSet<[u8; 32]>,
     window: usize,
     last_activity: Instant,
+    /// When [`Session::pump`] last looked for a stopped process in the node's group.
+    stop_check: Instant,
     pong: Option<(u64, bool)>,
     answers: HashMap<u64, Value>,
     next_query: u64,
@@ -458,6 +460,7 @@ impl<'a> Session<'a> {
             outstanding: Default::default(),
             window: 1,
             last_activity: Instant::now(),
+            stop_check: Instant::now(),
             pong: None,
             answers: HashMap::new(),
             next_query: 0,
@@ -610,6 +613,12 @@ impl<'a> Session<'a> {
         if self.stopped.is_none() {
             if let Ok(Some(status)) = self.child.try_wait() {
                 return Err(self.with_stderr(format!("the node exited ({status})")));
+            }
+        }
+        if self.stop_check.elapsed() >= process::STOP_CHECK {
+            self.stop_check = Instant::now();
+            if let Some(stop) = process::stopped(&self.child) {
+                return Err(self.with_stderr(format!("the node command {stop}")));
             }
         }
         Ok(())

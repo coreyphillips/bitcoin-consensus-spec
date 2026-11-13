@@ -245,6 +245,10 @@ fn run_node(command: &str, stderr_path: &Path, timeout: Duration) -> Result<Node
                     }
                     break;
                 }
+                if let Some(stop) = crate::process::stopped(&child) {
+                    out.problems.push(format!("the node command {stop}"));
+                    break;
+                }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 let status = child.wait().ok();
@@ -643,5 +647,22 @@ mod tests {
     fn shell_quoting() {
         assert_eq!(shell_quote(r#"{"a":1}"#), r#"'{"a":1}'"#);
         assert_eq!(shell_quote("it's"), r"'it'\''s'");
+    }
+
+    /// A node command that is stopped fails at once, not after the node timeout.
+    #[test]
+    fn a_stopped_node_fails_at_once() {
+        let path = std::env::temp_dir().join(format!("bcs-interop-stop-{}", std::process::id()));
+        let started = Instant::now();
+        let out = run_node("kill -STOP $$", &path, Duration::from_secs(60)).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(out.stopped.is_none());
+        assert_eq!(out.problems.len(), 1, "{:?}", out.problems);
+        assert!(
+            out.problems[0].starts_with("the node command was stopped (process "),
+            "{}",
+            out.problems[0]
+        );
     }
 }
