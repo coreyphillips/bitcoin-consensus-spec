@@ -19,6 +19,6 @@ Verdicts:
 | `caught-level2` | Only an optional check differs: an error identifier, a corpus chain tip set or a UTXO set hash |
 | `survived` | Nothing differs |
 
-Each mutant records the verdict it got when it was added (`expect`); the script exits with status 1 when a verdict changes, so it can be rerun after changes to the specification or the suites. A mutant whose patched text no longer occurs exactly once reports `patch-not-found` and needs its `old` text updated.
+Each mutant records the verdict it got when it was added (`expect`); the script exits with status 1 when a verdict changes, so it can be rerun after changes to the specification or the suites. CI reruns it every week and on pull requests that change them (`.github/workflows/extended.yml`). A mutant whose patched text no longer occurs exactly once reports `patch-not-found` and needs its `old` text updated.
 
 Survivors are explained in their `note`. A survivor that could be caught is a gap in the suites, closed by adding a test: the custom vectors in `vectors/custom` and the `feature_spec_pitfalls` scenario of the block corpus were written that way.
