@@ -321,7 +321,7 @@ struct Session<'a> {
     timeout: Duration,
     rx: Receiver<Event>,
     stop_accept: Arc<AtomicBool>,
-    child: Child,
+    child: process::Group,
     stdin: Option<ChildStdin>,
     conn: Option<(u64, Writer, &'static str)>,
     ready: bool,
