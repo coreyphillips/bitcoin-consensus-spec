@@ -1,0 +1,83 @@
+name: extended
+
+# The suites that need a live bitcoind, and the mutation audit. They take too
+# long for every push, so they run weekly, by hand, and on pull requests that
+# change what they test.
+on:
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      ibd-limit:
+        description: "peer-sync --ibd-limit (a number or all)"
+        default: "32"
+  pull_request:
+    paths:
+      - "conformance/runner/**"
+      - "conformance/vectors/blocks/**"
+      - "conformance/mutation/**"
+      - "conformance/recorder/core_sync_node.py"
+      - "conformance/recorder/pins.json"
+      - "reference/**"
+      - "spec/**"
+      - ".github/fetch-bitcoind.sh"
+      - ".github/workflows/extended.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: extended-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  interop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Bitcoin Core v32.1 from bitcoincore.org, checked against pins.json
+        run: |
+          bitcoind=$(sh .github/fetch-bitcoind.sh "$RUNNER_TEMP/core")
+          "$bitcoind" -version | sed -n 1p
+          echo "BITCOIND=$bitcoind" >> "$GITHUB_ENV"
+      - name: Build the reference and the runner
+        run: cargo build --release
+      - name: Interop, the reference node next to bitcoind
+        run: |
+          ./target/release/bcs-conformance interop --bitcoind "$BITCOIND" \
+            --node "$PWD/target/release/reference-node --network {network} --connect {peer} --stop-at {stop_at} --options {options}"
+
+  peer-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      # Pull requests check 4 rejected blocks per scenario in the ibd mode to
+      # keep the run short. The follow mode still checks every one.
+      IBD_LIMIT: ${{ github.event_name == 'pull_request' && '4' || inputs.ibd-limit || '32' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Bitcoin Core v32.1 from bitcoincore.org, checked against pins.json
+        run: |
+          bitcoind=$(sh .github/fetch-bitcoind.sh "$RUNNER_TEMP/core")
+          "$bitcoind" -version | sed -n 1p
+          echo "BITCOIND=$bitcoind" >> "$GITHUB_ENV"
+      - name: Build the runner
+        run: cargo build --release -p conformance-runner
+      - name: Peer-sync, Bitcoin Core as the node
+        run: |
+          ./target/release/bcs-conformance peer-sync --bitcoind "$BITCOIND" --ibd-limit "$IBD_LIMIT" --sync-node \
+            "python3 $PWD/conformance/recorder/core_sync_node.py --bitcoind $BITCOIND --network {network} --datadir {datadir} --peer {peer} --options {options}"
+
+  mutation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the reference and the runner
+        run: cargo build --release
+      - name: Mutation audit
+        run: python3 conformance/mutation/run.py --jobs "$(nproc)"

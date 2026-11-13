@@ -29,6 +29,8 @@ The reference (the specification's own code) passes:
 
 The `peer-sync` suite serves a live node every recorded block that Bitcoin Core rejects, through the node's own synchronization. The reference's minimal sync loop stops at the first invalid block, so Bitcoin Core v32.1 itself is the node that checks the suite: it passes all 3,111 checks.
 
+CI reruns `interop`, `peer-sync` with Bitcoin Core as the node, and the mutation audit every week (`.github/workflows/extended.yml`). Pull requests that change the specification, the reference, the runner, the corpus or the mutants run them too, with 4 instead of 32 rejected blocks per scenario in the ibd mode of `peer-sync`.
+
 A separate node written by an AI agent from this document alone ([bitcoin-spec-node](https://github.com/coreyphillips/bitcoin-spec-node)) passed every suite on its first runs. It then synchronized testnet4 from public peers and mainnet from a Bitcoin Core node, checking every script. Its UTXO set was identical to Bitcoin Core's at every height Bitcoin Core publishes for those networks (90,000 to 150,000 on testnet4, 840,000 to 965,000 on mainnet) and at the mainnet tip, block 975,132.
 
 Every expectation above comes from Bitcoin Core v32.1 itself: the "derived" vectors were produced by running Bitcoin Core's own interpreter (compiled from the pinned source) under every consensus flag combination, and the block corpus was recorded from official v32.1 binaries. `RESULTS.md` has the details, the independent reviews, the mutation audit, and the blind implementation experiment (a node built only from this document, which synchronized mainnet next to Bitcoin Core).

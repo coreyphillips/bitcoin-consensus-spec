@@ -23,3 +23,17 @@ jobs:
             echo "Found an em or en dash character"
             exit 1
           fi
+
+  # The runner starts and stops commands through process.rs, which depends on
+  # platform behavior, so the same tests and suites run on macOS too.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Known-answer tests from the specification and the runner's unit tests
+        run: cargo test --release --workspace
+      - name: Build the reference and the runner
+        run: cargo build --release
+      - name: Conformance suite against the reference
+        run: ./target/release/bcs-conformance --impl ./target/release/reference-harness
