@@ -12,6 +12,7 @@ mod flags;
 mod harness;
 mod hex;
 mod known;
+mod listen;
 mod p2p;
 mod script;
 mod suites;
@@ -39,7 +40,8 @@ USAGE:
 RUN OPTIONS:
   --impl CMD          Shell command that starts the harness (run through sh -c)
   --suite LIST        Comma separated suites to run (default: every suite marked default in
-                      `bcs-conformance suites`; headers-live and interop only run when named)
+                      `bcs-conformance suites`; headers-live, interop and peer-sync only run
+                      when named)
   --exclude LIST      Suites to leave out of the run
   --raw               Check only the expectations the original vector files state for
                       consensus-only flags, instead of the derived expectations
@@ -73,6 +75,15 @@ INTEROP OPTIONS:
   --v2transport       Start bitcoind with -v2transport=1, so the node may use BIP324 version 2
                       (bitcoind still accepts version 1); the default is -v2transport=0
 
+PEER-SYNC OPTIONS:
+  --bitcoind PATH     The bitcoind binary that classifies the corpus blocks
+  --sync-node CMD     Node command template with {network} {datadir} {peer} {options}; the node
+                      answers tip requests on its standard input (conformance/PROTOCOL.md 5.1)
+  --node-timeout SECS Seconds to wait for the node to connect, answer a ping or a tip request
+  --ibd-limit N|all   Rejected blocks per scenario that the ibd mode checks, each with a fresh
+                      node (default 32, evenly spaced; the follow mode checks every one)
+  --port-range, --keep-temp, --corpus as above
+
 DERIVE OPTIONS:
   --oracle CMD        Shell command that starts oracle-core-harness
   --out DIR           Output directory (default: <vectors>/derived)
@@ -104,6 +115,8 @@ struct Options {
     peer_timeout: Duration,
     bitcoind: Option<PathBuf>,
     node: Option<String>,
+    sync_node: Option<String>,
+    ibd_limit: Option<usize>,
     port_range: (u16, u16),
     node_timeout: Duration,
     keep_temp: bool,
@@ -143,6 +156,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         peer_timeout: Duration::from_secs(120),
         bitcoind: None,
         node: None,
+        sync_node: None,
+        ibd_limit: Some(32),
         port_range: (29000, 29999),
         node_timeout: Duration::from_secs(600),
         keep_temp: false,
@@ -198,6 +213,15 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--peer-timeout" => o.peer_timeout = secs(value(&mut i, a)?, a)?,
             "--bitcoind" => o.bitcoind = Some(PathBuf::from(value(&mut i, a)?)),
             "--node" => o.node = Some(value(&mut i, a)?),
+            "--sync-node" => o.sync_node = Some(value(&mut i, a)?),
+            "--ibd-limit" => {
+                let v = value(&mut i, a)?;
+                o.ibd_limit = if v == "all" {
+                    None
+                } else {
+                    Some(v.parse().map_err(|_| "--ibd-limit takes a number or all")?)
+                };
+            }
             "--port-range" => {
                 let v = value(&mut i, a)?;
                 let (lo, hi) = v.split_once('-').ok_or("--port-range takes LO-HI")?;
@@ -380,6 +404,11 @@ fn cmd_run(opts: &Options) -> ExitCode {
     if selected.contains(&"interop") && (opts.bitcoind.is_none() || opts.node.is_none()) {
         return usage_error("interop needs --bitcoind PATH and --node \"<command template>\"");
     }
+    if selected.contains(&"peer-sync") && (opts.bitcoind.is_none() || opts.sync_node.is_none()) {
+        return usage_error(
+            "peer-sync needs --bitcoind PATH and --sync-node \"<command template>\"",
+        );
+    }
     let needs_harness = selected
         .iter()
         .any(|s| suites::suite(s).is_some_and(|i| i.needs_harness));
@@ -427,6 +456,23 @@ fn cmd_run(opts: &Options) -> ExitCode {
             };
             let mut stats = Stats::default();
             if let Err(e) = suites::interop::run(&mut stats, opts.verbose, &cfg) {
+                stats.error = Some(e);
+            }
+            results.push((suite, stats, started.elapsed()));
+            continue;
+        }
+        if suite == "peer-sync" {
+            let cfg = suites::peer_sync::Config {
+                bitcoind: opts.bitcoind.clone().unwrap(),
+                node: opts.sync_node.clone().unwrap(),
+                corpus: corpus_paths(opts, &paths),
+                port_range: opts.port_range,
+                node_timeout: opts.node_timeout,
+                keep_temp: opts.keep_temp,
+                ibd_limit: opts.ibd_limit,
+            };
+            let mut stats = Stats::default();
+            if let Err(e) = suites::peer_sync::run(&mut stats, opts.verbose, &cfg) {
                 stats.error = Some(e);
             }
             results.push((suite, stats, started.elapsed()));

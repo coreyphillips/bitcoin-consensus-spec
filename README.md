@@ -5,7 +5,7 @@ An executable specification of Bitcoin's consensus rules, precise enough that a 
 - **Pinned to Bitcoin Core v32.1** (commit `f0de87f040621468b956f01f526a43a010310501`). Specification version `v32.1-1`.
 - **Prose plus executable Rust.** Every chapter explains the rules and defines them in Rust code blocks. `reference/build.rs` extracts those blocks into a crate, so the document itself compiles, runs, and is tested against Bitcoin Core.
 - **Bitcoin Core is the ground truth.** Every rule names the Bitcoin Core function it mirrors, including the surprising ones. Appendix A lists 79 quirks that independent implementations have gotten wrong.
-- **Conformance suite.** A JSON-lines protocol lets any implementation, in any language, be tested against Bitcoin Core's own test vectors, recorded Bitcoin Core block scenarios, and live Bitcoin Core nodes.
+- **Conformance suite.** A JSON-lines protocol lets any implementation, in any language, be tested against Bitcoin Core's own test vectors, recorded Bitcoin Core block scenarios, and live Bitcoin Core nodes. A live node can also be made to synchronize every recorded scenario from the runner itself, including the blocks Bitcoin Core rejects.
 
 ## Why
 
@@ -27,6 +27,8 @@ The reference (the specification's own code) passes:
 | Live interop: the reference node synchronizes each scenario's chain from Bitcoin Core v32.1 over P2P, with no whitelist | tip, height and UTXO set hash for 20 chains | identical, no misbehaviour logged |
 | Mainnet and testnet4 header chains from public peers, fully validated | every header | identical tip and chain work |
 
+The `peer-sync` suite serves a live node every recorded block that Bitcoin Core rejects, through the node's own synchronization. The reference's minimal sync loop stops at the first invalid block, so Bitcoin Core v32.1 itself is the node that checks the suite: it passes all 3,111 checks.
+
 A separate node written by an AI agent from this document alone ([bitcoin-spec-node](https://github.com/coreyphillips/bitcoin-spec-node)) passed every suite on its first runs. It then synchronized testnet4 from public peers and mainnet from a Bitcoin Core node, checking every script. Its UTXO set was identical to Bitcoin Core's at every height Bitcoin Core publishes for those networks (90,000 to 150,000 on testnet4, 840,000 to 965,000 on mainnet) and at the mainnet tip, block 975,132.
 
 Every expectation above comes from Bitcoin Core v32.1 itself: the "derived" vectors were produced by running Bitcoin Core's own interpreter (compiled from the pinned source) under every consensus flag combination, and the block corpus was recorded from official v32.1 binaries. `RESULTS.md` has the details, the independent reviews, the mutation audit, and the blind implementation experiment (a node built only from this document, which synchronized mainnet next to Bitcoin Core).
@@ -41,7 +43,7 @@ Every expectation above comes from Bitcoin Core v32.1 itself: the "derived" vect
 | `conformance/runner/` | `bcs-conformance`, the test runner |
 | `conformance/oracle-core/` | A harness backed by Bitcoin Core's own consensus code, compiled from the pinned source |
 | `conformance/vectors/` | Test data: Bitcoin Core's vectors, qa-assets, BIP340, and vectors derived from Bitcoin Core |
-| `conformance/recorder/` | Records Bitcoin Core's functional tests as portable block scenarios |
+| `conformance/recorder/` | Records Bitcoin Core's functional tests as portable block scenarios, and runs Bitcoin Core as a harness or a node for the suites |
 
 ## Chapters
 
@@ -60,7 +62,7 @@ Every expectation above comes from Bitcoin Core v32.1 itself: the "derived" vect
 
 ## Quick start
 
-Requirements: a Rust toolchain. The reference has no dependencies outside the Rust standard library; the test runner uses a few crates from crates.io (JSON, gzip, SHA-256, libsecp256k1). The live suites also need network access to Bitcoin Core peers, and `interop` needs a `bitcoind` v32.1 binary.
+Requirements: a Rust toolchain. The reference has no dependencies outside the Rust standard library; the test runner uses a few crates from crates.io (JSON, gzip, SHA-256, libsecp256k1, BIP324). The live suites also need network access to Bitcoin Core peers, and `interop` and `peer-sync` need a `bitcoind` v32.1 binary.
 
 ```sh
 # Build the specification's code and run its known-answer tests.
@@ -76,6 +78,11 @@ cargo build --release
 # Run the reference node against fresh bitcoind instances, one per recorded scenario.
 ./target/release/bcs-conformance interop --bitcoind /path/to/bitcoind \
   --node "$PWD/target/release/reference-node --network {network} --connect {peer} --stop-at {stop_at} --options {options}"
+
+# Serve every recorded scenario, rejected blocks included, to a live node through its own sync
+# (here Bitcoin Core itself; PROTOCOL.md section 5.1 says what a node command must do).
+./target/release/bcs-conformance peer-sync --bitcoind /path/to/bitcoind --sync-node \
+  "python3 $PWD/conformance/recorder/core_sync_node.py --bitcoind /path/to/bitcoind --network {network} --datadir {datadir} --peer {peer} --options {options}"
 ```
 
 To test your own implementation, give it a harness that speaks [`conformance/PROTOCOL.md`](conformance/PROTOCOL.md) and run `bcs-conformance --impl "<your harness command>"`. See [`conformance/README.md`](conformance/README.md) for the suites and their rules.

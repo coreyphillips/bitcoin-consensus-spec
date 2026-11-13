@@ -11,9 +11,12 @@ path = "src/main.rs"
 
 # The runner must stay independent of the implementations it tests: it never depends on the
 # reference crate. secp256k1 is only used to build the taproot placeholders of script_tests.json;
-# flate2 reads the gzip-compressed block corpus.
+# flate2 reads the gzip-compressed block corpus; bip324 lets the peer-sync suite accept nodes that
+# speak only the BIP324 version 2 transport (a transport, not a consensus rule; the specification
+# does not define it).
 [dependencies]
 serde_json = { version = "1", features = ["raw_value"] }
 sha2 = "0.10"
 secp256k1 = "0.31"
 flate2 = "1"
+bip324 = "0.11"
