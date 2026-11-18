@@ -517,12 +517,15 @@ fn cmd_run(opts: &Options) -> ExitCode {
     }
     let restarts = harness.as_ref().map_or(0, |h| h.restarts());
     drop(harness);
-    let failed = print_report(&results, if opts.raw { "raw" } else { "derived" });
+    let failed = print_report(
+        &results,
+        if opts.raw { "raw" } else { "derived" },
+        opts.fail_on_level2,
+    );
     if restarts > 0 {
         println!("note: the harness died and was restarted {restarts} time(s)");
     }
-    let l2 = results.iter().map(|r| r.1.l2_mismatches).sum::<u64>();
-    if failed || (opts.fail_on_level2 && l2 > 0) {
+    if failed {
         if !opts.verbose {
             println!("run with --verbose to see every failure");
         }
@@ -532,10 +535,11 @@ fn cmd_run(opts: &Options) -> ExitCode {
     }
 }
 
-/// Prints the per-suite table and each suite's detail lines. Returns true when any suite failed
-/// at level 1 (level 0 for the corpus), could not run, has checks the harness does not support,
-/// or when a `--known-failures` entry of a suite that ran named no failure.
-fn print_report(results: &[(&str, Stats, Duration)], mode: &str) -> bool {
+/// Prints the per-suite table, each suite's detail lines and the `RESULT:` line. Returns true
+/// when any suite failed at level 1 (level 0 for the corpus), could not run, has checks the
+/// harness does not support, when a `--known-failures` entry of a suite that ran named no
+/// failure, or when `fail_on_level2` is set and any level 2 check differed.
+fn print_report(results: &[(&str, Stats, Duration)], mode: &str, fail_on_level2: bool) -> bool {
     println!();
     println!(
         "{:<14} {:<8} {:>9} {:>9} {:>8} {:>8} {:>11} {:>8} {:>8}",
@@ -627,16 +631,31 @@ fn print_report(results: &[(&str, Stats, Duration)], mode: &str) -> bool {
             any_failure = true;
         }
     }
+    let l2 = results.iter().map(|r| r.1.l2_mismatches).sum();
+    let (line, failed) = outcome(any_failure, l2, fail_on_level2);
     println!();
-    println!(
-        "{}",
-        if any_failure {
-            "RESULT: FAIL"
+    println!("{line}");
+    failed
+}
+
+/// The report's last line and whether the run failed. When level 2 alone fails the run, the line
+/// says so: the table shows the level 2 counts but not that they are what failed it.
+fn outcome(level1_failed: bool, l2_mismatches: u64, fail_on_level2: bool) -> (String, bool) {
+    if level1_failed {
+        ("RESULT: FAIL".to_string(), true)
+    } else if fail_on_level2 && l2_mismatches > 0 {
+        let noun = if l2_mismatches == 1 {
+            "mismatch"
         } else {
-            "RESULT: PASS"
-        }
-    );
-    any_failure
+            "mismatches"
+        };
+        (
+            format!("RESULT: FAIL (level 2: {l2_mismatches} {noun})"),
+            true,
+        )
+    } else {
+        ("RESULT: PASS".to_string(), false)
+    }
 }
 
 fn cmd_derive(opts: &Options) -> ExitCode {
@@ -716,19 +735,15 @@ fn cmd_derive(opts: &Options) -> ExitCode {
     }
     drop(oracle);
     println!("\ncross-check of the oracle's answers against the original vector expectations:");
-    let mut failed = print_report(&results, "raw");
+    // Level 2 always fails the cross-check: like a level 1 failure, it is a runner or oracle bug.
+    let mut failed = print_report(&results, "raw", true);
     if !replay.is_empty() {
         println!(
             "\nreplay of Core's unit tests with the rows' original flags (policy flags included):"
         );
-        failed |= print_report(&replay, "core");
+        failed |= print_report(&replay, "core", true);
     }
-    let l2 = results
-        .iter()
-        .chain(replay.iter())
-        .map(|r| r.1.l2_mismatches)
-        .sum::<u64>();
-    if failed || l2 > 0 {
+    if failed {
         eprintln!("bcs-conformance: the cross-check failed; no derived file was written");
         return ExitCode::FAILURE;
     }
@@ -757,4 +772,25 @@ fn cmd_derive(opts: &Options) -> ExitCode {
         );
     }
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::outcome;
+
+    #[test]
+    fn level2_fails_only_with_the_flag_and_then_says_so() {
+        assert_eq!(outcome(false, 0, true), ("RESULT: PASS".into(), false));
+        assert_eq!(outcome(false, 3, false), ("RESULT: PASS".into(), false));
+        assert_eq!(
+            outcome(false, 3, true),
+            ("RESULT: FAIL (level 2: 3 mismatches)".into(), true)
+        );
+        assert_eq!(
+            outcome(false, 1, true),
+            ("RESULT: FAIL (level 2: 1 mismatch)".into(), true)
+        );
+        assert_eq!(outcome(true, 3, true), ("RESULT: FAIL".into(), true));
+        assert_eq!(outcome(true, 0, false), ("RESULT: FAIL".into(), true));
+    }
 }
