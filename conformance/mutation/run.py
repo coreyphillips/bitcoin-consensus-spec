@@ -36,20 +36,31 @@ RUNNER = os.path.join(
 SCRIPT_SUITES = ["script-tests", "tx-valid", "tx-invalid", "sighash", "bip341", "bip340", "script-assets", "custom"]
 VERDICTS = ["caught", "caught-level2", "survived"]
 # A check whose call got no answer, worded as the runner's CallError (harness.rs), or whose answer
-# lacks the field it checks. Any other failed check got an answer that differs from the expected one.
+# lacks the field it checks (`custom` prints a missing field as null). Any other failed check got
+# an answer that differs from the expected one.
 HARNESS_ERROR = re.compile(
-    r": (internal|harness died|protocol violation|bad_request): |: the harness command |: response has no ")
-# A normative corpus check, printed by --verbose, whose tip query answered with a tip.
-TIP_DIFFERS = re.compile(r"^(DIVERGE|FAIL) +\[corpus\] .*?: expected tip \S+ height \S+, got (?!error: |\(no tip\))")
+    r": (internal|harness died|protocol violation|bad_request): |: the harness command |: response has no "
+    r"|, got null(;|$)")
+# A normative corpus check, printed by --verbose, whose tip query answered with a tip: the file and
+# the event.
+TIP_DIFFERS = re.compile(
+    r"^(?:DIVERGE|FAIL) +\[corpus\] (\S+) check \S+ \(event (\d+),.*?: expected tip \S+ height \S+, "
+    r"got (?!error: |\(no tip\))")
+# The error summary of a corpus file, printed by --verbose: the file and the event that recorded its
+# first error.
+FIRST_ERROR = re.compile(r"^(?:FAIL|KNOWN) +\[corpus\] (\S+) errors from event (\d+): ")
 # A row of the runner's suite table: suite, mode, cases, passed, failed, level2, l2-checked,
 # unsupported, time.
 SUITE_ROW = re.compile(r"^(\S+)\s+\S+\s+(\d+)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+[\d.]+s$")
 # A file row of the corpus table: name, checks, four level fractions, errors, time.
 CORPUS_ROW = re.compile(r"\s\d+(\s+\d+/\d+){4}\s+(\d+)\s+[\d.]+s$")
 LEVELS = ["level 0", "level 0 non-normative", "level 1", "level 2"]
-# What the unmodified reference reports for the whole block corpus. A missing corpus file lowers
-# every total and still passes, so update this with the corpus (README.md records the same numbers).
-CORPUS_TOTALS = "level 0 5282/5282, level 0 non-normative 1/1, level 1 1237/1237, level 2 2292/2292"
+# What the unmodified reference runs for each kind. A missing vector or corpus file lowers these
+# and still passes, so update them with the vectors.
+TOTALS = {
+    "script": "338387 checks in 8 suites",
+    "block": "level 0 5282/5282, level 0 non-normative 1/1, level 1 1237/1237, level 2 2292/2292",
+}
 
 
 def run_runner(args):
@@ -105,9 +116,12 @@ def corpus_verdict(harness):
     ran = ", ".join("%s %s/%s" % (LEVELS[i], a, b) for i, (a, b) in enumerate(fractions))
     misses = ["%s %s/%s" % (LEVELS[i], a, b) for i, (a, b) in enumerate(fractions) if a != b]
     notes = misses + ([plural(errors, "harness error")] if errors else [])
-    # A failed tip query also counts as a normative miss. Only the first 21 misses of each file
-    # are printed, so a tip that differs only after those is reported as an error.
-    if any(TIP_DIFFERS.match(line) for line in lines):
+    # A failed tip query also counts as a normative miss, and a tip after a file's first error may
+    # be state the failed call left behind, so neither is a catch. Only the first 21 misses of
+    # each file are printed, so a tip that differs only after those is reported as an error.
+    first_error = {m.group(1): int(m.group(2)) for m in map(FIRST_ERROR.match, lines) if m}
+    tips = [m for m in map(TIP_DIFFERS.match, lines) if m]
+    if any(int(m.group(2)) <= first_error.get(m.group(1), int(m.group(2))) for m in tips):
         return "caught", ", ".join(notes), ran
     if out.returncode != 0 or errors:
         return "error", "; ".join(["no normative tip differs"] + notes), ran
@@ -165,8 +179,8 @@ def baseline(kinds, work, pool):
         if failure:
             raise SystemExit("the unmodified reference: %s, %s" % failure)
         for kind, (verdict, detail, ran) in zip(kinds, pool.map(lambda k: EVALUATE[k](harness), kinds)):
-            if verdict == "survived" and kind == "block" and ran != CORPUS_TOTALS:
-                verdict, detail = "incomplete", "%s, expected %s" % (ran, CORPUS_TOTALS)
+            if verdict == "survived" and ran != TOTALS[kind]:
+                verdict, detail = "incomplete", "%s, expected %s" % (ran, TOTALS[kind])
             ok = verdict == "survived"
             print("%-30s %-6s %-15s %-9s %s" % (
                 "(unmodified)", kind, "passed" if ok else verdict, "" if ok else "UNEXPECTED",
