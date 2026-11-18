@@ -11,6 +11,8 @@
 //! which is counted at level 2 (it fails the run only with `--fail-on-level2`). Chains:
 //!
 //! - `generate-300`: 300 blocks from `generatetodescriptor 300 "raw(51)"`;
+//! - `generate-300-stop-at-100`: the same 300 blocks, with `{stop_at}` block 100 instead of the tip,
+//!   compared with what `bitcoind` reported when block 100 was its tip;
 //! - one per corpus scenario: the blocks of the scenario's final active chain (the tip of its last
 //!   check), submitted in height order with `submitblock`, with `bitcoind` started with
 //!   `-testactivationheight=name@height` and `-test=bip94` from the scenario's `reset` options.
@@ -52,8 +54,14 @@ pub struct Config {
 }
 
 enum Load {
-    Generate(u32),
-    Corpus { file: PathBuf },
+    /// `blocks` blocks up to the target, then `beyond` more past it.
+    Generate {
+        blocks: u32,
+        beyond: u32,
+    },
+    Corpus {
+        file: PathBuf,
+    },
 }
 
 struct Chain {
@@ -355,8 +363,8 @@ fn run_chain(
     )?;
 
     match &chain.load {
-        Load::Generate(n) => {
-            core.rpc("generatetodescriptor", json!([n, "raw(51)"]))?;
+        Load::Generate { blocks, .. } => {
+            core.rpc("generatetodescriptor", json!([blocks, "raw(51)"]))?;
         }
         Load::Corpus { .. } => {
             let fc = final_chain.as_ref().unwrap();
@@ -401,6 +409,12 @@ fn run_chain(
     let height = core.rpc("getblockcount", json!([]))?.as_i64().unwrap_or(-1);
     let utxo = core.rpc("gettxoutsetinfo", json!(["hash_serialized_3"]))?;
     let utxo_hash = utxo["hash_serialized_3"].as_str().unwrap_or("").to_string();
+    // Blocks past the target, so that the peer offers more than the node must take.
+    if let Load::Generate { beyond, .. } = chain.load {
+        if beyond > 0 {
+            core.rpc("generatetodescriptor", json!([beyond, "raw(51)"]))?;
+        }
+    }
 
     let command = cfg
         .node
@@ -513,11 +527,24 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
             cfg.bitcoind.display()
         ));
     }
-    let mut chains = vec![Chain {
-        name: "generate-300".into(),
-        options: json!({}),
-        load: Load::Generate(300),
-    }];
+    let mut chains = vec![
+        Chain {
+            name: "generate-300".into(),
+            options: json!({}),
+            load: Load::Generate {
+                blocks: 300,
+                beyond: 0,
+            },
+        },
+        Chain {
+            name: "generate-300-stop-at-100".into(),
+            options: json!({}),
+            load: Load::Generate {
+                blocks: 100,
+                beyond: 200,
+            },
+        },
+    ];
     let files = corpus::corpus_files(&cfg.corpus)?;
     for file in &files {
         let (_meta, events) = corpus::read_events(file)?;
@@ -541,7 +568,7 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
     if files.is_empty() {
         stats
             .details
-            .push("interop: no corpus files, only the generated chain is used".into());
+            .push("interop: no corpus files, only the generated chains are used".into());
     }
     stats.details.push(format!(
         "{:<44} {:>7} {:>8} {:>8}  {}",
