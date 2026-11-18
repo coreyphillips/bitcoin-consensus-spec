@@ -474,6 +474,11 @@ for name, redeem in (("version 1, 32 bytes", b"\x51" + push(bytes([1]) * 32)), (
 for op in (0x4f, 0x50, 0x51, 0x61, 0x62, 0x63, 0x7d, 0x7e, 0x81, 0x82, 0x83, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f, 0x94, 0x95, 0x99, 0x9a, 0xba, 0xbb, 0xfe, 0xff):
     add("tapscript: op_return then opcode 0x%02x" % op, mk_tap(b"\x6a" + bytes([op])))
 
+# Every opcode from 0x4f to 0xff alone as a tapscript, so that each OP_SUCCESS opcode is decisive in some case and
+# not only at the edges of its range.
+for op in range(0x4f, 0x100):
+    add("tapscript: the single opcode 0x%02x" % op, mk_tap(bytes([op])))
+
 with open(OUT, "w") as f:
     for o in out:
         f.write(json.dumps(o) + "\n")
