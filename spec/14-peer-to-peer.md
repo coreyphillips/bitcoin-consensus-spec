@@ -176,7 +176,7 @@ How Bitcoin Core answers `getheaders` (Core: the `GETHEADERS` case of `ProcessMe
 - With an **empty locator**, it sends exactly one header, the stop hash's, if it knows that block and is willing to serve it (on its active chain, or a recent valid fork); otherwise it sends **nothing at all**.
 - Otherwise it takes the first locator hash that it knows and that is on its active chain, or that is a descendant of its active tip (then it uses the tip); hashes it does not know, and hashes on side branches, are skipped; if none qualifies it uses genesis. It then sends the headers of its active chain after that block, up to 2,000, stopping early after the stop hash.
 
-A node keeps sending `getheaders`, with a locator starting from the last header received, until a `headers` message has fewer than 2,000 entries. A received `headers` message is first checked as a whole (`headers_message_acceptable` below), and then processed with `process_headers` (chapter 11) in order, stopping at the first header that fails.
+A node keeps sending `getheaders`, with a locator starting from the last header received, until a `headers` message has fewer than 2,000 entries or adds no header to the block tree. A received `headers` message is first checked as a whole (`headers_message_acceptable` below), and then processed with `process_headers` (chapter 11) in order, stopping at the first header that fails.
 
 The locator is the hashes of a block and its ancestors at decreasing heights: the first 12 entries are consecutive heights, after which the step doubles at each entry; the list always ends with genesis. Bitcoin Core builds it from its best header when synchronizing headers. (Core: `LocatorEntries`, `src/chain.cpp`.)
 
@@ -514,7 +514,8 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
                     send(&mut stream, "sendheaders", &[])?;
                     send(&mut stream, "verack", &[])?;
                 }
-                "verack" => {
+                // A repeated `verack` is ignored, so it cannot restart the idle clock.
+                "verack" if !handshake_done => {
                     handshake_done = true;
                     // The idle limit counts from here.
                     last_progress = Instant::now();
