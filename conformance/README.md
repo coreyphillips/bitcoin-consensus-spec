@@ -31,7 +31,9 @@ BITCOIN_CORE_SRC=/path/to/bitcoin-core-v32.1 cargo build --release
 ```
 
 The build stops with an explanation when `BITCOIN_CORE_SRC` is unset, is not a git checkout, is not
-at commit `f0de87f0...`, or has local modifications under `src/`. It compiles
+at commit `f0de87f0...`, or has local modifications under `src/`. Every file of that commit under
+`src/` is hashed as it is on disk and compared with the commit's tree, so a change that `git status`
+does not show (a file marked `--assume-unchanged`, for example) also stops it. It compiles
 `script/interpreter.cpp` (inside `cpp/oracle.cpp`, which gives it Core's `SignatureHash`,
 `SignatureHashSchnorr` and static `VerifyTaprootCommitment` unchanged), `script/script.cpp`,
 `primitives/transaction.cpp`, `consensus/tx_check.cpp`, `pubkey.cpp`, the hash functions and
@@ -179,6 +181,11 @@ of the transaction, input index and spent outputs, so the runner can prove it se
 request the oracle answered) and `results`: 64 characters, one per flag combination, each indexing
 `errors` through the alphabet `0-9a-zA-Z` (`OK` means valid). The runner refuses derived files whose
 `source_sha256` or digests do not match.
+
+CI (`.github/workflows/core.yml`) builds the oracle from a fresh v32.1 clone, runs `derive` and
+fails unless the committed files are byte-identical to the new ones apart from the provenance
+`build` line, which names the machine's compiler and target (`.github/compare-derived.sh`). The
+same workflow replays the corpus through bitcoind with `recorder/core_chain_harness.py`.
 
 ## Flag rules
 
