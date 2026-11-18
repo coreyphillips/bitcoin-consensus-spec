@@ -134,7 +134,8 @@ peer-sync feature_spec_pitfalls.node0 ibd 149b7d9071007e7058afe5fbfff577b06a0713
 
 `row 15` names `row 15 (message of size 0 ...)` and not `row 150`. A failure the file names is
 printed as `KNOWN` with `--verbose`, counted in `cases` but not in `failed`, and does not fail the
-run; the line below the table counts them per suite. Every other failure fails the run as before.
+run; the line below the table counts them per suite. Every other failure fails the run as before,
+and so does a corpus file the runner cannot read, whatever the list says.
 An entry that names no failure, in a suite that ran, is printed as `STALE` and fails the run, so the
 list shrinks as the implementation is fixed and never hides a check that passes. Entries of suites
 that did not run are ignored, so one file can serve runs that select different suites.

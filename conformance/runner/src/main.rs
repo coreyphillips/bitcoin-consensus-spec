@@ -521,6 +521,7 @@ fn cmd_run(opts: &Options) -> ExitCode {
         &results,
         if opts.raw { "raw" } else { "derived" },
         opts.fail_on_level2,
+        &[],
     );
     if restarts > 0 {
         println!("note: the harness died and was restarted {restarts} time(s)");
@@ -538,8 +539,15 @@ fn cmd_run(opts: &Options) -> ExitCode {
 /// Prints the per-suite table, each suite's detail lines and the `RESULT:` line. Returns true
 /// when any suite failed at level 1 (level 0 for the corpus), could not run, ran no check, has
 /// checks the harness does not support, when a `--known-failures` entry of a suite that ran
-/// named no failure, or when `fail_on_level2` is set and any level 2 check differed.
-fn print_report(results: &[(&str, Stats, Duration)], mode: &str, fail_on_level2: bool) -> bool {
+/// named no failure, or when `fail_on_level2` is set and any level 2 check differed. A suite in
+/// `checked_elsewhere` ran a check in another report of the same command and is not failed for
+/// running none here.
+fn print_report(
+    results: &[(&str, Stats, Duration)],
+    mode: &str,
+    fail_on_level2: bool,
+    checked_elsewhere: &[&str],
+) -> bool {
     println!();
     println!(
         "{:<14} {:<8} {:>9} {:>9} {:>8} {:>8} {:>11} {:>8} {:>8}",
@@ -556,7 +564,10 @@ fn print_report(results: &[(&str, Stats, Duration)], mode: &str, fail_on_level2:
         } else {
             "-"
         };
-        if let Some(e) = suite_error(s) {
+        // An enforced level 2 comparison is a check: a corpus may hash its UTXO set only at
+        // non-normative checks, which `cases` does not count.
+        let ran = checked_elsewhere.contains(suite) || (fail_on_level2 && s.l2_checked > 0);
+        if let Some(e) = suite_error(s, ran) {
             if s.cases == 0 {
                 println!("{suite:<14} {mode:<8} {e}");
                 any_failure = true;
@@ -641,10 +652,11 @@ fn print_report(results: &[(&str, Stats, Duration)], mode: &str, fail_on_level2:
 /// Why a suite failed to run, if it did. A selected suite that ran no check fails: a wrong
 /// `--vectors` or `--corpus` path, or a vector file emptied by mistake, must not end in a pass.
 /// Checks the harness does not support already fail the run and keep their counts in the table.
-fn suite_error(s: &Stats) -> Option<&str> {
+/// `ran_uncounted` says the suite ran a check that `s.cases` does not count.
+fn suite_error(s: &Stats, ran_uncounted: bool) -> Option<&str> {
     match &s.error {
         Some(e) => Some(e),
-        None if s.cases == 0 && s.unsupported == 0 => Some("ran no check"),
+        None if s.cases == 0 && s.unsupported == 0 && !ran_uncounted => Some("ran no check"),
         None => None,
     }
 }
@@ -745,14 +757,22 @@ fn cmd_derive(opts: &Options) -> ExitCode {
         );
     }
     drop(oracle);
+    // A suite checked by either phase ran: policy rows have no cross-check case, and tx-invalid's
+    // BADTX rows have no replay case.
+    let checked: Vec<&str> = results
+        .iter()
+        .chain(&replay)
+        .filter(|r| r.1.cases > 0)
+        .map(|r| r.0)
+        .collect();
     println!("\ncross-check of the oracle's answers against the original vector expectations:");
     // Level 2 always fails the cross-check: like a level 1 failure, it is a runner or oracle bug.
-    let mut failed = print_report(&results, "raw", true);
+    let mut failed = print_report(&results, "raw", true, &checked);
     if !replay.is_empty() {
         println!(
             "\nreplay of Core's unit tests with the rows' original flags (policy flags included):"
         );
-        failed |= print_report(&replay, "core", true);
+        failed |= print_report(&replay, "core", true, &checked);
     }
     if failed {
         eprintln!("bcs-conformance: the cross-check failed; no derived file was written");
@@ -794,11 +814,12 @@ mod tests {
     #[test]
     fn a_suite_that_ran_no_check_fails() {
         let empty = Stats::default();
-        assert_eq!(suite_error(&empty), Some("ran no check"));
+        assert_eq!(suite_error(&empty, false), Some("ran no check"));
         assert!(print_report(
             &[("custom", empty, Duration::ZERO)],
             "derived",
-            false
+            false,
+            &[]
         ));
 
         // Rows counted under a stated rule are not checks.
@@ -807,16 +828,44 @@ mod tests {
         assert!(print_report(
             &[("peer-sync", only_rules, Duration::ZERO)],
             "derived",
-            false
+            false,
+            &[]
+        ));
+
+        // In derive, a suite checked only by the other phase ran.
+        assert!(!print_report(
+            &[("tx-invalid", Stats::default(), Duration::ZERO)],
+            "core",
+            true,
+            &["tx-invalid"]
+        ));
+
+        // Level 2 comparisons are checks when they are enforced.
+        let l2_only = || Stats {
+            l2_checked: 1,
+            ..Default::default()
+        };
+        assert!(print_report(
+            &[("corpus", l2_only(), Duration::ZERO)],
+            "derived",
+            false,
+            &[]
+        ));
+        assert!(!print_report(
+            &[("corpus", l2_only(), Duration::ZERO)],
+            "derived",
+            true,
+            &[]
         ));
 
         let mut ran = Stats::default();
         ran.pass();
-        assert_eq!(suite_error(&ran), None);
+        assert_eq!(suite_error(&ran, false), None);
         assert!(!print_report(
             &[("custom", ran, Duration::ZERO)],
             "derived",
-            false
+            false,
+            &[]
         ));
 
         // Unsupported checks fail on their own and keep their counts in the table.
@@ -824,11 +873,12 @@ mod tests {
             unsupported: 4,
             ..Default::default()
         };
-        assert_eq!(suite_error(&unsupported), None);
+        assert_eq!(suite_error(&unsupported, false), None);
         assert!(print_report(
             &[("bip340", unsupported, Duration::ZERO)],
             "derived",
-            false
+            false,
+            &[]
         ));
     }
 

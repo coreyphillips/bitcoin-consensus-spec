@@ -700,7 +700,9 @@ pub fn run(ctx: &mut Ctx, paths: &[PathBuf], restart_shortcut: bool) -> Result<(
         if !fr.errors.is_empty() {
             ctx.stats.cases += 1;
             let loc = fr.errors_location();
-            let known = crate::known::take("corpus", &loc);
+            // A file that could not be read is a corpus defect, not the harness's: no entry
+            // waives it.
+            let known = fr.first_error_event.is_some() && crate::known::take("corpus", &loc);
             if known {
                 ctx.stats.known += 1;
             } else {

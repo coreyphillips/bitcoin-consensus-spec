@@ -1384,7 +1384,13 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
         let loaded = match load(file) {
             Ok(l) => l,
             Err(e) => {
-                stats.fail(SUITE, verbose, &format!("{name} setup"), &e);
+                // A file that cannot be loaded is a corpus defect, not the node's: no
+                // `--known-failures` entry waives it.
+                stats.cases += 1;
+                stats.failed += 1;
+                if verbose {
+                    println!("FAIL     [{SUITE}] {name} setup: {e}");
+                }
                 stats
                     .details
                     .push(line("-", "-", "-", "-", "-", &format!("ERROR {e}")));
