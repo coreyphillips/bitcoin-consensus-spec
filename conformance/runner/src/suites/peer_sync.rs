@@ -1344,8 +1344,11 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
     }
     let files = corpus::corpus_files(&cfg.corpus)?;
     if files.is_empty() {
-        stats.details.push("peer-sync: no corpus files".into());
-        return Ok(());
+        let where_: Vec<String> = cfg.corpus.iter().map(|p| p.display().to_string()).collect();
+        return Err(format!(
+            "no corpus files (*.jsonl.gz) in {}",
+            where_.join(", ")
+        ));
     }
     stats.details.push(format!(
         "{:<34} {:>6} {:>6} {:>13} {:>13} {:>5} {:>8}  {}",

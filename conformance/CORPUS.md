@@ -24,7 +24,7 @@ Encodings follow `PROTOCOL.md` section 3: bytes are lowercase hex, hashes are in
 
 ### 2.1 `meta`
 
-Always the first line. Describes provenance; a runner only needs `format`, `format_version` and `scenario`.
+Always the first line. Describes provenance; a runner only needs `format`, `format_version` and `scenario`. When `counts` is present, `bcs-conformance` compares it with the events that follow and treats a file that disagrees as corrupt, so a file cut short at a line boundary fails.
 
 | Field | Meaning |
 |---|---|

@@ -101,7 +101,8 @@ headers-live and interop suites.
 
 - **Level 1**: the verdict (`valid`, the sighash bytes) differs, or the harness gave no usable
   answer (`bad_request`, `internal`, malformed response, crash, timeout). Any level 1 failure makes
-  the exit status 1.
+  the exit status 1. So does a selected suite that ran no check (`ran no check`, or the reason it
+  found nothing to load), which is what a wrong `--vectors` or `--corpus` path looks like.
 - **Level 2**: the verdict matches but the error identifier (`script_error`, or `reason` of
   `tx_check`) differs from the expected one. Reported separately; affects the exit status only
   with `--fail-on-level2`. A valid answer without `script_error` counts as `OK`.

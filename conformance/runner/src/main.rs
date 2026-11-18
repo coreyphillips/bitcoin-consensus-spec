@@ -93,7 +93,7 @@ DERIVE OPTIONS:
 
 Exit status: 0 when every check passed at level 1 (level 0 for the corpus), 1 otherwise,
 2 for usage errors. Checks that need an operation the harness does not list are failures unless
-their suite is excluded.
+their suite is excluded. A selected suite that runs no check fails.
 ";
 
 struct Options {
@@ -536,9 +536,9 @@ fn cmd_run(opts: &Options) -> ExitCode {
 }
 
 /// Prints the per-suite table, each suite's detail lines and the `RESULT:` line. Returns true
-/// when any suite failed at level 1 (level 0 for the corpus), could not run, has checks the
-/// harness does not support, when a `--known-failures` entry of a suite that ran named no
-/// failure, or when `fail_on_level2` is set and any level 2 check differed.
+/// when any suite failed at level 1 (level 0 for the corpus), could not run, ran no check, has
+/// checks the harness does not support, when a `--known-failures` entry of a suite that ran
+/// named no failure, or when `fail_on_level2` is set and any level 2 check differed.
 fn print_report(results: &[(&str, Stats, Duration)], mode: &str, fail_on_level2: bool) -> bool {
     println!();
     println!(
@@ -556,7 +556,7 @@ fn print_report(results: &[(&str, Stats, Duration)], mode: &str, fail_on_level2:
         } else {
             "-"
         };
-        if let Some(e) = &s.error {
+        if let Some(e) = suite_error(s) {
             if s.cases == 0 {
                 println!("{suite:<14} {mode:<8} {e}");
                 any_failure = true;
@@ -636,6 +636,17 @@ fn print_report(results: &[(&str, Stats, Duration)], mode: &str, fail_on_level2:
     println!();
     println!("{line}");
     failed
+}
+
+/// Why a suite failed to run, if it did. A selected suite that ran no check fails: a wrong
+/// `--vectors` or `--corpus` path, or a vector file emptied by mistake, must not end in a pass.
+/// Checks the harness does not support already fail the run and keep their counts in the table.
+fn suite_error(s: &Stats) -> Option<&str> {
+    match &s.error {
+        Some(e) => Some(e),
+        None if s.cases == 0 && s.unsupported == 0 => Some("ran no check"),
+        None => None,
+    }
 }
 
 /// The report's last line and whether the run failed. When level 2 alone fails the run, the line
@@ -776,7 +787,50 @@ fn cmd_derive(opts: &Options) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::outcome;
+    use super::{outcome, print_report, suite_error};
+    use crate::check::Stats;
+    use std::time::Duration;
+
+    #[test]
+    fn a_suite_that_ran_no_check_fails() {
+        let empty = Stats::default();
+        assert_eq!(suite_error(&empty), Some("ran no check"));
+        assert!(print_report(
+            &[("custom", empty, Duration::ZERO)],
+            "derived",
+            false
+        ));
+
+        // Rows counted under a stated rule are not checks.
+        let mut only_rules = Stats::default();
+        only_rules.rule("needs options", 3);
+        assert!(print_report(
+            &[("peer-sync", only_rules, Duration::ZERO)],
+            "derived",
+            false
+        ));
+
+        let mut ran = Stats::default();
+        ran.pass();
+        assert_eq!(suite_error(&ran), None);
+        assert!(!print_report(
+            &[("custom", ran, Duration::ZERO)],
+            "derived",
+            false
+        ));
+
+        // Unsupported checks fail on their own and keep their counts in the table.
+        let unsupported = Stats {
+            unsupported: 4,
+            ..Default::default()
+        };
+        assert_eq!(suite_error(&unsupported), None);
+        assert!(print_report(
+            &[("bip340", unsupported, Duration::ZERO)],
+            "derived",
+            false
+        ));
+    }
 
     #[test]
     fn level2_fails_only_with_the_flag_and_then_says_so() {

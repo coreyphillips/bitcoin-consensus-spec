@@ -97,7 +97,49 @@ pub fn read_events(path: &Path) -> Result<(Value, Vec<Value>), String> {
                 .map_err(|e| format!("{}: line {}: {e}", path.display(), i + 2))?,
         );
     }
+    check_counts(&meta, &events).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok((meta, events))
+}
+
+/// Compares the meta event's `counts` with the events read. A file cut short at a line boundary
+/// still decompresses and parses; only the counts written when it was recorded show that events
+/// are missing. A file without `counts` is not checked (CORPUS.md does not require it).
+fn check_counts(meta: &Value, events: &[Value]) -> Result<(), String> {
+    let Some(counts) = meta.get("counts") else {
+        return Ok(());
+    };
+    let counts = counts.as_object().ok_or("meta counts is not an object")?;
+    let of_type = |t: &str| events.iter().filter(|e| e["type"] == t).count();
+    let mut wrong = Vec::new();
+    for (key, want) in counts {
+        let got = match key.as_str() {
+            "events" => events.len(),
+            "blocks" => of_type("block"),
+            "headers" => of_type("headers"),
+            "invalidate" => of_type("invalidate"),
+            "restart" => of_type("restart"),
+            "checks" => of_type("check"),
+            "normative_checks" => events
+                .iter()
+                .filter(|e| e["type"] == "check" && e["normative"].as_bool().unwrap_or(true))
+                .count(),
+            _ => continue,
+        };
+        let want = want
+            .as_u64()
+            .ok_or_else(|| format!("meta counts.{key} is not a count"))?;
+        if got as u64 != want {
+            wrong.push(format!("{got} {key}, meta says {want}"));
+        }
+    }
+    if wrong.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "the file does not hold the events it was recorded with: {}",
+            wrong.join("; ")
+        ))
+    }
 }
 
 /// The serialized block of a `block` event: its `hex`, or the bytes of its blob (checked against
@@ -612,10 +654,7 @@ pub fn run(ctx: &mut Ctx, paths: &[PathBuf], restart_shortcut: bool) -> Result<(
             .map(|p| p.display().to_string())
             .collect::<Vec<_>>()
             .join(", ");
-        ctx.stats.details.push(format!(
-            "no corpus files (*.jsonl.gz) in {where_}: nothing to replay"
-        ));
-        return Ok(());
+        return Err(format!("no corpus files (*.jsonl.gz) in {where_}"));
     }
     let ops = [
         "chain_reset",
@@ -829,6 +868,29 @@ done"#;
             &[json!({"type": "reset", "network": "regtest", "options": {"refuse": true}})],
         );
         assert_eq!(r.errors_location(), "last errors from event 0");
+    }
+
+    #[test]
+    fn a_file_cut_short_fails_its_meta_counts() {
+        let meta = |counts: Value| json!({"type": "meta", "counts": counts});
+        let events = [
+            json!({"type": "reset"}),
+            json!({"type": "block"}),
+            json!({"type": "check", "normative": true}),
+            json!({"type": "check", "normative": false}),
+        ];
+        let full = json!({"events": 4, "blocks": 1, "headers": 0, "invalidate": 0,
+                          "restart": 0, "checks": 2, "normative_checks": 1});
+        assert_eq!(check_counts(&meta(full.clone()), &events), Ok(()));
+        // Recorded before CORPUS.md listed counts, or written by hand.
+        assert_eq!(check_counts(&json!({"type": "meta"}), &events), Ok(()));
+
+        let e = check_counts(&meta(full.clone()), &events[..1]).unwrap_err();
+        assert!(e.contains("1 events, meta says 4"), "{e}");
+        assert!(e.contains("0 checks, meta says 2"), "{e}");
+        assert!(check_counts(&meta(full), &[]).is_err());
+        assert!(check_counts(&meta(json!({"events": "4"})), &events).is_err());
+        assert!(check_counts(&meta(json!([4])), &events).is_err());
     }
 
     #[test]
