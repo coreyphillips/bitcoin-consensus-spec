@@ -92,7 +92,7 @@ every suite marked `default` by `bcs-conformance suites`: the vector suites, `cu
 `headers-live`, `interop` and `peer-sync` need extra arguments and run only when named. Options: `--vectors DIR`
 (default `conformance/vectors`), `--derived DIR` (default `<vectors>/derived`), `--timeout SECS` per
 response (default 120; a harness that dies or stalls is restarted, at most 5 times),
-`--fail-on-level2`.
+`--fail-on-level2`, `--fail-on-tips` (corpus level 1, below).
 
 Output is one table row per suite: `cases` (checks performed), `passed`, `failed` (level 1),
 `level2`, `l2-checked`, `unsupp.`. Below the table come rows without a check in the chosen mode,
@@ -128,6 +128,8 @@ bip340 row 15
 tx-invalid row 7 input 0 flags P2SH
 # Equal-work tie-break after invalidateblock.
 corpus feature_block.node0 check 88
+# A chain tip set that differs, which fails the run with --fail-on-tips.
+corpus p2p_invalid_block.node0 check 5 tips
 # A file's replay errors fail it once, named by the event of the first one, so an
 # earlier error is not covered. "<file> errors" names them wherever they start.
 corpus mining_basic.node0 errors from event 642
@@ -255,7 +257,10 @@ force sends nothing. A `check` becomes `chain_tip`, plus `chain_tips` when it ca
 - **Level 0** (required): tip and height at every normative check. The table's `cases`, `passed`
   and `failed` count these; a harness error or a corrupt file also fails (once per file).
 - Non-normative checks are compared and reported (`L0 other`) but never fail the run.
-- **Level 1** (optional): the set of (hash, height, status) chain tips. Reported only.
+- **Level 1** (optional): the set of (hash, height, status) chain tips. Reported only, unless
+  `--fail-on-tips` is given: each tip set is then a check, counted in `cases`, and one that differs
+  fails the run. `--known-failures` names it `<file> check <n> tips`; such an entry is used with
+  or without the flag.
 - **Level 2** (optional): `hash_serialized_3` and `txouts`. Counted in `level2`/`l2-checked`;
   fails the run only with `--fail-on-level2`. A harness that does not list `utxo_hash` (an
   implementation that keeps no UTXO set, `PROTOCOL.md` section 4.13) is not asked; each UTXO check

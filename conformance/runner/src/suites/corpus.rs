@@ -14,10 +14,12 @@
 //!   (an implementation that keeps no UTXO set, PROTOCOL.md section 4.13) is not asked; each such
 //!   check counts at level 2 as not compared.
 //!
-//! Level 0 at normative checks is required. Non-normative level 0 checks, level 1 and level 2 are
-//! reported separately. A harness error (`ok: false`, a crash) or a corrupt file is a failure.
-//! `--known-failures` names a level 0 failure as `<file> check <n>` and a file's errors as
-//! `<file> errors from event <n>`, `<n>` being the event whose replay recorded the first one.
+//! Level 0 at normative checks is required, and so is level 1 with `--fail-on-tips`. Non-normative
+//! level 0 checks, level 1 without that flag and level 2 are reported separately. A harness error
+//! (`ok: false`, a crash) or a corrupt file is a failure. `--known-failures` names a level 0
+//! failure as `<file> check <n>`, a tip set that differs as `<file> check <n> tips` and a file's
+//! errors as `<file> errors from event <n>`, `<n>` being the event whose replay recorded the first
+//! one.
 
 use crate::check::{shorten, Ctx};
 use crate::hex;
@@ -240,6 +242,8 @@ pub struct FileResult {
     pub l0_other_fail: u64,
     pub l1: u64,
     pub l1_fail: u64,
+    /// Tip sets that differ as `--known-failures` says (not in `l1_fail`).
+    pub l1_known: u64,
     /// Level 2 checks made. A `utxo_hash` call that failed is an error, not a check.
     pub l2: u64,
     pub l2_fail: u64,
@@ -370,8 +374,14 @@ fn tips_set(v: &Value) -> BTreeSet<Triple> {
         .unwrap_or_default()
 }
 
-/// Replays one file through the harness.
-pub fn replay_file(ctx: &mut Ctx, path: &Path, restart_shortcut: bool) -> FileResult {
+/// Replays one file through the harness. `fail_on_tips` only changes how a tip set that differs
+/// is printed; `run` decides whether it fails.
+pub fn replay_file(
+    ctx: &mut Ctx,
+    path: &Path,
+    restart_shortcut: bool,
+    fail_on_tips: bool,
+) -> FileResult {
     let started = Instant::now();
     let name = path
         .file_name()
@@ -510,12 +520,13 @@ pub fn replay_file(ctx: &mut Ctx, path: &Path, restart_shortcut: bool) -> FileRe
                     short(ev["tip"].as_str().unwrap_or("?")),
                     ev["height"]
                 );
-                let loc = format!(
-                    "{name} check {n} (event {idx}, line {}{}{})",
+                let at = format!(
+                    "(event {idx}, line {}{}{})",
                     idx + 2,
                     if label.is_empty() { "" } else { ", " },
                     label
                 );
+                let loc = format!("{name} check {n} {at}");
                 // Level 0.
                 let got = call(ctx, "chain_tip", "");
                 let matched = match &got {
@@ -577,19 +588,35 @@ pub fn replay_file(ctx: &mut Ctx, path: &Path, restart_shortcut: bool) -> FileRe
                 }
                 // Level 1.
                 if ev.get("tips").is_some() {
-                    r.l1 += 1;
                     match call(ctx, "chain_tips", "") {
                         Ok(a) => {
+                            r.l1 += 1;
                             let want = tips_set(&ev["tips"]);
                             let got = tips_set(a.get("tips").unwrap_or(&Value::Null));
                             if want != got {
-                                r.l1_fail += 1;
-                                if ctx.verbose && printed[1] < MAX_MISMATCH_LINES {
-                                    printed[1] += 1;
+                                // Taken without --fail-on-tips too, so one list serves runs
+                                // with and without it.
+                                let known =
+                                    crate::known::take("corpus", &format!("{name} check {n} tips"));
+                                let tag = if known {
+                                    r.l1_known += 1;
+                                    "KNOWN"
+                                } else {
+                                    r.l1_fail += 1;
+                                    if fail_on_tips {
+                                        "FAIL"
+                                    } else {
+                                        "LEVEL1"
+                                    }
+                                };
+                                if ctx.verbose && (known || printed[1] < MAX_MISMATCH_LINES) {
+                                    if !known {
+                                        printed[1] += 1;
+                                    }
                                     let missing: Vec<_> = want.difference(&got).take(4).collect();
                                     let extra: Vec<_> = got.difference(&want).take(4).collect();
                                     println!(
-                                        "LEVEL1   [corpus] {loc}: chain tips differ ({} expected, {} got); missing {:?}, unexpected {:?}",
+                                        "{tag:<8} [corpus] {name} check {n} tips {at}: chain tips differ ({} expected, {} got); missing {:?}, unexpected {:?}",
                                         want.len(),
                                         got.len(),
                                         missing,
@@ -656,8 +683,13 @@ pub fn replay_file(ctx: &mut Ctx, path: &Path, restart_shortcut: bool) -> FileRe
     r
 }
 
-/// Runs the suite over every corpus file.
-pub fn run(ctx: &mut Ctx, paths: &[PathBuf], restart_shortcut: bool) -> Result<(), String> {
+/// Runs the suite over every corpus file. With `fail_on_tips`, every tip set compared is a check.
+pub fn run(
+    ctx: &mut Ctx,
+    paths: &[PathBuf],
+    restart_shortcut: bool,
+    fail_on_tips: bool,
+) -> Result<(), String> {
     let files = corpus_files(paths)?;
     if files.is_empty() {
         let where_ = paths
@@ -684,7 +716,7 @@ pub fn run(ctx: &mut Ctx, paths: &[PathBuf], restart_shortcut: bool) -> Result<(
     ));
     let mut totals = FileResult::default();
     for file in &files {
-        let fr = replay_file(ctx, file, restart_shortcut);
+        let fr = replay_file(ctx, file, restart_shortcut, fail_on_tips);
         let frac = |pass: u64, all: u64| format!("{}/{}", pass, all);
         ctx.stats.details.push(format!(
             "{:<44} {:>7} {:>11} {:>11} {:>9} {:>9} {:>6} {:>7.1}s",
@@ -692,7 +724,7 @@ pub fn run(ctx: &mut Ctx, paths: &[PathBuf], restart_shortcut: bool) -> Result<(
             fr.checks,
             frac(fr.normative - fr.l0_fail - fr.l0_known, fr.normative),
             frac(fr.l0_other - fr.l0_other_fail, fr.l0_other),
-            frac(fr.l1 - fr.l1_fail, fr.l1),
+            frac(fr.l1 - fr.l1_fail - fr.l1_known, fr.l1),
             frac(fr.l2 - fr.l2_fail, fr.l2),
             fr.errors.len(),
             fr.seconds
@@ -708,6 +740,12 @@ pub fn run(ctx: &mut Ctx, paths: &[PathBuf], restart_shortcut: bool) -> Result<(
         ctx.stats.passed += fr.normative - fr.l0_fail - fr.l0_known;
         ctx.stats.failed += fr.l0_fail;
         ctx.stats.known += fr.l0_known;
+        if fail_on_tips {
+            ctx.stats.cases += fr.l1;
+            ctx.stats.passed += fr.l1 - fr.l1_fail - fr.l1_known;
+            ctx.stats.failed += fr.l1_fail;
+            ctx.stats.known += fr.l1_known;
+        }
         if !fr.errors.is_empty() {
             ctx.stats.cases += 1;
             let loc = fr.errors_location();
@@ -736,6 +774,7 @@ pub fn run(ctx: &mut Ctx, paths: &[PathBuf], restart_shortcut: bool) -> Result<(
         totals.l0_other_fail += fr.l0_other_fail;
         totals.l1 += fr.l1;
         totals.l1_fail += fr.l1_fail;
+        totals.l1_known += fr.l1_known;
         totals.l2 += fr.l2;
         totals.l2_fail += fr.l2_fail;
         totals.l2_uncompared += fr.l2_uncompared;
@@ -761,7 +800,11 @@ pub fn run(ctx: &mut Ctx, paths: &[PathBuf], restart_shortcut: bool) -> Result<(
             totals.l0_other - totals.l0_other_fail,
             totals.l0_other
         ),
-        format!("{}/{}", totals.l1 - totals.l1_fail, totals.l1),
+        format!(
+            "{}/{}",
+            totals.l1 - totals.l1_fail - totals.l1_known,
+            totals.l1
+        ),
         format!("{}/{}", totals.l2 - totals.l2_fail, totals.l2),
     ));
     ctx.stats.details.push(format!(
@@ -777,9 +820,14 @@ pub fn run(ctx: &mut Ctx, paths: &[PathBuf], restart_shortcut: bool) -> Result<(
             totals.l2_uncompared
         ));
     }
-    if totals.l0_other_fail > 0 || totals.l1_fail > 0 {
+    if totals.l0_other_fail > 0 {
+        ctx.stats
+            .details
+            .push("non-normative level 0 checks are reported only; they never fail the run".into());
+    }
+    if !fail_on_tips && totals.l1_fail > 0 {
         ctx.stats.details.push(
-            "non-normative level 0 checks and level 1 (chain tips) are reported only; they never fail the run".into(),
+            "level 1 (chain tips) is reported only; it fails the run with --fail-on-tips".into(),
         );
     }
     Ok(())
@@ -793,20 +841,28 @@ mod tests {
     use std::time::Duration;
 
     /// A harness that refuses a `chain_reset` whose options carry `"refuse":true`, answers
-    /// `chain_tip` with tip `t` at height 0, and fails every other chain op (`utxo_hash` too) as
-    /// internal.
+    /// `chain_tip` with tip `t` at height 0 and `chain_tips` with that tip alone, and fails every
+    /// other chain op (`utxo_hash` too) as internal.
     const STUB: &str = r#"while IFS= read -r line; do
   id=${line#*'"id":'}; id=${id%%[,\}]*}
   case "$line" in
-    *'"op":"info"'*) printf '{"id":%s,"ok":true,"name":"stub","version":"0","spec_version":"0","ops":["info","chain_reset","chain_tip","utxo_hash"]}\n' "$id";;
+    *'"op":"info"'*) printf '{"id":%s,"ok":true,"name":"stub","version":"0","spec_version":"0","ops":["info","chain_reset","chain_process_block","chain_process_headers","chain_invalidate","chain_tip","chain_tips","utxo_hash"]}\n' "$id";;
     *'"refuse":true'*) printf '{"id":%s,"ok":false,"error":"bad_request","message":"refused"}\n' "$id";;
     *'"op":"chain_reset"'*) printf '{"id":%s,"ok":true}\n' "$id";;
     *'"op":"chain_tip"'*) printf '{"id":%s,"ok":true,"tip":"t","height":0}\n' "$id";;
+    *'"op":"chain_tips"'*) printf '{"id":%s,"ok":true,"tips":[{"hash":"t","height":0,"status":"active"}]}\n' "$id";;
     *) printf '{"id":%s,"ok":false,"error":"internal","message":"stub"}\n' "$id";;
   esac
 done"#;
 
     fn replay(name: &str, events: &[Value]) -> FileResult {
+        with_file(name, events, |ctx, path| {
+            replay_file(ctx, path, false, false)
+        })
+    }
+
+    /// Writes `events` as corpus file `name` and calls `f` with the stub harness and the file.
+    fn with_file<T>(name: &str, events: &[Value], f: impl FnOnce(&mut Ctx, &Path) -> T) -> T {
         // One directory per call: tests run in parallel and each removes its own at the end.
         let dir =
             std::env::temp_dir().join(format!("bcs-corpus-test-{}-{name}", std::process::id()));
@@ -831,9 +887,50 @@ done"#;
         let mut harness =
             Harness::start(&format!("sh '{}'", stub.display()), Duration::from_secs(10)).unwrap();
         let mut ctx = Ctx::new(&mut harness, "corpus", false);
-        let r = replay_file(&mut ctx, &path, false);
+        let r = f(&mut ctx, &path);
         let _ = std::fs::remove_dir_all(&dir);
         r
+    }
+
+    #[test]
+    fn tip_sets_are_checks_only_with_fail_on_tips() {
+        let tips = |status: &str| json!([{"hash": "t", "height": 0, "status": status}]);
+        let events = [
+            json!({"type": "reset", "network": "regtest"}),
+            json!({"type": "check", "n": 1, "tip": "t", "height": 0, "tips": tips("active")}),
+            json!({"type": "check", "n": 2, "tip": "t", "height": 0, "tips": tips("invalid")}),
+        ];
+        let stats = |name: &str, fail_on_tips: bool| {
+            with_file(name, &events, |ctx, path| {
+                run(ctx, &[path.to_path_buf()], false, fail_on_tips).unwrap();
+                std::mem::take(&mut ctx.stats)
+            })
+        };
+
+        let reported = stats("tips-reported", false);
+        assert_eq!(
+            (reported.cases, reported.passed, reported.failed),
+            (2, 2, 0)
+        );
+        assert!(
+            reported.details.iter().any(|d| d.contains("1/2")),
+            "{:?}",
+            reported.details
+        );
+        assert!(reported
+            .details
+            .iter()
+            .any(|d| d.contains("--fail-on-tips")));
+
+        let enforced = stats("tips-enforced", true);
+        assert_eq!(
+            (enforced.cases, enforced.passed, enforced.failed),
+            (4, 3, 1)
+        );
+        assert!(!enforced
+            .details
+            .iter()
+            .any(|d| d.contains("--fail-on-tips")));
     }
 
     #[test]

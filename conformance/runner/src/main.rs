@@ -60,6 +60,8 @@ RUN OPTIONS:
 CORPUS OPTIONS:
   --corpus PATH       Corpus file or directory, repeatable (default: <vectors>/blocks)
   --restart-shortcut  Skip restart events whose options equal the ones in force (CORPUS.md 4)
+  --fail-on-tips      Count each chain tip set (level 1) as a check, so one that differs fails
+                      the run; --known-failures names it \"<file> check <n> tips\"
 
 HEADERS-LIVE OPTIONS:
   --peer HOST[:PORT]  Peer to download headers from; a name may resolve to several addresses
@@ -105,6 +107,7 @@ struct Options {
     raw: bool,
     verbose: bool,
     fail_on_level2: bool,
+    fail_on_tips: bool,
     known_failures: Option<PathBuf>,
     vectors: Option<PathBuf>,
     derived: Option<PathBuf>,
@@ -146,6 +149,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         raw: false,
         verbose: false,
         fail_on_level2: false,
+        fail_on_tips: false,
         known_failures: None,
         vectors: None,
         derived: None,
@@ -203,6 +207,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--raw" => o.raw = true,
             "--verbose" | "-v" => o.verbose = true,
             "--fail-on-level2" => o.fail_on_level2 = true,
+            "--fail-on-tips" => o.fail_on_tips = true,
             "--known-failures" => o.known_failures = Some(PathBuf::from(value(&mut i, a)?)),
             "--vectors" => o.vectors = Some(PathBuf::from(value(&mut i, a)?)),
             "--derived" => o.derived = Some(PathBuf::from(value(&mut i, a)?)),
@@ -495,9 +500,12 @@ fn cmd_run(opts: &Options) -> ExitCode {
             "bip341" => suites::bip341::run(&mut ctx, &paths.vectors),
             "bip340" => suites::bip340::run(&mut ctx, &paths.vectors),
             "custom" => suites::custom::run(&mut ctx, &paths.vectors),
-            "corpus" => {
-                suites::corpus::run(&mut ctx, &corpus_paths(opts, &paths), opts.restart_shortcut)
-            }
+            "corpus" => suites::corpus::run(
+                &mut ctx,
+                &corpus_paths(opts, &paths),
+                opts.restart_shortcut,
+                opts.fail_on_tips,
+            ),
             "headers-live" => {
                 let cfg = suites::headers_live::Config {
                     peer: opts.peer.clone().unwrap(),

@@ -15,10 +15,10 @@ jobs:
         run: cargo test --release --workspace
       - name: Build the reference and the runner
         run: cargo build --release
-      # The README promises identical error identifiers and UTXO set hashes,
-      # which are level 2 checks and fail the run only with --fail-on-level2.
+      # The README promises identical error identifiers, UTXO set hashes and
+      # chain tip sets, which fail the run only with these two flags.
       - name: Conformance suite against the reference
-        run: ./target/release/bcs-conformance --impl ./target/release/reference-harness --fail-on-level2
+        run: ./target/release/bcs-conformance --impl ./target/release/reference-harness --fail-on-level2 --fail-on-tips
       - name: No em or en dash characters
         run: |
           if grep -rnI --exclude-dir=target --exclude-dir=.git -e "$(printf '\xe2\x80\x94')" -e "$(printf '\xe2\x80\x93')" . ; then
@@ -38,4 +38,4 @@ jobs:
       - name: Build the reference and the runner
         run: cargo build --release
       - name: Conformance suite against the reference
-        run: ./target/release/bcs-conformance --impl ./target/release/reference-harness --fail-on-level2
+        run: ./target/release/bcs-conformance --impl ./target/release/reference-harness --fail-on-level2 --fail-on-tips
