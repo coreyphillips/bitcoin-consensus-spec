@@ -3,37 +3,136 @@
 
 Each mutant breaks one rule (usually an Appendix A quirk) in a copy of the reference, builds that
 copy's harness, and runs the suites that should notice. A mutant is *caught* when a suite fails.
+An unmodified copy goes through the same steps first and must pass every check of those suites:
+without that, missing vectors or a harness that cannot start would catch every mutant.
 
 Usage (from anywhere, after `cargo build --release` in the repository):
 
     python3 conformance/mutation/run.py [--jobs 4] [--kind script|block] [--only NAME,NAME]
 
 Verdicts: caught (a verdict or an active tip differs), caught-level2 (only an error identifier,
-a chain tip set or a UTXO set hash differs), survived, patch-not-found, build-failed. The exit
-status is 1 when any verdict differs from the mutant's recorded `expect` in mutants.json.
+a chain tip set or a UTXO set hash differs), survived. Three outcomes are not verdicts:
+patch-not-found, build-failed, and error (the build left no harness, the runner printed no
+result, or the suites failed only through harness errors such as the `internal` answer to a
+panic). The detail column counts harness errors for every mutant. The exit status is 1 when the
+unmodified copy does not pass, or when any verdict differs from the mutant's recorded `expect`
+in mutants.json.
 """
 import argparse
 import concurrent.futures
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
-RUNNER = os.path.join(REPO, "target", "release", "bcs-conformance")
+RUNNER = os.path.join(
+    os.path.abspath(os.environ.get("CARGO_TARGET_DIR") or os.path.join(REPO, "target")),
+    "release", "bcs-conformance")
 SCRIPT_SUITES = ["script-tests", "tx-valid", "tx-invalid", "sighash", "bip341", "bip340", "script-assets", "custom"]
+VERDICTS = ["caught", "caught-level2", "survived"]
+# A check whose call got no answer, worded as the runner's CallError (harness.rs). Any other
+# failed check got an answer that differs from the expected one.
+HARNESS_ERROR = re.compile(r": (internal|harness died|protocol violation|bad_request): |: the harness command ")
+# A row of the runner's suite table: suite, mode, cases, passed, failed, level2, l2-checked,
+# unsupported, time.
+SUITE_ROW = re.compile(r"^(\S+)\s+\S+\s+(\d+)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+[\d.]+s$")
+# A file row of the corpus table: name, checks, four level fractions, errors, time.
+CORPUS_ROW = re.compile(r"\s\d+(\s+\d+/\d+){4}\s+(\d+)\s+[\d.]+s$")
+LEVELS = ["level 0", "level 0 non-normative", "level 1", "level 2"]
 
 
 def run_runner(args):
     return subprocess.run([RUNNER] + args, cwd=REPO, capture_output=True, text=True)
 
 
-def audit(mutant, work):
-    copy = os.path.join(work, mutant["name"])
+def last_line(text):
+    lines = text.strip().splitlines()
+    return lines[-1] if lines else ""
+
+
+def plural(n, noun):
+    return "%d %s%s" % (n, noun, "" if n == 1 else "s")
+
+
+def script_verdict(harness):
+    """Runs the script suites once. Returns the verdict, its detail and what ran."""
+    args = ["--impl", shlex.quote(harness), "--fail-on-level2", "--verbose"]
+    out = run_runner(args + sum((["--suite", s] for s in SCRIPT_SUITES), []))
+    lines = out.stdout.splitlines()
+    result = next((line for line in reversed(lines) if line.startswith("RESULT: ")), None)
+    if result is None:
+        return "error", "no RESULT line from the runner: " + last_line(out.stderr), ""
+    rows = [m for m in map(SUITE_ROW.match, lines) if m and m.group(1) in SCRIPT_SUITES]
+    ran = "%s in %s" % (plural(sum(int(m.group(2)) for m in rows), "check"), plural(len(rows), "suite"))
+    fails = [line for line in lines if line.startswith("FAIL ")]
+    errors = sum(1 for line in fails if HARNESS_ERROR.search(line))
+    differ = len(fails) - errors
+    notes = ([plural(differ, "differing check")] if differ else []) + (
+        [plural(errors, "harness error")] if errors else [])
+    if result == "RESULT: PASS":
+        return "survived", "", ran
+    if result.startswith("RESULT: FAIL (level 2"):
+        return "caught-level2", result[len("RESULT: FAIL ("):-1], ran
+    if differ:
+        return "caught", ", ".join(notes), ran
+    problems = [" ".join(line.split()) for line in lines if line.lstrip().startswith("error: ")
+                or (line.split(" ", 1)[0] in SCRIPT_SUITES and not SUITE_ROW.match(line))]
+    return "error", "; ".join(["no verdict differs"] + notes + problems[:1]), ran
+
+
+def corpus_verdict(harness):
+    """Runs the block corpus. Returns the verdict, its detail and what ran."""
+    out = run_runner(["corpus", "--impl", shlex.quote(harness)])
+    lines = out.stdout.splitlines()
+    total = next((line for line in lines if line.startswith("total (")), None)
+    if total is None:
+        problem = next((" ".join(line.split()) for line in lines if line.startswith("corpus ")),
+                       last_line(out.stderr))
+        return "error", "no corpus total from the runner: " + problem, ""
+    errors = sum(int(m.group(2)) for m in map(CORPUS_ROW.search, lines) if m)
+    fractions = re.findall(r"(\d+)/(\d+)", total)
+    ran = ", ".join("%s %s/%s" % (LEVELS[i], a, b) for i, (a, b) in enumerate(fractions))
+    misses = ["%s %s/%s" % (LEVELS[i], a, b) for i, (a, b) in enumerate(fractions) if a != b]
+    notes = misses + ([plural(errors, "harness error")] if errors else [])
+    if fractions[0][0] != fractions[0][1]:
+        return "caught", ", ".join(notes), ran
+    if out.returncode != 0 or errors:
+        return "error", "; ".join(["no normative tip differs"] + notes), ran
+    return ("caught-level2", ", ".join(misses), ran) if misses else ("survived", "", ran)
+
+
+EVALUATE = {"script": script_verdict, "block": corpus_verdict}
+
+
+def copy_repo(name, work):
+    copy = os.path.join(tempfile.mkdtemp(prefix=name + "-", dir=work), "repo")
     shutil.copytree(REPO, copy, ignore=shutil.ignore_patterns("target", ".git", ".idea", "vectors"))
+    return copy
+
+
+def build(copy):
+    """Builds the copy's harness. Returns its path, or None and the outcome that says why not."""
+    # The copy's own target directory whatever the environment says: with CARGO_TARGET_DIR the
+    # copies would share one and could run each other's harness.
+    env = dict(os.environ, CARGO_TARGET_DIR=os.path.join(copy, "target"))
+    out = subprocess.run(
+        ["cargo", "build", "--release", "-q", "-p", "bitcoin-consensus-spec", "--bin", "reference-harness"],
+        cwd=copy, env=env, capture_output=True, text=True)
+    if out.returncode != 0:
+        return None, ("build-failed", last_line(out.stderr))
+    harness = os.path.join(copy, "target", "release", "reference-harness")
+    if not os.access(harness, os.X_OK):
+        return None, ("error", "the build left no harness at " + harness)
+    return harness, None
+
+
+def audit(mutant, work):
+    copy = copy_repo(mutant["name"], work)
     try:
         path = os.path.join(copy, "spec", mutant["file"])
         with open(path) as f:
@@ -42,31 +141,31 @@ def audit(mutant, work):
             return "patch-not-found", "the patched text occurs %d times" % text.count(mutant["old"])
         with open(path, "w") as f:
             f.write(text.replace(mutant["old"], mutant["new"]))
-        build = subprocess.run(
-            ["cargo", "build", "--release", "-q", "-p", "bitcoin-consensus-spec", "--bin", "reference-harness"],
-            cwd=copy, capture_output=True, text=True)
-        if build.returncode != 0:
-            return "build-failed", build.stderr.strip().splitlines()[-1] if build.stderr.strip() else ""
-        harness = os.path.join(copy, "target", "release", "reference-harness")
-        if mutant["kind"] == "script":
-            args = ["--impl", harness] + sum((["--suite", s] for s in SCRIPT_SUITES), [])
-            if run_runner(args).returncode != 0:
-                return "caught", ""
-            if run_runner(args + ["--fail-on-level2"]).returncode != 0:
-                return "caught-level2", ""
-            return "survived", ""
-        out = run_runner(["corpus", "--impl", harness])
-        total = next((line for line in out.stdout.splitlines() if line.startswith("total (")), None)
-        if total is None:
-            return "caught", "no corpus total (harness failed)"
-        levels = ["level 0", "level 0 non-normative", "level 1", "level 2"]
-        fractions = re.findall(r"(\d+)/(\d+)", total)
-        misses = ["%s %s/%s" % (levels[i], a, b) for i, (a, b) in enumerate(fractions) if a != b]
-        if out.returncode != 0:
-            return "caught", ", ".join(misses)
-        return ("caught-level2", ", ".join(misses)) if misses else ("survived", "")
+        harness, failure = build(copy)
+        if failure:
+            return failure
+        return EVALUATE[mutant["kind"]](harness)[:2]
     finally:
-        shutil.rmtree(copy, ignore_errors=True)
+        shutil.rmtree(os.path.dirname(copy), ignore_errors=True)
+
+
+def baseline(kinds, work, pool):
+    """Runs the suites of `kinds` against an unmodified copy and exits unless every check passes."""
+    copy = copy_repo("unmodified", work)
+    try:
+        harness, failure = build(copy)
+        if failure:
+            raise SystemExit("the unmodified reference: %s, %s" % failure)
+        for kind, (verdict, detail, ran) in zip(kinds, pool.map(lambda k: EVALUATE[k](harness), kinds)):
+            ok = verdict == "survived"
+            print("%-30s %-6s %-15s %-9s %s" % (
+                "(unmodified)", kind, "passed" if ok else verdict, "" if ok else "UNEXPECTED",
+                ran if ok else detail), flush=True)
+            if not ok:
+                raise SystemExit("the unmodified reference does not pass the %s suites, so no mutant "
+                                 "verdict would mean anything" % kind)
+    finally:
+        shutil.rmtree(os.path.dirname(copy), ignore_errors=True)
 
 
 def main():
@@ -79,14 +178,23 @@ def main():
         raise SystemExit("build the runner first: cargo build --release")
     with open(os.path.join(HERE, "mutants.json")) as f:
         mutants = json.load(f)
+    recorded = [m["name"] for m in mutants if m["expect"] not in VERDICTS]
+    if recorded:
+        raise SystemExit("expect must be one of %s: %s" % (", ".join(VERDICTS), ", ".join(recorded)))
     if opts.kind:
         mutants = [m for m in mutants if m["kind"] == opts.kind]
     if opts.only:
         names = set(opts.only.split(","))
+        unknown = names - {m["name"] for m in mutants}
+        if unknown:
+            raise SystemExit("no %smutant named %s" % (
+                opts.kind + " " if opts.kind else "", ", ".join(sorted(unknown))))
         mutants = [m for m in mutants if m["name"] in names]
+    kinds = [k for k in EVALUATE if any(m["kind"] == k for m in mutants)]
     unexpected = 0
     with tempfile.TemporaryDirectory(prefix="bcs-mutants-") as work:
         with concurrent.futures.ThreadPoolExecutor(max_workers=opts.jobs) as pool:
+            baseline(kinds, work, pool)
             results = pool.map(lambda m: (m, audit(m, work)), mutants)
             for mutant, (verdict, detail) in results:
                 ok = verdict == mutant["expect"]
