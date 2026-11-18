@@ -413,7 +413,7 @@ pub fn decode_inv(payload: &[u8]) -> Result<Vec<(u32, Hash256)>, DecodeError> {
 
 ## 14.5 A minimal synchronizing peer
 
-The function below connects to one peer, performs the handshake, downloads headers and blocks until the active tip equals `stop_at` (in headers-only mode, until the header `stop_at` is known), and answers `ping` and `getheaders` along the way. Without `stop_at`, it stops when the peer has no more headers (headers-only mode) or when nothing has happened for `idle_limit` seconds. It fails with an error when it makes no progress for `idle_limit` seconds with a target still unreached, when a requested block does not arrive within `BLOCK_REQUEST_TIMEOUT_SECS`, when the peer sends a block that cannot be decoded or that fails validation, and when the peer breaks the framing rules. While a target is unknown it asks for headers again every 10 seconds, because a peer that is itself still synchronizing does not announce new blocks. It is deliberately simple: one peer, one connection, blocking input and output. It is the reference behaviour the conformance suite's interop test exercises against Bitcoin Core; a production node adds multiple peers, peer discovery, retries elsewhere and persistence.
+The function below connects to one peer, performs the handshake, downloads headers and blocks until the active tip equals `stop_at` (in headers-only mode, until the header `stop_at` is known), and answers `ping` and `getheaders` along the way. Without `stop_at`, it stops when the peer has no more headers (headers-only mode) or when nothing has happened for `idle_limit` seconds. It fails with an error when it makes no progress for `idle_limit` seconds with a target still unreached, when a requested block does not arrive within `BLOCK_REQUEST_TIMEOUT_SECS`, when the peer sends a block that cannot be decoded or that fails validation, and when the peer breaks the framing rules. While a target is unknown it asks for headers again every 10 seconds, because a peer that is itself still synchronizing does not announce new blocks. The target may be below the peer's tip. Once its header is known, only it and its ancestors are requested, and the target is checked after every message, so the blocks it asked for never carry the tip past the target. It is deliberately simple: one peer, one connection, blocking input and output. It is the reference behaviour the conformance suite's interop test exercises against Bitcoin Core; a production node adds multiple peers, peer discovery, retries elsewhere and persistence.
 
 ```rust
 /// Outcome of a successful synchronization run.
@@ -468,12 +468,15 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
         stream.write_all(&encode_message(magic, "getheaders", &encode_getheaders(&block_locator(&state.tree, &best), &ZERO_HASH)))
     };
 
+    let reached = |state: &ChainState| match stop_at {
+        Some(target) if download_blocks => state.tip().hash == target,
+        Some(target) => state.tree.get(&target).is_some(),
+        None => false,
+    };
+
     loop {
-        if let Some(target) = stop_at {
-            let reached = if download_blocks { state.tip().hash == target } else { state.tree.get(&target).is_some() };
-            if reached {
-                return Ok(SyncEnd::ReachedTarget);
-            }
+        if reached(state) {
+            return Ok(SyncEnd::ReachedTarget);
         }
         let progress_before = (state.best_header().hash, state.tip().hash);
         // Read what is available; check each frame header as soon as it is complete.
@@ -568,6 +571,10 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
                 }
                 _ => {}
             }
+            // One read can complete several messages. Stop before a later one moves the tip past the target.
+            if reached(state) {
+                return Ok(SyncEnd::ReachedTarget);
+            }
         }
 
         if (state.best_header().hash, state.tip().hash) != progress_before {
@@ -595,17 +602,22 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
         if in_flight.iter().any(|(_, since)| since.elapsed().as_secs() >= BLOCK_REQUEST_TIMEOUT_SECS) {
             return Err(Error::new(ErrorKind::TimedOut, "requested block not delivered"));
         }
-        // Request missing blocks along the best header chain, oldest first.
+        // Request missing blocks, oldest first, along the chain to the target once its header is
+        // known and along the best header chain before that. A block past the target that arrived
+        // before it would be connected in the same activation, carrying the tip past the target.
         if download_blocks && in_flight.len() < MAX_BLOCKS_IN_TRANSIT_PER_PEER {
-            let best = state.best_header().hash;
-            let best_height = state.tree.entries[&best].height;
-            let start = state.tree.entries[&state.find_fork(&best)].height + 1;
+            let goal = match stop_at {
+                Some(target) if state.tree.get(&target).is_some() => target,
+                _ => state.best_header().hash,
+            };
+            let goal_height = state.tree.entries[&goal].height;
+            let start = state.tree.entries[&state.find_fork(&goal)].height + 1;
             let mut wanted = Vec::new();
-            for height in start..=best_height {
+            for height in start..=goal_height {
                 if in_flight.len() + wanted.len() >= MAX_BLOCKS_IN_TRANSIT_PER_PEER {
                     break;
                 }
-                let entry = state.tree.ancestor(&best, height).unwrap();
+                let entry = state.tree.ancestor(&goal, height).unwrap();
                 if entry.block.is_none() && !entry.failed && !in_flight.iter().any(|(h, _)| *h == entry.hash) {
                     wanted.push(entry.hash);
                 }

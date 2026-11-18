@@ -301,8 +301,9 @@ For each chain the runner starts a fresh `bitcoind -regtest` in a temporary data
 free ports from `--port-range` (default 29000-29999; ports something listens on are skipped),
 `-listen=1 -bind=127.0.0.1 -debug=net -connect=0 -v2transport=0`, no whitelist and no seeds,
 loads the chain, and runs the node command (`sh -c`) with `{network}` (`regtest`), `{datadir}` (an
-empty directory), `{peer}` (`127.0.0.1:<port>`) and `{stop_at}` (bitcoind's tip) substituted. It
-waits for the node's `{"event":"stopped",...}` line (`--node-timeout`, default 600 seconds), checks
+empty directory), `{peer}` (`127.0.0.1:<port>`) and `{stop_at}` (bitcoind's tip, except in
+`generate-300-stop-at-100`) substituted. It waits for the node's `{"event":"stopped",...}` line
+(`--node-timeout`, default 600 seconds), checks
 that the node exits with status 0, and compares `tip` and `height` with `getbestblockhash` and
 `getblockcount`, and `hash_serialized_3`, when the node reports it, with `gettxoutsetinfo`. A node
 that keeps no UTXO set may leave `hash_serialized_3` out (PROTOCOL.md section 5); the chain is then
@@ -318,6 +319,8 @@ version 1 connections, so a version 1 node passes the same way; the transport sh
 which one was used. One case per chain:
 
 - `generate-300`: `generatetodescriptor 300 "raw(51)"`;
+- `generate-300-stop-at-100`: the same 300 blocks, but `{stop_at}` is block 100. The node's
+  `stopped` line is compared with what bitcoind reported while block 100 was its tip;
 - one chain per corpus scenario (`--corpus`, default `vectors/blocks`): the blocks of its final
   active chain (the tip of its last check, followed back to genesis) submitted in height order with
   `submitblock`, with `bitcoind` started with `-testactivationheight=name@height` and `-test=bip94`
