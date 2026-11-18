@@ -251,7 +251,7 @@ Response: `{"tip": hash, "height": integer, "chainwork": hex}`. `tip` is in disp
 
 ### 4.12 `chain_tips`
 
-Response: `{"tips": [{"hash": hash, "height": integer, "status": string}, ...]}` using the status names of Bitcoin Core's `getchaintips`: `active`, `valid-fork`, `valid-headers`, `headers-only`, `invalid`. Diagnostic only.
+Response: `{"tips": [{"hash": hash, "height": integer, "status": string}, ...]}` using the status names of Bitcoin Core's `getchaintips`: `active`, `valid-fork`, `valid-headers`, `headers-only`, `invalid`. Compared at level 1 of the corpus (CORPUS.md section 4), which fails the run only with `--fail-on-tips`.
 
 ### 4.13 `utxo_hash`
 
