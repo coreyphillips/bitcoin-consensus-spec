@@ -620,3 +620,41 @@ fn some_invalid(ctx: &mut Ctx, item: &Item, f: u32) {
         "expected at least one invalid input, got every input valid",
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::known::{check_name, Known};
+
+    #[test]
+    fn a_known_failure_names_one_input_under_one_flag_set() {
+        let item = Item {
+            id: "7".into(),
+            label: "row 7".into(),
+            text: "a comment: with a colon (and parentheses)".into(),
+            tx_check: None,
+            queries: vec![QueryItem {
+                id: "7/0".into(),
+                label: "input 0".into(),
+                query: ScriptQuery::new(Vec::new(), 0, Vec::new()),
+            }],
+            excluded: Vec::new(),
+            raw: Vec::new(),
+            raw_rule: None,
+            core: None,
+        };
+        let qi = &item.queries[0];
+        let p2sh = item.loc(Some(qi), Some(flags::P2SH));
+        let witness = item.loc(Some(qi), Some(flags::P2SH | flags::WITNESS));
+        assert_eq!(check_name(&p2sh), "row 7 input 0 flags P2SH");
+        assert_eq!(check_name(&item.loc(None, Some(0))), "row 7 flags NONE");
+
+        let list = "tx-invalid row 7 input 0 flags P2SH\ntx-invalid row 7\n";
+        let mut k = Known::parse(Path::new("k"), list, &["tx-invalid"]).unwrap();
+        assert!(k.take("tx-invalid", check_name(&p2sh)));
+        assert!(!k.take("tx-invalid", check_name(&witness)));
+        let stale = k.stale(&["tx-invalid"]);
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].location, "row 7");
+    }
+}

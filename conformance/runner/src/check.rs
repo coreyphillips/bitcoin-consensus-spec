@@ -188,9 +188,15 @@ impl Stats {
         self.passed += 1;
     }
 
+    /// A failed check whose location is its whole name.
     pub fn fail(&mut self, suite: &str, verbose: bool, loc: &str, detail: &str) {
+        self.fail_as(suite, verbose, loc, loc, detail);
+    }
+
+    /// A failed check named `name` for `--known-failures`, printed as `loc`.
+    pub fn fail_as(&mut self, suite: &str, verbose: bool, name: &str, loc: &str, detail: &str) {
         self.cases += 1;
-        if crate::known::take(suite, loc) {
+        if crate::known::take(suite, name) {
             self.known += 1;
             if verbose {
                 println!("KNOWN    [{suite}] {loc}: {detail}");
@@ -254,8 +260,16 @@ impl<'h> Ctx<'h> {
         self.stats.pass();
     }
 
+    /// A failed check at `loc`, a name with no `:` or `(` that may be followed by row text or a
+    /// comment.
     pub fn fail(&mut self, loc: &str, detail: &str) {
-        self.stats.fail(self.suite, self.verbose, loc, detail);
+        self.fail_as(crate::known::check_name(loc), loc, detail);
+    }
+
+    /// A failed check whose name, holding a file name, may contain `:` or `(`.
+    pub fn fail_as(&mut self, name: &str, loc: &str, detail: &str) {
+        self.stats
+            .fail_as(self.suite, self.verbose, name, loc, detail);
     }
 
     /// A check whose level 1 part passed and whose level 2 part (error identifier) was compared.
@@ -276,9 +290,14 @@ impl<'h> Ctx<'h> {
 
     /// Records a call that produced no answer. `unsupported_op` is counted separately.
     pub fn call_failed(&mut self, loc: &str, e: &CallError) {
+        self.call_failed_as(crate::known::check_name(loc), loc, e);
+    }
+
+    /// `call_failed` for a check named as in `fail_as`.
+    pub fn call_failed_as(&mut self, name: &str, loc: &str, e: &CallError) {
         match e {
             CallError::Unsupported(_) => self.unsupported(1),
-            _ => self.fail(loc, &e.to_string()),
+            _ => self.fail_as(name, loc, &e.to_string()),
         }
     }
 

@@ -117,12 +117,15 @@ witness, the flags, expected and actual values, and the row text.
 An implementation that has a divergence it has accepted, or that cannot run a scenario (for
 example, it lacks a network option the scenario needs), can still use the runner as a regression
 gate: `--known-failures FILE` names the checks it is known to fail. Each line that is not blank and
-does not start with `#` is `<suite> <location>`, where the location is what `FAIL` prints between
-`[suite]` and the colon, or its start up to a space:
+does not start with `#` is `<suite> <check>`, where the check is what `FAIL` prints between
+`[suite]` and the first `:` or `(`, without the space before it. A file name in the check counts
+whole, even when it holds one of those characters:
 
 ```text
 # BIP340 messages that are not 32 bytes: no API for them.
 bip340 row 15
+# One input of a row under one flag set.
+tx-invalid row 7 input 0 flags P2SH
 # Equal-work tie-break after invalidateblock.
 corpus feature_block.node0 check 88
 # A file's replay errors fail it once, named by the event of the first one, so an
@@ -133,12 +136,15 @@ interop chain feature_spec_pitfalls.node2
 peer-sync feature_spec_pitfalls.node0 ibd 149b7d9071007e7058afe5fbfff577b06a07131dc8a24d884435fe781fd7f3fb
 ```
 
-`row 15` names `row 15 (message of size 0 ...)` and not `row 150`. A failure the file names is
-printed as `KNOWN` with `--verbose`, counted in `cases` but not in `failed`, and does not fail the
-run; the line below the table counts them per suite. Every other failure fails the run as before,
-and so does a corpus file the runner cannot read, whatever the list says.
-An entry that names no failure, in a suite that ran, is printed as `STALE` and fails the run, so the
-list shrinks as the implementation is fixed and never hides a check that passes. Entries of suites
+An entry names one check by its whole name and waives one failure. `bip340 row 15` names
+`row 15 (message of size 0 ...)` and not `row 150`. `tx-invalid row 7` names nothing: a script
+suite's check names carry the input and the flags, so each of a row's failures takes its own line.
+A failure the file names is printed as `KNOWN` with `--verbose`, counted in `cases` but not in
+`failed`, and does not fail the run; the line below the table counts them per suite. Every other
+failure fails the run as before, and so does a corpus file the runner cannot read, whatever the
+list says. An entry that names no failure, in a suite that ran, is printed as `STALE` and fails the
+run, so the list shrinks as the implementation is fixed and never hides a check that passes. When
+the entry is the start of a name that failed, the `STALE` line shows that name. Entries of suites
 that did not run are ignored, so one file can serve runs that select different suites.
 
 ## Generating derived vectors

@@ -273,6 +273,15 @@ impl FileResult {
             None => format!("{} errors", self.name),
         }
     }
+
+    /// Whether `--known-failures` waives this file's errors, given `take` for the corpus suite:
+    /// an entry names them by the event of the first one, or as `<file> errors` wherever they
+    /// start. A file that could not be read is a corpus defect, not the harness's: no entry
+    /// waives it.
+    pub fn errors_waived(&self, take: &mut dyn FnMut(&str) -> bool) -> bool {
+        self.first_error_event.is_some()
+            && (take(&self.errors_location()) || take(&format!("{} errors", self.name)))
+    }
 }
 
 fn short(hash: &str) -> String {
@@ -525,7 +534,7 @@ pub fn replay_file(ctx: &mut Ctx, path: &Path, restart_shortcut: bool) -> FileRe
                 };
                 if normative {
                     r.normative += 1;
-                    if !matched && crate::known::take("corpus", &loc) {
+                    if !matched && crate::known::take("corpus", &format!("{name} check {n}")) {
                         r.l0_known += 1;
                         if ctx.verbose {
                             println!(
@@ -702,9 +711,7 @@ pub fn run(ctx: &mut Ctx, paths: &[PathBuf], restart_shortcut: bool) -> Result<(
         if !fr.errors.is_empty() {
             ctx.stats.cases += 1;
             let loc = fr.errors_location();
-            // A file that could not be read is a corpus defect, not the harness's: no entry
-            // waives it.
-            let known = fr.first_error_event.is_some() && crate::known::take("corpus", &loc);
+            let known = fr.errors_waived(&mut |name| crate::known::take("corpus", name));
             if known {
                 ctx.stats.known += 1;
             } else {
@@ -800,7 +807,9 @@ mod tests {
 done"#;
 
     fn replay(name: &str, events: &[Value]) -> FileResult {
-        let dir = std::env::temp_dir().join(format!("bcs-corpus-test-{}", std::process::id()));
+        // One directory per call: tests run in parallel and each removes its own at the end.
+        let dir =
+            std::env::temp_dir().join(format!("bcs-corpus-test-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let stub = dir.join(format!("{name}.sh"));
         std::fs::write(&stub, STUB).unwrap();
@@ -845,11 +854,14 @@ done"#;
         );
         assert_eq!(r.first_error_event, Some(2), "{:?}", r.errors);
         assert_eq!(r.errors_location(), "late errors from event 2");
-        assert!(
-            crate::known::Known::parse(Path::new("k"), "corpus late errors", &["corpus"])
-                .unwrap()
-                .take("corpus", &r.errors_location())
-        );
+        let waived = |r: &FileResult, list: &str| {
+            let mut k = crate::known::Known::parse(Path::new("k"), list, &["corpus"]).unwrap();
+            r.errors_waived(&mut |name| k.take("corpus", name))
+        };
+        assert!(waived(&r, "corpus late errors"));
+        assert!(waived(&r, "corpus late errors from event 2"));
+        assert!(!waived(&r, "corpus late errors from event 1"));
+        assert!(!waived(&r, "corpus late"));
 
         // An error before the refused restart moves the location, so an entry for the
         // restart no longer covers the file.
@@ -859,13 +871,8 @@ done"#;
         );
         assert_eq!(r.first_error_event, Some(1), "{:?}", r.errors);
         assert_eq!(r.errors.len(), 2);
-        assert!(!crate::known::Known::parse(
-            Path::new("k"),
-            "corpus early errors from event 3",
-            &["corpus"]
-        )
-        .unwrap()
-        .take("corpus", &r.errors_location()));
+        assert!(!waived(&r, "corpus early errors from event 3"));
+        assert!(waived(&r, "corpus early errors"));
 
         // The last event recording the first error.
         let r = replay(
