@@ -400,7 +400,9 @@ Each scenario runs in two modes:
 - **follow**: one node takes every case in chain order (the chain up to the parent announced with
   unsolicited `headers` messages, then the case header), then the rest of the chain, after which
   its tip must be the final tip and, after `{"op":"stop"}`, its `stopped` line must name it and it
-  must exit with status 0. A failed check ends the node and the next check starts a fresh one.
+  must exit with status 0. The line's `hash_serialized_3`, when present, must equal the
+  classifying bitcoind's `gettxoutsetinfo` at the final tip; a line without it counts at level 2,
+  as in the interop suite. A failed check ends the node and the next check starts a fresh one.
   Locations: `<scenario> follow <block hash>` and `<scenario> follow final tip`.
 - **ibd**: a fresh node per case, offered the chain up to the parent and the case block as its
   peer's best chain from the start, so the rejected block ends the node's initial block download.
