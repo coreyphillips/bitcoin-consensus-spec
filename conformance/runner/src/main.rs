@@ -567,12 +567,11 @@ fn print_report(
         // An enforced level 2 comparison is a check: a corpus may hash its UTXO set only at
         // non-normative checks, which `cases` does not count.
         let ran = checked_elsewhere.contains(suite) || (fail_on_level2 && s.l2_checked > 0);
-        if let Some(e) = suite_error(s, ran) {
-            if s.cases == 0 {
-                println!("{suite:<14} {mode:<8} {e}");
-                any_failure = true;
-                continue;
-            }
+        let error = suite_error(s, ran);
+        if let (Some(e), 0) = (error, s.cases) {
+            println!("{suite:<14} {mode:<8} {e}");
+            any_failure = true;
+            continue;
         }
         println!(
             "{:<14} {:<8} {:>9} {:>9} {:>8} {:>8} {:>11} {:>8} {:>7.1}s",
@@ -586,7 +585,7 @@ fn print_report(
             s.unsupported,
             t.as_secs_f64()
         );
-        if let Some(e) = &s.error {
+        if let Some(e) = error {
             println!("{:<14} error: {e}", "");
             any_failure = true;
         }
@@ -652,11 +651,15 @@ fn print_report(
 /// Why a suite failed to run, if it did. A selected suite that ran no check fails: a wrong
 /// `--vectors` or `--corpus` path, or a vector file emptied by mistake, must not end in a pass.
 /// Checks the harness does not support already fail the run and keep their counts in the table.
-/// `ran_uncounted` says the suite ran a check that `s.cases` does not count.
+/// `ran_uncounted` says the suite ran a check that `s.cases` does not count. A failure waived by
+/// `--known-failures` is not a check: a corpus file that errors before its first checkpoint would
+/// otherwise pass on its waiver alone.
 fn suite_error(s: &Stats, ran_uncounted: bool) -> Option<&str> {
     match &s.error {
         Some(e) => Some(e),
-        None if s.cases == 0 && s.unsupported == 0 && !ran_uncounted => Some("ran no check"),
+        None if s.cases == s.known && s.unsupported == 0 && !ran_uncounted => {
+            Some("ran no enforced check")
+        }
         None => None,
     }
 }
@@ -820,9 +823,23 @@ mod tests {
     #[test]
     fn a_suite_that_ran_no_check_fails() {
         let empty = Stats::default();
-        assert_eq!(suite_error(&empty, false), Some("ran no check"));
+        assert_eq!(suite_error(&empty, false), Some("ran no enforced check"));
         assert!(print_report(
             &[("custom", empty, Duration::ZERO)],
+            "derived",
+            false,
+            &[]
+        ));
+
+        // A waived failure is not a check.
+        let waived = Stats {
+            cases: 1,
+            known: 1,
+            ..Default::default()
+        };
+        assert_eq!(suite_error(&waived, false), Some("ran no enforced check"));
+        assert!(print_report(
+            &[("corpus", waived, Duration::ZERO)],
             "derived",
             false,
             &[]
