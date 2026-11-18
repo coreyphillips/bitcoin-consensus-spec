@@ -2,8 +2,8 @@
 //!
 //! The Core source tree is located through the `BITCOIN_CORE_SRC` environment variable, which
 //! must point at a git checkout of Bitcoin Core (the directory that contains `src/`). The build
-//! refuses to continue unless that checkout is at the pinned commit and has no local
-//! modifications under `src/`, so the oracle is always Core's own code.
+//! refuses to continue unless that checkout is at the pinned commit and every file under `src/`
+//! that the commit has holds that commit's content, so the oracle is always Core's own code.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -49,6 +49,68 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Paths under `src/` whose working tree file is missing or differs from the pinned commit's.
+///
+/// `git status` trusts the index: a file marked `--assume-unchanged` or `--skip-worktree` looks
+/// clean to it whatever it holds. Each file is hashed as it is on disk instead (`--no-filters`, so
+/// no clean filter applies) and compared with the commit's tree, read with replace refs disabled.
+fn differing_files(root: &Path) -> Result<Vec<String>, String> {
+    let tree = git(
+        root,
+        &[
+            "--no-replace-objects",
+            "ls-tree",
+            "-r",
+            "-z",
+            CORE_COMMIT,
+            "--",
+            "src",
+        ],
+    )?;
+    let mut pinned = Vec::new();
+    for entry in tree.split('\0').filter(|e| !e.is_empty()) {
+        let (meta, path) = entry
+            .split_once('\t')
+            .ok_or_else(|| format!("unexpected git ls-tree line: {entry}"))?;
+        let mut meta = meta.split(' ');
+        let (mode, hash) = (meta.next(), meta.nth(1));
+        match (mode, hash) {
+            (Some("100644" | "100755"), Some(hash)) => pinned.push((path, hash)),
+            _ => return Err(format!("{path} is not a regular file in {CORE_COMMIT}")),
+        }
+    }
+    if pinned.is_empty() {
+        return Err(format!("commit {CORE_COMMIT} has no files under src/"));
+    }
+    let mut differing = Vec::new();
+    let present: Vec<_> = pinned
+        .into_iter()
+        .filter(|(path, _)| {
+            let file = root.join(path).is_file();
+            if !file {
+                differing.push(format!("{path} (missing)"));
+            }
+            file
+        })
+        .collect();
+    // In chunks, to stay well below the command line length limit.
+    for chunk in present.chunks(500) {
+        let mut args = vec!["hash-object", "--no-filters", "--"];
+        args.extend(chunk.iter().map(|(path, _)| *path));
+        let hashes = git(root, &args)?;
+        let hashes: Vec<&str> = hashes.lines().collect();
+        if hashes.len() != chunk.len() {
+            return Err("git hash-object printed an unexpected number of hashes".into());
+        }
+        for ((path, expected), actual) in chunk.iter().zip(hashes) {
+            if actual != *expected {
+                differing.push(path.to_string());
+            }
+        }
+    }
+    Ok(differing)
 }
 
 fn first_line(cmd: &str, args: &[&str]) -> String {
@@ -109,6 +171,29 @@ fn main() {
     if !dirty.is_empty() {
         fail(&format!(
             "BITCOIN_CORE_SRC={} has local modifications under src/, so it is not Bitcoin Core {CORE_VERSION}:\n{dirty}",
+            root.display()
+        ));
+    }
+    let differing = differing_files(&root).unwrap_or_else(|e| {
+        fail(&format!(
+            "cannot compare BITCOIN_CORE_SRC={} with commit {CORE_COMMIT}: {e}",
+            root.display()
+        ))
+    });
+    if !differing.is_empty() {
+        const SHOWN: usize = 20;
+        let mut list = differing
+            .iter()
+            .take(SHOWN)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        if differing.len() > SHOWN {
+            list += &format!("\n... and {} more", differing.len() - SHOWN);
+        }
+        fail(&format!(
+            "BITCOIN_CORE_SRC={} has files under src/ whose content is not Bitcoin Core {CORE_VERSION}'s \
+             (git status may not show them, for example when a file is marked --assume-unchanged):\n{list}",
             root.display()
         ));
     }

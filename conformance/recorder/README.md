@@ -59,6 +59,13 @@ Payloads over 256 KiB are kept as side files in the raw capture. `postprocess.py
 docker run -i --rm bcs-recorder:32.1 python3 core_chain_harness.py
 ```
 
+Outside the image, `BCS_BITCOIND` names the bitcoind to run. CI replays the corpus this way (`../../.github/workflows/core.yml`):
+
+```sh
+BCS_BITCOIND=/path/to/bitcoind target/release/bcs-conformance corpus --fail-on-level2 --fail-on-tips \
+  --impl "python3 conformance/recorder/core_chain_harness.py"
+```
+
 It sets `setmocktime(now)` before each event and uses `submitblock`, `submitheader`, `invalidateblock`, `getchaintips` and `gettxoutsetinfo hash_serialized_3`. For `via: "p2p"` events it reproduces where Core's P2P handling differs from those RPCs (mutated blocks, anti-DoS work threshold, unrequested blocks, headers message checks; see `../CORPUS.md` section 5). `BCS_HARNESS_KEEP=1` keeps each node's data directory with a full debug log.
 
 `replay.py` feeds corpus files to any harness command (`--harness "..."`), maps every event as `../CORPUS.md` section 4 describes, and scores levels 0, 1 and 2.
