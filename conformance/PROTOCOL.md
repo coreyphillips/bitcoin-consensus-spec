@@ -191,7 +191,7 @@ Delivers a full block, as if it arrived from a peer or through block submission,
 | `via` | string, optional | How Bitcoin Core received the block when the scenario was recorded: `p2p` (default) or `rpc` (block submission). For `p2p`, the implementation MUST first apply the peer-to-peer checks of specification chapter 14 section 14.4 (`is_block_mutated`, `p2p_block_work_acceptable`). |
 | `requested` | bool, optional | For `via: p2p`, whether Bitcoin Core had requested the block (default true). The implementation MUST pass it to block processing as specification chapter 11 section 11.6 step 4 requires. |
 
-Ignoring `via` or `requested` can change the active tip: an unrequested block that is reduced to its header, or a mutated block that is dropped, is not linked when its descendants arrive.
+Ignoring `via` or `requested` can change the active tip: an unrequested block that is reduced to its header, or a mutated block that is dropped, is not linked when its descendants arrive. No recorded scenario reaches such a tip, though: in the corpus these fields change only the chain tip sets, so an implementation that ignores them fails only with `bcs-conformance --fail-on-tips` (CORPUS.md section 4).
 
 Recorded scenarios already contain the bytes Bitcoin Core actually validated. In particular, where `submitblock` would have added the default coinbase witness reserved value (Bitcoin Core's `UpdateUncommittedBlockStructures`), the recorded block already contains it, so no RPC behaviour needs to be emulated.
 
@@ -232,7 +232,7 @@ Delivers block headers (80 bytes each), as in a `headers` message (chapter 14), 
 | `index` | integer, optional | Index in `headers` of the first header that was not accepted |
 | `best_header` | hash | Most-work valid header known after processing, display order |
 
-A `via: p2p` message dropped as a whole by `headers_message_acceptable` gives `result` `invalid`, `reason` `headers-message-rejected` and no `index`; nothing was processed. Like the outcomes of 4.9, results and reasons are diagnostics; conformance is judged on the chain state.
+A `via: p2p` message dropped as a whole by `headers_message_acceptable` gives `result` `invalid`, `reason` `headers-message-rejected` and no `index`; nothing was processed. In the corpus, skipping this check changes only the chain tip sets, so it fails only with `--fail-on-tips`. Like the outcomes of 4.9, results and reasons are diagnostics; conformance is judged on the chain state.
 
 ### 4.10a `chain_invalidate`
 

@@ -128,7 +128,7 @@ Shortcut for restarts: when a `restart` carries the same `options` as the ones i
 Per-event responses (`result`, `reason`, `best_header`) are diagnostics. Conformance is judged on checks only:
 
 - **Level 0** (required): `tip` and `height` at every check with `normative: true`.
-- **Level 1** (optional): chain tips. Bitcoin Core validates side branches lazily and keeps headers of blocks it has not downloaded, so this level depends on storage details that the specification leaves open; it is a debugging aid. Some wrong implementations show only at this level (descendants of an invalid block left valid, `requested` ignored), so the reference is held to it with `bcs-conformance --fail-on-tips`.
+- **Level 1** (optional): chain tips. Bitcoin Core validates side branches lazily and keeps headers of blocks it has not downloaded, so this level depends on storage details that the specification leaves open; it is a debugging aid. Some wrong implementations show only at this level (descendants of an invalid block left valid, `via` or `requested` ignored), so the reference is held to it with `bcs-conformance --fail-on-tips`.
 - **Level 2** (optional): the UTXO set commitment (specification chapter 15). Whenever level 0 matches, level 2 should match too; a mismatch points at a bug in UTXO set maintenance even if the tip is right. An implementation that keeps no UTXO set cannot be checked at this level (PROTOCOL.md section 4.13).
 
 ## 5. Delivery paths

@@ -523,6 +523,33 @@
   "note": "Keeps the data of unrequested low-work blocks instead of only their header. In the corpus this changes chain tip sets only; changing an active tip needs an equal-work tie decided by when such a block is linked."
  },
  {
+  "name": "p2p-mutated-not-dropped",
+  "kind": "block",
+  "file": "11-chain-state.md",
+  "old": "pub fn is_block_mutated(block: &Block, check_witness_root: bool) -> bool {\n",
+  "new": "pub fn is_block_mutated(block: &Block, check_witness_root: bool) -> bool {\n    if true {\n        return false;\n    }\n",
+  "expect": "caught-level2",
+  "note": "Sends mutated blocks from peers to block processing, which rejects them too, but one that fails only the witness checks leaves its header stored. In the corpus this changes chain tip sets only; changing an active tip needs a descendant kept because of that header, then the block's real body."
+ },
+ {
+  "name": "p2p-block-work-unchecked",
+  "kind": "block",
+  "file": "14-peer-to-peer.md",
+  "old": "        Some(parent) => parent.chain_work.wrapping_add(block_proof(header.bits)) >= anti_dos_work_threshold(state),",
+  "new": "        Some(parent) => true || parent.chain_work.wrapping_add(block_proof(header.bits)) >= anti_dos_work_threshold(state),",
+  "expect": "caught-level2",
+  "note": "Processes low-work blocks from peers instead of dropping them, so their headers are stored. In the corpus this changes chain tip sets only; the block itself never has enough work to become the tip."
+ },
+ {
+  "name": "headers-message-unchecked",
+  "kind": "block",
+  "file": "14-peer-to-peer.md",
+  "old": "pub fn headers_message_acceptable(state: &ChainState, headers: &[BlockHeader]) -> bool {\n    if headers.is_empty() {",
+  "new": "pub fn headers_message_acceptable(state: &ChainState, headers: &[BlockHeader]) -> bool {\n    if true || headers.is_empty() {",
+  "expect": "caught-level2",
+  "note": "Processes every headers message instead of dropping one that fails the message-level checks, so low-work headers are stored. In the corpus this changes chain tip sets only; headers alone never move the active tip."
+ },
+ {
   "name": "disconnect-no-restore",
   "kind": "block",
   "file": "11-chain-state.md",
