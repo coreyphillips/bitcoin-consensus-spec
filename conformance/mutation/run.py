@@ -64,7 +64,9 @@ TOTALS = {
 
 
 def run_runner(args):
-    return subprocess.run([RUNNER] + args, cwd=REPO, capture_output=True, text=True)
+    return subprocess.run(
+        [RUNNER] + args + ["--vectors", os.path.join(REPO, "conformance", "vectors")],
+        cwd=REPO, capture_output=True, text=True)
 
 
 def last_line(text):
