@@ -21,8 +21,7 @@
   "file": "05-script-execution.md",
   "old": "                        if sigversion == SigVersion::Base {\n                            script_code = find_and_delete(&script_code, &push_data(&sig));\n                        }",
   "new": "                        if sigversion == SigVersion::Base && !sig.is_empty() {\n                            script_code = find_and_delete(&script_code, &push_data(&sig));\n                        }",
-  "expect": "survived",
-  "note": "Equivalent under the consensus flags: an empty signature always fails, so removing it from the script code cannot change any result."
+  "expect": "caught"
  },
  {
   "name": "stack-limit-only-nonpush",

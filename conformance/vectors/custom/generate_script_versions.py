@@ -293,6 +293,17 @@ build = lambda sig: push(sig) + b"\x75" + push(sig) + push(sig) + b"\x6d" + pk1 
 sig, spk = fixpoint(build, find_and_delete); t.ins = [(FUND, 0, push(sig), 0xffffffff)]
 add("legacy checksig: three signature pushes (one, then two consecutive) are all deleted", req_for(t, 0, [(5000, spk)], None))
 
+# OP_CHECKMULTISIG deletes an empty signature from the script code too, which removes every OP_0. The empty
+# signature itself always fails, but the deletion decides whether K3's signature verifies, and so whether the
+# badly encoded signature after it is reached (SIG_DER) or the operation returns false and NOT succeeds.
+mks = [compressed(pmul(d, G)) for d in (0x6661, 0x6662, 0x6663)]
+spk = b"\x00\x75\x53" + b"".join(push(k) for k in mks) + b"\x53\xae\x91"         # OP_0 DROP 3 <K1> <K2> <K3> 3 CHECKMULTISIG NOT
+for label, sc in (("signed without the OP_0, so the bad signature is reached", find_and_delete(spk, push(b""))),
+                  ("signed with the OP_0 kept, so the operation returns false", spk)):
+    sig = ecdsa_sign(0x6663, legacy_sighash(sc, t, 0, 1)) + b"\x01"
+    t.ins = [(FUND, 0, b"\x00\x00" + push(b"\x01") + push(sig), 0xffffffff)]
+    add("legacy checkmultisig not: an empty signature deletes OP_0 from the script code, " + label, req_for(t, 0, [(5000, spk)], None))
+
 # The 201-operation limit, with OP_CHECKMULTISIG's key count, in witness version 0.
 keys = b"".join(push(compressed(G)) for _ in range(20))
 for name, ws in (
