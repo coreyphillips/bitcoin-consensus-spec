@@ -554,16 +554,6 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
         let loc = format!("chain {}", chain.name);
         eprintln!("interop: {} ({} of {})", chain.name, i + 1, chains.len());
         let outcome = run_chain(cfg, chain, &root, &mut stats.details);
-        if let Ok(ChainOutcome::Done {
-            utxo_reported: Some(reported),
-            ..
-        }) = &outcome
-        {
-            stats.l2_checked += 1;
-            if !reported {
-                stats.l2_mismatches += 1;
-            }
-        }
         match outcome {
             Ok(ChainOutcome::Excluded(rule)) => {
                 stats.rule(rule, 1);
@@ -581,8 +571,19 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
                 ));
                 let _ = std::fs::remove_dir_all(&root);
             }
-            Ok(ChainOutcome::Done { problems, .. }) if problems.is_empty() => {
+            Ok(ChainOutcome::Done {
+                problems,
+                utxo_reported,
+            }) if problems.is_empty() => {
                 stats.pass();
+                // As in `Ctx::pass_l2`, level 2 is judged only on a chain that passed: a wrong
+                // hash is one of a failed chain's problems, and a waiver covers those.
+                if let Some(reported) = utxo_reported {
+                    stats.l2_checked += 1;
+                    if !reported {
+                        stats.l2_mismatches += 1;
+                    }
+                }
                 if !cfg.keep_temp {
                     let _ = std::fs::remove_dir_all(&root);
                 }

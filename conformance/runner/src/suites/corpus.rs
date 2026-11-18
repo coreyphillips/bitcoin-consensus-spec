@@ -240,6 +240,7 @@ pub struct FileResult {
     pub l0_other_fail: u64,
     pub l1: u64,
     pub l1_fail: u64,
+    /// Level 2 checks made. A `utxo_hash` call that failed is an error, not a check.
     pub l2: u64,
     pub l2_fail: u64,
     /// Level 2 checks not compared because the harness does not list `utxo_hash` (also counted
@@ -593,15 +594,16 @@ pub fn replay_file(ctx: &mut Ctx, path: &Path, restart_shortcut: bool) -> FileRe
                 }
                 // Level 2.
                 if let Some(utxo) = ev.get("utxo") {
-                    r.l2 += 1;
                     if !ctx.supports("utxo_hash") {
                         // PROTOCOL.md section 4.13: optional for an implementation that keeps no
                         // UTXO set.
+                        r.l2 += 1;
                         r.l2_fail += 1;
                         r.l2_uncompared += 1;
                     } else {
                         match call(ctx, "utxo_hash", "") {
                             Ok(a) => {
+                                r.l2 += 1;
                                 let ok = a.get("hash_serialized_3")
                                     == utxo.get("hash_serialized_3")
                                     && a.get("txouts").and_then(Value::as_i64)
@@ -784,11 +786,12 @@ mod tests {
     use std::time::Duration;
 
     /// A harness that refuses a `chain_reset` whose options carry `"refuse":true`, answers
-    /// `chain_tip` with tip `t` at height 0, and fails every other chain op as internal.
+    /// `chain_tip` with tip `t` at height 0, and fails every other chain op (`utxo_hash` too) as
+    /// internal.
     const STUB: &str = r#"while IFS= read -r line; do
   id=${line#*'"id":'}; id=${id%%[,\}]*}
   case "$line" in
-    *'"op":"info"'*) printf '{"id":%s,"ok":true,"name":"stub","version":"0","spec_version":"0","ops":["info","chain_reset","chain_tip"]}\n' "$id";;
+    *'"op":"info"'*) printf '{"id":%s,"ok":true,"name":"stub","version":"0","spec_version":"0","ops":["info","chain_reset","chain_tip","utxo_hash"]}\n' "$id";;
     *'"refuse":true'*) printf '{"id":%s,"ok":false,"error":"bad_request","message":"refused"}\n' "$id";;
     *'"op":"chain_reset"'*) printf '{"id":%s,"ok":true}\n' "$id";;
     *'"op":"chain_tip"'*) printf '{"id":%s,"ok":true,"tip":"t","height":0}\n' "$id";;
@@ -870,6 +873,20 @@ done"#;
             &[json!({"type": "reset", "network": "regtest", "options": {"refuse": true}})],
         );
         assert_eq!(r.errors_location(), "last errors from event 0");
+    }
+
+    #[test]
+    fn a_failed_utxo_hash_call_is_an_error_not_a_check() {
+        let r = replay(
+            "utxo",
+            &[
+                json!({"type": "reset", "network": "regtest"}),
+                json!({"type": "check", "n": 1, "tip": "t", "height": 0, "normative": false,
+                       "utxo": {"hash_serialized_3": "ab", "txouts": 1}}),
+            ],
+        );
+        assert_eq!(r.l2, 0);
+        assert_eq!(r.errors.len(), 1, "{:?}", r.errors);
     }
 
     #[test]
