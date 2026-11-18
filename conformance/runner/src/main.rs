@@ -629,8 +629,14 @@ fn print_report(
             }
         );
         for s in &stale {
+            let advice = match &s.hint {
+                Some(name) => format!(
+                    "an entry names one check by its whole name, such as \"{name}\", which failed"
+                ),
+                None => "remove it".to_string(),
+            };
             println!(
-                "STALE    [{}] {}: {}:{} names no failure of this run; remove it",
+                "STALE    [{}] {}: {}:{} names no failure of this run; {advice}",
                 s.suite,
                 s.location,
                 path.display(),
