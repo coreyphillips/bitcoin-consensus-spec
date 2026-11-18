@@ -32,8 +32,10 @@
 //! - **follow**: one node takes every case in chain order (the chain up to the parent announced
 //!   with unsolicited `headers`, then the case header), then the rest of the chain: its tip must be
 //!   the final tip, and after `{"op":"stop"}` its `stopped` line must name it and the node must exit
-//!   with status 0. A failed check ends the node and the next check starts a fresh one, so one
-//!   divergence does not hide the checks after it.
+//!   with status 0. The line's `hash_serialized_3`, when present, must equal what the classifying
+//!   bitcoind reported at the final tip; a line without it is counted at level 2, as in the interop
+//!   suite. A failed check ends the node and the next check starts a fresh one, so one divergence
+//!   does not hide the checks after it.
 //! - **ibd**: a fresh node per case, whose peer offers the chain up to the parent and the case
 //!   block as its best chain from the start, so the case block ends the node's initial block
 //!   download. Some implementations validate initial block download in batches and only then
@@ -213,12 +215,13 @@ fn raw_hash(display: &str) -> Result<[u8; 32], String> {
     Ok(h)
 }
 
-/// The scenario after classification: the final chain with the variant Core accepted, the cases
-/// in chain order, and what was left out.
+/// The scenario after classification: the final chain with the variant Core accepted, Core's
+/// `hash_serialized_3` at its tip, the cases in chain order, and what was left out.
 struct Scenario {
     name: String,
     options: Value,
     chain: Vec<Block>,
+    utxo_hash: String,
     cases: Vec<Case>,
     valid_siblings: usize,
     unclassified: Vec<String>,
@@ -304,11 +307,24 @@ fn classify(cfg: &Config, name: &str, loaded: Loaded, root: &Path) -> Result<Sce
             }
         }
     }
+    let tip = chain[chain.len() - 1].display();
+    let utxo = core.rpc("gettxoutsetinfo", json!(["hash_serialized_3"]))?;
+    if utxo["bestblock"].as_str() != Some(tip.as_str()) {
+        return Err(format!(
+            "bitcoind's tip is {} after loading, the scenario's final tip is {tip}",
+            utxo["bestblock"]
+        ));
+    }
+    let utxo_hash = utxo["hash_serialized_3"]
+        .as_str()
+        .ok_or_else(|| format!("gettxoutsetinfo answered {utxo}"))?
+        .to_string();
     core.stop();
     Ok(Scenario {
         name: name.to_string(),
         options: loaded.options,
         chain,
+        utxo_hash,
         cases,
         valid_siblings,
         unclassified,
@@ -361,6 +377,9 @@ struct Session<'a> {
     answers: HashMap<u64, Value>,
     next_query: u64,
     stopped: Option<Value>,
+    /// Set by [`Session::finish`] once the stopped line names the final tip: whether it carried
+    /// `hash_serialized_3`.
+    utxo_reported: Option<bool>,
     node_error: Option<String>,
     problems: Vec<String>,
     stderr_path: PathBuf,
@@ -465,6 +484,7 @@ impl<'a> Session<'a> {
             answers: HashMap::new(),
             next_query: 0,
             stopped: None,
+            utxo_reported: None,
             node_error: None,
             problems: Vec::new(),
             stderr_path,
@@ -1072,14 +1092,9 @@ impl<'a> Session<'a> {
         }
         let stopped = self.stopped.clone().unwrap();
         let status = wait_exit(&mut self.child, Duration::from_secs(60));
-        let mut problems = Vec::new();
-        if stopped["tip"].as_str() != Some(want.as_str())
-            || stopped["height"].as_i64() != Some(n as i64)
-        {
-            problems.push(format!(
-                "stopped line {stopped}, expected tip {want} height {n}"
-            ));
-        }
+        let (mut problems, utxo_reported) =
+            check_stopped(&stopped, &want, n as i64, &self.sc.utxo_hash);
+        self.utxo_reported = utxo_reported;
         match status {
             Some(s) if s.success() => {}
             Some(s) => problems.push(format!("the node exited with {s} after its stopped line")),
@@ -1105,6 +1120,35 @@ impl<'a> Session<'a> {
 impl Drop for Session<'_> {
     fn drop(&mut self) {
         self.end();
+    }
+}
+
+/// Compares a `stopped` line with the final tip and Core's `hash_serialized_3` there. Also returns
+/// whether the line carried the hash, or `None` when its tip is wrong and the hash means nothing.
+fn check_stopped(
+    stopped: &Value,
+    tip: &str,
+    height: i64,
+    utxo_hash: &str,
+) -> (Vec<String>, Option<bool>) {
+    if stopped["tip"].as_str() != Some(tip) || stopped["height"].as_i64() != Some(height) {
+        return (
+            vec![format!(
+                "stopped line {stopped}, expected tip {tip} height {height}"
+            )],
+            None,
+        );
+    }
+    match stopped.get("hash_serialized_3") {
+        // PROTOCOL.md section 5: optional for a node that keeps no UTXO set.
+        None | Some(Value::Null) => (Vec::new(), Some(false)),
+        Some(h) if h.as_str() == Some(utxo_hash) => (Vec::new(), Some(true)),
+        Some(h) => (
+            vec![format!(
+                "stopped line hash_serialized_3 {h}, bitcoind {utxo_hash}"
+            )],
+            Some(true),
+        ),
     }
 }
 
@@ -1197,6 +1241,8 @@ struct ModeResult {
     failed: u64,
     not_run: u64,
     nodes: u64,
+    /// The final tip passed without `hash_serialized_3` (level 2).
+    utxo_unreported: bool,
 }
 
 impl ModeResult {
@@ -1290,6 +1336,17 @@ fn run_checks(
                 node_errors = 0;
                 r.passed += 1;
                 stats.pass();
+                // As in the interop suite, level 2 is judged only on a final tip that passed.
+                if let Some(reported) = s.utxo_reported.take() {
+                    stats.l2_checked += 1;
+                    if !reported {
+                        stats.l2_mismatches += 1;
+                        r.utxo_unreported = true;
+                        if verbose {
+                            println!("LEVEL2   [{SUITE}] {loc}: hash_serialized_3 not reported");
+                        }
+                    }
+                }
                 false
             }
             Ok(Some(mismatch)) => {
@@ -1498,6 +1555,9 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
         if !sc.unclassified.is_empty() {
             detail.push_str(&format!(", {} not classified", sc.unclassified.len()));
         }
+        if follow.utxo_unreported {
+            detail.push_str(", UTXO hash not reported (level 2)");
+        }
         if follow.failed + ibd.failed + follow.not_run + ibd.not_run > 0 {
             detail.push_str(&format!(" (files kept in {})", root.display()));
         } else if !cfg.keep_temp {
@@ -1565,6 +1625,36 @@ mod tests {
         assert_eq!(sample(10, Some(1)), vec![0]);
         assert!(sample(10, Some(0)).is_empty());
         assert_eq!(sample(2577, Some(32)).len(), 32);
+    }
+
+    #[test]
+    fn stopped_line_utxo_hash() {
+        let tip = "11".repeat(32);
+        let core = "22".repeat(32);
+        let line = |v: Value| check_stopped(&v, &tip, 5, &core);
+        assert_eq!(
+            line(json!({"tip": tip, "height": 5, "hash_serialized_3": core})),
+            (vec![], Some(true))
+        );
+        let (problems, reported) =
+            line(json!({"tip": tip, "height": 5, "hash_serialized_3": "00".repeat(32)}));
+        assert_eq!(reported, Some(true));
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("hash_serialized_3"), "{}", problems[0]);
+        assert_eq!(
+            line(json!({"tip": tip, "height": 5})),
+            (vec![], Some(false))
+        );
+        assert_eq!(
+            line(json!({"tip": tip, "height": 5, "hash_serialized_3": null})),
+            (vec![], Some(false))
+        );
+        let (problems, reported) =
+            line(json!({"tip": core, "height": 5, "hash_serialized_3": core}));
+        assert_eq!((problems.len(), reported), (1, None));
+        let (problems, reported) =
+            line(json!({"tip": tip, "height": 4, "hash_serialized_3": core}));
+        assert_eq!((problems.len(), reported), (1, None));
     }
 
     #[test]
