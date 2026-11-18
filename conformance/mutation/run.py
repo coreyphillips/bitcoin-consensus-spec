@@ -9,6 +9,10 @@ without that, missing vectors or a harness that cannot start would catch every m
 Usage (from anywhere, after `cargo build --release` in the repository):
 
     python3 conformance/mutation/run.py [--jobs 4] [--kind script|block] [--only NAME,NAME]
+    python3 conformance/mutation/run.py --items
+
+Each mutant names the Appendix A item whose rule it breaks (`item`), or null for a rule that
+Appendix A does not list. `--items` builds and runs nothing: it prints the items no mutant names.
 
 Verdicts: caught (a verdict or an active tip differs), caught-level2 (only an error identifier,
 a chain tip set or a UTXO set hash differs), survived. Three outcomes are not verdicts:
@@ -30,6 +34,9 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
+APPENDIX_A = os.path.join(REPO, "spec", "A-quirks-checklist.md")
+# A row of an Appendix A table: number, quirk, where.
+ITEM_ROW = re.compile(r"^\| (\d+) \| (.*) \| [^|]* \|$")
 RUNNER = os.path.join(
     os.path.abspath(os.environ.get("CARGO_TARGET_DIR") or os.path.join(REPO, "target")),
     "release", "bcs-conformance")
@@ -61,6 +68,23 @@ TOTALS = {
     "script": "338387 checks in 8 suites",
     "block": "level 0 5282/5282, level 0 non-normative 1/1, level 1 1237/1237, level 2 2292/2292",
 }
+
+
+def appendix_a_items():
+    """The quirk of each Appendix A item, by number."""
+    with open(APPENDIX_A) as f:
+        return {int(m.group(1)): m.group(2) for m in map(ITEM_ROW.match, f.read().splitlines()) if m}
+
+
+def print_items(mutants, items):
+    named = {m["item"] for m in mutants}
+    missing = [n for n in sorted(items) if n not in named]
+    print("%d of %d Appendix A items have no mutant:" % (len(missing), len(items)))
+    for n in missing:
+        quirk = items[n]
+        print("%4d  %s" % (n, quirk if len(quirk) <= 100 else quirk[:97] + "..."))
+    print("%d of %d mutants break a rule Appendix A does not list" % (
+        sum(1 for m in mutants if m["item"] is None), len(mutants)))
 
 
 def run_runner(args):
@@ -199,14 +223,25 @@ def main():
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--kind", choices=["script", "block"])
     parser.add_argument("--only", help="comma-separated mutant names")
+    parser.add_argument("--items", action="store_true",
+                        help="print the Appendix A items that no mutant names, and exit")
     opts = parser.parse_args()
-    if not os.path.exists(RUNNER):
-        raise SystemExit("build the runner first: cargo build --release")
     with open(os.path.join(HERE, "mutants.json")) as f:
         mutants = json.load(f)
     recorded = [m["name"] for m in mutants if m["expect"] not in VERDICTS]
     if recorded:
         raise SystemExit("expect must be one of %s: %s" % (", ".join(VERDICTS), ", ".join(recorded)))
+    items = appendix_a_items()
+    unknown = [m["name"] for m in mutants
+               if "item" not in m or not (m["item"] is None or type(m["item"]) is int and m["item"] in items)]
+    if unknown:
+        raise SystemExit("item must be null or one of the %d Appendix A item numbers: %s" % (
+            len(items), ", ".join(unknown)))
+    if opts.items:
+        print_items(mutants, items)
+        return
+    if not os.path.exists(RUNNER):
+        raise SystemExit("build the runner first: cargo build --release")
     if opts.kind:
         mutants = [m for m in mutants if m["kind"] == opts.kind]
     if opts.only:

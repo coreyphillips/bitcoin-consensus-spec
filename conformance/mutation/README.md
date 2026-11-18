@@ -1,6 +1,6 @@
 # Mutation audit
 
-A test suite is only as good as the bugs it catches. Each mutant in `mutants.json` breaks one rule in a copy of the reference, usually a quirk from Appendix A of the specification (for example "compare the transaction version as signed in BIP68" or "check the block weight before the witness commitment"). `run.py` builds each broken copy's harness and runs the suites that should notice:
+A test suite is only as good as the bugs it catches. Each mutant in `mutants.json` breaks one rule in a copy of the reference, usually a quirk from Appendix A of the specification (for example "compare the transaction version as signed in BIP68" or "check the block weight before the witness commitment"). Its `item` is the number of that quirk in Appendix A, or null for a rule Appendix A does not list. Which item a mutant breaks is a judgment made when it is added. `run.py` builds each broken copy's harness and runs the suites that should notice:
 
 - `script` mutants: the vector suites and `custom`;
 - `block` mutants: the `corpus` suite.
@@ -9,8 +9,9 @@ Before any mutant, an unmodified copy goes through the same steps and must pass 
 
 ```sh
 cargo build --release
-python3 conformance/mutation/run.py --jobs 4            # all mutants, about two hours on 4 cores
+python3 conformance/mutation/run.py --jobs 4            # all mutants, over two hours on 4 cores
 python3 conformance/mutation/run.py --kind block --only bip30-never
+python3 conformance/mutation/run.py --items             # the Appendix A items no mutant breaks
 ```
 
 Verdicts:
@@ -33,4 +34,4 @@ The detail column counts harness errors for every mutant. A tip that differs aft
 
 Each mutant records the verdict it got when it was added (`expect`); the script exits with status 1 when a verdict changes, so it can be rerun after changes to the specification or the suites. CI reruns it every week and on pull requests that change them (`.github/workflows/extended.yml`). A mutant that reports `patch-not-found` needs its `old` text updated.
 
-Survivors are explained in their `note`. A survivor that could be caught is a gap in the suites, closed by adding a test: the custom vectors in `vectors/custom` and the `feature_spec_pitfalls` scenario of the block corpus were written that way.
+Survivors are explained in their `note`. A survivor that could be caught is a gap in the suites, closed by adding a test: the custom vectors in `vectors/custom` and the `feature_spec_pitfalls` scenario of the block corpus were written that way. The survivors in chapters 09 to 13 are open gaps of that kind, and each note names the issue that tracks its test. When the test lands, the mutant's `expect` changes to `caught`.
