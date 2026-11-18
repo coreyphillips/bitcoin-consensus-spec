@@ -176,7 +176,7 @@ How Bitcoin Core answers `getheaders` (Core: the `GETHEADERS` case of `ProcessMe
 - With an **empty locator**, it sends exactly one header, the stop hash's, if it knows that block and is willing to serve it (on its active chain, or a recent valid fork); otherwise it sends **nothing at all**.
 - Otherwise it takes the first locator hash that it knows and that is on its active chain, or that is a descendant of its active tip (then it uses the tip); hashes it does not know, and hashes on side branches, are skipped; if none qualifies it uses genesis. It then sends the headers of its active chain after that block, up to 2,000, stopping early after the stop hash.
 
-A node keeps sending `getheaders`, with a locator starting from the last header received, until a `headers` message has fewer than 2,000 entries. A received `headers` message is first checked as a whole (`headers_message_acceptable` below), and then processed with `process_headers` (chapter 11) in order, stopping at the first header that fails.
+A node keeps sending `getheaders`, with a locator starting from the last header received, until a `headers` message has fewer than 2,000 entries or adds no header to the block tree. A received `headers` message is first checked as a whole (`headers_message_acceptable` below), and then processed with `process_headers` (chapter 11) in order, stopping at the first header that fails.
 
 The locator is the hashes of a block and its ancestors at decreasing heights: the first 12 entries are consecutive heights, after which the step doubles at each entry; the list always ends with genesis. Bitcoin Core builds it from its best header when synchronizing headers. (Core: `LocatorEntries`, `src/chain.cpp`.)
 
@@ -413,7 +413,7 @@ pub fn decode_inv(payload: &[u8]) -> Result<Vec<(u32, Hash256)>, DecodeError> {
 
 ## 14.5 A minimal synchronizing peer
 
-The function below connects to one peer, performs the handshake, downloads headers and blocks until the active tip equals `stop_at` (in headers-only mode, until the header `stop_at` is known), and answers `ping` and `getheaders` along the way. Without `stop_at`, it stops when the peer has no more headers (headers-only mode) or when nothing has happened for `idle_limit` seconds. It fails with an error when it makes no progress for `idle_limit` seconds with a target still unreached, when a requested block does not arrive within `BLOCK_REQUEST_TIMEOUT_SECS`, when the peer sends a block that cannot be decoded or that fails validation, and when the peer breaks the framing rules. While a target is unknown it asks for headers again every 10 seconds, because a peer that is itself still synchronizing does not announce new blocks. The target may be below the peer's tip. Once its header is known, only it and its ancestors are requested, and the target is checked after every message, so the blocks it asked for never carry the tip past the target. It is deliberately simple: one peer, one connection, blocking input and output. It is the reference behaviour the conformance suite's interop test exercises against Bitcoin Core; a production node adds multiple peers, peer discovery, retries elsewhere and persistence.
+The function below connects to one peer, performs the handshake, downloads headers and blocks until the active tip equals `stop_at` (in headers-only mode, until the header `stop_at` is known), and answers `ping` and `getheaders` along the way. Without `stop_at`, it stops when the peer has no more headers (headers-only mode) or when nothing has happened for `idle_limit` seconds. It fails with an error when it makes no progress for `idle_limit` seconds with a target still unreached or a `getheaders` request still unanswered, when the peer stops reading for `idle_limit` seconds, when a requested block does not arrive within `BLOCK_REQUEST_TIMEOUT_SECS`, when the peer sends a block that cannot be decoded or that fails validation, and when the peer breaks the framing rules. The idle limit counts from the handshake, whether or not the peer has sent its last headers, so no peer can keep the node waiting forever. After a full batch of headers the node asks for more, unless the batch added no header: asking again would only bring the same batch back. While a target is unknown it asks for headers again every 10 seconds, because a peer that is itself still synchronizing does not announce new blocks. The target may be below the peer's tip. Once its header is known, only it and its ancestors are requested, and the target is checked after every message, so the blocks it asked for never carry the tip past the target. It is deliberately simple: one peer, one connection, blocking input and output. It is the reference behaviour the conformance suite's interop test exercises against Bitcoin Core; a production node adds multiple peers, peer discovery, retries elsewhere and persistence.
 
 ```rust
 /// Outcome of a successful synchronization run.
@@ -430,15 +430,20 @@ fn unix_now() -> i64 {
 }
 
 /// Synchronizes `state` from the peer at `address` (host:port). With `download_blocks` false, only
-/// headers are synchronized.
+/// headers are synchronized. `idle_limit` is in seconds; zero counts as one.
 pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Hash256>, idle_limit: u64, download_blocks: bool) -> std::io::Result<SyncEnd> {
     use std::io::{Error, ErrorKind, Write};
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
+    let idle_limit = idle_limit.max(1);
     let magic = state.params.magic;
     let mut stream = std::net::TcpStream::connect(address)?;
-    stream.set_read_timeout(Some(std::time::Duration::from_millis(200)))?;
+    stream.set_read_timeout(Some(Duration::from_millis(200)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(idle_limit)))?;
     let send = |stream: &mut std::net::TcpStream, command: &str, payload: &[u8]| -> std::io::Result<()> {
-        stream.write_all(&encode_message(magic, command, payload))
+        stream.write_all(&encode_message(magic, command, payload)).map_err(|e| match e.kind() {
+            ErrorKind::WouldBlock | ErrorKind::TimedOut => Error::new(ErrorKind::TimedOut, "peer stopped reading"),
+            _ => e,
+        })
     };
 
     let nonce = sha256(&unix_now().to_le_bytes());
@@ -465,7 +470,7 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
     let mut last_progress = Instant::now();
     let request_headers = |state: &ChainState, stream: &mut std::net::TcpStream| -> std::io::Result<()> {
         let best = state.best_header().hash;
-        stream.write_all(&encode_message(magic, "getheaders", &encode_getheaders(&block_locator(&state.tree, &best), &ZERO_HASH)))
+        send(stream, "getheaders", &encode_getheaders(&block_locator(&state.tree, &best), &ZERO_HASH))
     };
 
     let reached = |state: &ChainState| match stop_at {
@@ -509,13 +514,20 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
                     send(&mut stream, "sendheaders", &[])?;
                     send(&mut stream, "verack", &[])?;
                 }
-                "verack" => {
+                // A repeated `verack` is ignored, so it cannot restart the idle clock.
+                "verack" if !handshake_done => {
                     handshake_done = true;
+                    // The idle limit counts from here.
+                    last_progress = Instant::now();
                     request_headers(state, &mut stream)?;
                     requested_headers = true;
                     last_headers_request = Instant::now();
                 }
-                "ping" => send(&mut stream, "pong", &message.payload)?,
+                "ping" => {
+                    if let Some(nonce) = message.payload.get(..8) {
+                        send(&mut stream, "pong", nonce)?;
+                    }
+                }
                 "getheaders" => {
                     if let Ok((locator, stop)) = decode_getheaders(&message.payload) {
                         if let Some(headers) = answer_getheaders(&state.tree, &locator, &stop) {
@@ -527,14 +539,16 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
                     requested_headers = false;
                     let headers = decode_headers(&message.payload).map_err(|e| Error::new(ErrorKind::InvalidData, e.0))?;
                     let full_batch = headers.len() == MAX_HEADERS_RESULTS;
+                    let known_before = state.tree.entries.len();
                     if headers_message_acceptable(state, &headers) {
                         let _ = state.process_headers(&headers, unix_now());
                     }
-                    if full_batch {
+                    // Asking again after a full batch that added nothing would get the same batch back.
+                    if full_batch && state.tree.entries.len() > known_before {
                         request_headers(state, &mut stream)?;
                         requested_headers = true;
                         last_headers_request = Instant::now();
-                    } else {
+                    } else if !full_batch {
                         headers_synced = true;
                     }
                 }
@@ -628,10 +642,13 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
                 in_flight.extend(wanted.into_iter().map(|h| (h, Instant::now())));
             }
         }
-        // Nothing outstanding and no progress for `idle_limit` seconds: done without a target, stuck with one.
-        if headers_synced && in_flight.is_empty() && last_progress.elapsed().as_secs() >= idle_limit {
+        // No block in flight and no progress for `idle_limit` seconds: done without a target, stuck
+        // with one. This holds whether or not the headers are synchronized, so a peer that never
+        // answers `getheaders` cannot keep the node waiting.
+        if in_flight.is_empty() && last_progress.elapsed().as_secs() >= idle_limit {
             return match stop_at {
-                None => Ok(SyncEnd::Idle),
+                None if !requested_headers => Ok(SyncEnd::Idle),
+                None => Err(Error::new(ErrorKind::TimedOut, "getheaders not answered")),
                 Some(_) => Err(Error::new(ErrorKind::TimedOut, "no progress towards the target block")),
             };
         }
@@ -651,3 +668,130 @@ To find peers, Bitcoin Core v32.1 queries these DNS seeds (Core: `vSeeds`, `src/
 | signet (default challenge) | `seed.signet.bitcoin.sprovoost.nl`, `seed.signet.achownodes.xyz` |
 
 Default ports are in chapter 12. Peer discovery is not part of consensus; any source of honest peers works, and a node SHOULD connect to several, because a single peer can withhold the best chain.
+
+## 14.7 Tests
+
+Each test plays a peer that never lets the synchronization finish on its own: one that never answers `getheaders`, one that answers every `getheaders` with the same 2,000 headers, and one that stops reading. `sync_from_peer` must return once its idle limit has passed.
+
+```rust
+#[cfg(test)]
+mod sync_tests {
+    use super::*;
+    use std::io::{ErrorKind, Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    fn regtest() -> ChainState {
+        ChainState::new(network_params(Network::Regtest, &NetworkOptions::default()))
+    }
+
+    /// Plays the peer on a free local port: completes the handshake, then hands every later message
+    /// to `script`. Returns the address to connect to.
+    fn scripted_peer(mut script: impl FnMut(&mut TcpStream, &Message) + Send + 'static) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let magic = regtest().params.magic;
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            loop {
+                let mut frame = vec![0u8; 24];
+                if stream.read_exact(&mut frame).is_err() {
+                    return;
+                }
+                let (_, length) = check_frame_header(&frame, magic).unwrap();
+                frame.resize(24 + length, 0);
+                if stream.read_exact(&mut frame[24..]).is_err() {
+                    return;
+                }
+                let message = decode_frame(&frame, magic).unwrap().unwrap();
+                if message.command == "version" {
+                    let version = VersionMessage {
+                        version: PROTOCOL_VERSION,
+                        services: NODE_NETWORK | NODE_WITNESS,
+                        timestamp: 0,
+                        nonce: 1,
+                        user_agent: Vec::new(),
+                        start_height: 0,
+                        relay: false,
+                    };
+                    let _ = stream.write_all(&encode_message(magic, "version", &encode_version(&version)));
+                    let _ = stream.write_all(&encode_message(magic, "verack", &[]));
+                } else {
+                    script(&mut stream, &message);
+                }
+            }
+        });
+        address
+    }
+
+    /// Runs `sync_from_peer` on a fresh regtest state. Fails the test if it is still running after 30 seconds.
+    fn sync(address: String, stop_at: Option<Hash256>, idle_limit: u64, download_blocks: bool) -> (std::io::Result<SyncEnd>, ChainState) {
+        let (done, result) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut state = regtest();
+            let end = sync_from_peer(&mut state, &address, stop_at, idle_limit, download_blocks);
+            let _ = done.send((end, state));
+        });
+        result.recv_timeout(Duration::from_secs(30)).expect("sync_from_peer is still waiting")
+    }
+
+    #[test]
+    fn unanswered_getheaders_ends_at_the_idle_limit() {
+        for stop_at in [None, Some([1u8; 32])] {
+            let (end, _) = sync(scripted_peer(|_, _| {}), stop_at, 1, true);
+            assert_eq!(end.unwrap_err().kind(), ErrorKind::TimedOut);
+        }
+    }
+
+    #[test]
+    fn a_full_batch_that_adds_nothing_is_not_requested_again() {
+        let params = regtest().params;
+        let mut headers: Vec<BlockHeader> = Vec::new();
+        for _ in 0..MAX_HEADERS_RESULTS {
+            let parent = headers.last().copied().unwrap_or(params.genesis.header);
+            let mut header = BlockHeader { version: 0x2000_0000, prev_block: parent.hash(), merkle_root: [0; 32], time: parent.time + 600, bits: parent.bits, nonce: 0 };
+            while !check_proof_of_work(&header.hash(), header.bits, params.consensus.pow_limit) {
+                header.nonce += 1;
+            }
+            headers.push(header);
+        }
+        let last = headers.last().unwrap().hash();
+        let reply = encode_message(params.magic, "headers", &encode_headers(&headers));
+        for stop_at in [None, Some([1u8; 32])] {
+            let requests = Arc::new(AtomicUsize::new(0));
+            let counter = requests.clone();
+            let reply = reply.clone();
+            let address = scripted_peer(move |stream, message| {
+                if message.command == "getheaders" {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let _ = stream.write_all(&reply);
+                }
+            });
+            let (end, state) = sync(address, stop_at, 1, false);
+            match stop_at {
+                None => assert_eq!(end.unwrap(), SyncEnd::Idle),
+                Some(_) => assert_eq!(end.unwrap_err().kind(), ErrorKind::TimedOut),
+            }
+            assert_eq!(state.best_header().hash, last);
+            assert_eq!(requests.load(Ordering::SeqCst), 2);
+        }
+    }
+
+    #[test]
+    fn a_peer_that_stops_reading_ends_at_the_write_timeout() {
+        let magic = regtest().params.magic;
+        let pings: Vec<u8> = (0..4096u64).flat_map(|nonce| encode_message(magic, "ping", &nonce.to_le_bytes())).collect();
+        // From the first getheaders on, the peer only sends pings, so the node's pongs pile up.
+        let address = scripted_peer(move |stream, message| {
+            if message.command == "getheaders" {
+                while stream.write_all(&pings).is_ok() {}
+            }
+        });
+        let (end, _) = sync(address, None, 5, true);
+        let error = end.unwrap_err();
+        assert_eq!((error.kind(), error.to_string()), (ErrorKind::TimedOut, "peer stopped reading".to_string()));
+    }
+}
+```
