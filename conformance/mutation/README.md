@@ -7,7 +7,7 @@ A test suite is only as good as the bugs it catches. Each mutant in `mutants.jso
 
 ```sh
 cargo build --release
-python3 conformance/mutation/run.py --jobs 4            # all mutants, about half an hour
+python3 conformance/mutation/run.py --jobs 4            # all mutants, about two hours on 4 cores
 python3 conformance/mutation/run.py --kind block --only bip30-never
 ```
 
