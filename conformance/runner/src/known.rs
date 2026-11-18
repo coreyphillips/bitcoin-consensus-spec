@@ -2,11 +2,12 @@
 //!
 //! Each line that is not blank and does not start with `#` is `<suite> <check>`. The check is the
 //! name the runner prints for a failure (`FAIL     [suite] <location>: ...`): the location up to its
-//! first `:` or `(`, where the row text or a comment starts. An entry equals one name and waives
-//! one failure: `row 15` names `row 15 (message of size 0 ...)`, and `tx-invalid row 7` names none
-//! of that row's failures, each of which is named with its input and flags. An entry that waives
-//! no failure, in a suite that ran, fails the run, so the list cannot outlive the failures it
-//! describes or stand for several of them.
+//! first `:` or `(`, where the row text or a comment starts. A file name in the check is part of it
+//! whole, whatever it contains. An entry equals one name and waives one failure: `row 15` names
+//! `row 15 (message of size 0 ...)`, and `tx-invalid row 7` names none of that row's failures, each
+//! of which is named with its input and flags. An entry that waives no failure, in a suite that
+//! ran, fails the run, so the list cannot outlive the failures it describes or stand for several
+//! of them.
 //!
 //! The corpus suite names a level 0 failure by its check (`<file> check <n>`) and the replay
 //! errors of a file, which fail that file once, as `<file> errors from event <n>`: `<n>` is the
@@ -22,7 +23,7 @@ struct Entry {
     location: String,
     line: usize,
     used: bool,
-    /// A failure whose name starts with this entry and a space, which the entry does not name.
+    /// The name of a failure that is close to this entry, which the entry does not name.
     hint: Option<String>,
 }
 
@@ -37,13 +38,15 @@ pub struct Stale {
     pub suite: String,
     pub location: String,
     pub line: usize,
-    /// The name of a failure the entry is the start of, which it was probably meant to name.
+    /// The name of a failure that is the start of the entry, or the entry the start of it, which
+    /// it was probably meant to name.
     pub hint: Option<String>,
 }
 
 /// The name of a failure location: the text before its first `:` or `(`. A script suite puts the
 /// row text after `: `, and other suites a comment in parentheses, which may itself hold a colon
-/// (BIP340's `sig[0:32] is equal to field size`).
+/// (BIP340's `sig[0:32] is equal to field size`). A suite whose names hold a file name passes its
+/// names itself, since a file name may hold either character.
 pub fn check_name(location: &str) -> &str {
     let end = location.find([':', '(']).unwrap_or(location.len());
     location[..end].trim_end()
@@ -65,12 +68,6 @@ impl Known {
             if !suites.contains(&suite) {
                 return Err(format!("{at}: unknown suite {suite}"));
             }
-            if check_name(location) != location {
-                return Err(format!(
-                    "{at}: name the check by what FAIL prints before the first \":\" or \"(\" (\"{}\")",
-                    check_name(location)
-                ));
-            }
             if let Some(e) = entries
                 .iter()
                 .find(|e| e.suite == suite && e.location == location)
@@ -91,11 +88,10 @@ impl Known {
         })
     }
 
-    /// True when an unused entry names this failure; the entry then waives no other. A check
+    /// True when an unused entry is this failure's name; the entry then waives no other. A check
     /// fails at most once per run, so a second failure under the same name is not one the list
     /// describes.
-    pub fn take(&mut self, suite: &str, location: &str) -> bool {
-        let name = check_name(location);
+    pub fn take(&mut self, suite: &str, name: &str) -> bool {
         let mut unused = self
             .entries
             .iter_mut()
@@ -109,10 +105,8 @@ impl Known {
             .iter_mut()
             .filter(|e| e.suite == suite && !e.used && e.hint.is_none())
         {
-            if name
-                .strip_prefix(e.location.as_str())
-                .is_some_and(|rest| rest.starts_with(' '))
-            {
+            // `row 7` for `row 7 input 0 flags NONE`, or `row 15 (message ...)` for `row 15`.
+            if extends(name, &e.location) || extends(&e.location, name) {
                 e.hint = Some(name.to_string());
             }
         }
@@ -138,6 +132,12 @@ impl Known {
     }
 }
 
+/// Whether `a` is `b` followed by a space or a colon and more.
+fn extends(a: &str, b: &str) -> bool {
+    a.strip_prefix(b)
+        .is_some_and(|rest| rest.starts_with([' ', ':']))
+}
+
 static KNOWN: OnceLock<Mutex<Known>> = OnceLock::new();
 
 /// Reads the list for this run. Called at most once, before any suite runs.
@@ -151,10 +151,10 @@ pub fn load(path: &Path, suites: &[&str]) -> Result<(), String> {
 }
 
 /// True when the run's list names this failure. False without `--known-failures`.
-pub fn take(suite: &str, location: &str) -> bool {
+pub fn take(suite: &str, name: &str) -> bool {
     KNOWN
         .get()
-        .is_some_and(|k| k.lock().unwrap().take(suite, location))
+        .is_some_and(|k| k.lock().unwrap().take(suite, name))
 }
 
 /// The list's path and its stale entries, or `None` without `--known-failures`.
@@ -169,10 +169,15 @@ pub fn stale(ran: &[&str]) -> Option<(PathBuf, Vec<Stale>)> {
 mod tests {
     use super::*;
 
-    const SUITES: &[&str] = &["bip340", "corpus", "interop", "tx-invalid"];
+    const SUITES: &[&str] = &["bip340", "corpus", "custom", "interop", "tx-invalid"];
 
     fn known(text: &str) -> Result<Known, String> {
         Known::parse(Path::new("k.txt"), text, SUITES)
+    }
+
+    /// What `Ctx::fail` does with a location.
+    fn fail(k: &mut Known, suite: &str, loc: &str) -> bool {
+        k.take(suite, check_name(loc))
     }
 
     // The row text of tx_invalid.json row 7, as the runner prints it.
@@ -192,49 +197,100 @@ mod tests {
              tx-invalid row 7 tx_check\n",
         )
         .unwrap();
-        assert!(k.take("bip340", "row 15 (message of size 0 (added 2022-12))"));
-        assert!(!k.take("bip340", "row 150 (another row)"));
-        assert!(!k.take("bip340", "row 1"));
-        assert!(k.take(
+        assert!(fail(
+            &mut k,
+            "bip340",
+            "row 15 (message of size 0 (added 2022-12))"
+        ));
+        assert!(!fail(&mut k, "bip340", "row 150 (another row)"));
+        assert!(!fail(&mut k, "bip340", "row 1"));
+        assert!(fail(
+            &mut k,
             "bip340",
             "row 6 (sig[0:32] is not an X coordinate on the curve)"
         ));
-        assert!(!k.take("corpus", "row 15 (message of size 0 (added 2022-12))"));
-        assert!(k.take(
-            "corpus",
-            "feature_block.node0 check 88 (event 352, line 354, send_blocks_and_test)"
-        ));
-        assert!(!k.take("corpus", "feature_block.node0 check 8 (event 1, line 3)"));
+        assert!(!k.take("corpus", "row 15"));
+        assert!(k.take("corpus", "feature_block.node0 check 88"));
+        assert!(!k.take("corpus", "feature_block.node0 check 8"));
         assert!(k.take("interop", "chain feature_spec_pitfalls.node2"));
         assert!(!k.take("interop", "chain feature_spec_pitfalls.node20"));
-        assert!(k.take("tx-invalid", &format!("row 7 input 0 flags P2SH: {ROW_7}")));
-        assert!(!k.take(
+        assert!(fail(
+            &mut k,
+            "tx-invalid",
+            &format!("row 7 input 0 flags P2SH: {ROW_7}")
+        ));
+        assert!(!fail(
+            &mut k,
             "tx-invalid",
             &format!("row 7 input 0 flags P2SH,WITNESS: {ROW_7}")
         ));
-        assert!(!k.take("tx-invalid", &format!("row 7 input 0 flags NONE: {ROW_7}")));
-        assert!(k.take("tx-invalid", &format!("row 7 tx_check: {ROW_7}")));
+        assert!(!fail(
+            &mut k,
+            "tx-invalid",
+            &format!("row 7 input 0 flags NONE: {ROW_7}")
+        ));
+        assert!(fail(
+            &mut k,
+            "tx-invalid",
+            &format!("row 7 tx_check: {ROW_7}")
+        ));
         assert!(k.stale(SUITES).is_empty());
+    }
+
+    #[test]
+    fn a_file_name_is_part_of_a_name_whole() {
+        let mut k = known(
+            "custom variant(A).jsonl line 1\n\
+             custom variant (A).jsonl line 1\n\
+             interop chain a:b(c)\n",
+        )
+        .unwrap();
+        assert!(!k.take("custom", "variant(B).jsonl line 1"));
+        assert!(!k.take("custom", "variant (B).jsonl line 1"));
+        assert!(k.take("custom", "variant(A).jsonl line 1"));
+        assert!(k.take("custom", "variant (A).jsonl line 1"));
+        assert!(k.take("interop", "chain a:b(c)"));
+
+        let mut k = known("custom variant\n").unwrap();
+        assert!(!k.take("custom", "variant(A).jsonl line 1"));
+        assert!(!k.take("custom", "variant (B).jsonl line 1"));
+        assert_eq!(k.stale(SUITES).len(), 1);
     }
 
     #[test]
     fn an_entry_waives_one_failure() {
         let mut k = known("tx-invalid row 7 input 0 flags P2SH\n").unwrap();
         let loc = format!("row 7 input 0 flags P2SH: {ROW_7}");
-        assert!(k.take("tx-invalid", &loc));
-        assert!(!k.take("tx-invalid", &loc));
+        assert!(fail(&mut k, "tx-invalid", &loc));
+        assert!(!fail(&mut k, "tx-invalid", &loc));
     }
 
     #[test]
-    fn the_start_of_a_name_names_nothing_and_points_at_a_name_that_failed() {
-        let mut k = known("tx-invalid row 7\ntx-invalid row\nbip340 row\n").unwrap();
+    fn an_entry_near_a_name_names_nothing_and_points_at_it() {
+        let mut k = known(
+            "tx-invalid row 7\n\
+             tx-invalid row\n\
+             bip340 row\n\
+             bip340 row 6 (sig[0:32] is not an X coordinate on the curve)\n",
+        )
+        .unwrap();
         for flags in ["NONE", "P2SH", "P2SH,WITNESS"] {
-            assert!(!k.take(
+            assert!(!fail(
+                &mut k,
                 "tx-invalid",
                 &format!("row 7 input 0 flags {flags}: {ROW_7}")
             ));
         }
-        assert!(!k.take("bip340", "row 15 (message of size 0 (added 2022-12))"));
+        assert!(!fail(
+            &mut k,
+            "bip340",
+            "row 15 (message of size 0 (added 2022-12))"
+        ));
+        assert!(!fail(
+            &mut k,
+            "bip340",
+            "row 6 (sig[0:32] is not an X coordinate on the curve)"
+        ));
         let stale = k.stale(SUITES);
         let hints: Vec<_> = stale.iter().map(|s| (s.line, s.hint.as_deref())).collect();
         assert_eq!(
@@ -243,6 +299,7 @@ mod tests {
                 (1, Some("row 7 input 0 flags NONE")),
                 (2, Some("row 7 input 0 flags NONE")),
                 (3, Some("row 15")),
+                (4, Some("row 6")),
             ]
         );
     }
@@ -250,7 +307,7 @@ mod tests {
     #[test]
     fn an_unused_entry_is_stale_only_when_its_suite_ran() {
         let mut k = known("bip340 row 15\ncorpus mining_basic.node0 errors\n").unwrap();
-        assert!(k.take("bip340", "row 15 (x)"));
+        assert!(fail(&mut k, "bip340", "row 15 (x)"));
         let stale = k.stale(SUITES);
         assert_eq!(stale.len(), 1);
         assert_eq!(
@@ -273,14 +330,5 @@ mod tests {
         assert!(known("bip340 row 15\nbip340  row 15 \n")
             .unwrap_err()
             .contains("k.txt:2: repeats line 1"));
-        // What FAIL prints after the name can never be part of one.
-        assert!(known("bip340 row 15 (message of size 0)\n")
-            .unwrap_err()
-            .contains("k.txt:1: name the check by what FAIL prints before the first"));
-        assert!(
-            known(&format!("tx-invalid row 7 input 0 flags P2SH: {ROW_7}\n"))
-                .unwrap_err()
-                .contains("(\"row 7 input 0 flags P2SH\")")
-        );
     }
 }

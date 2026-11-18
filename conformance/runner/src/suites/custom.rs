@@ -23,6 +23,8 @@ pub fn files(dir: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 struct Case {
+    /// `<file> line <n>`: the name `--known-failures` uses, which `loc` extends with the case's.
+    name: String,
     loc: String,
     op: String,
     body: String,
@@ -61,8 +63,10 @@ fn load(path: &Path) -> Result<Vec<Case>, String> {
             .cloned()
             .ok_or_else(|| bad("expect is not an object"))?;
         let s = Value::Object(request).to_string();
+        let check = format!("{file} line {}", i + 1);
         cases.push(Case {
-            loc: format!("{file} line {} ({name})", i + 1),
+            loc: format!("{check} ({name})"),
+            name: check,
             op,
             body: s[1..s.len() - 1].to_string(),
             expect,
@@ -92,7 +96,7 @@ pub fn run(ctx: &mut Ctx, vectors: &Path) -> Result<(), String> {
         let got = match ctx.harness.call(&case.op, &case.body) {
             Ok(g) => g,
             Err(e) => {
-                ctx.call_failed(&case.loc, &e);
+                ctx.call_failed_as(&case.name, &case.loc, &e);
                 continue;
             }
         };
@@ -113,7 +117,7 @@ pub fn run(ctx: &mut Ctx, vectors: &Path) -> Result<(), String> {
             .map(|(k, v)| format!("{k}: expected {v}, got {}", field(k)))
             .collect();
         if !level1.is_empty() {
-            ctx.fail(&case.loc, &shorten(&level1.join("; "), 400));
+            ctx.fail_as(&case.name, &case.loc, &shorten(&level1.join("; "), 400));
             continue;
         }
         let level2: Vec<(&String, &Value)> = case
@@ -136,4 +140,22 @@ pub fn run(ctx: &mut Ctx, vectors: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_case_is_named_by_its_whole_file_name() {
+        let dir = std::env::temp_dir().join(format!("bcs-custom-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("variant (A).jsonl");
+        let case = r#"{"name": "x: (y)", "request": {"op": "tx_check"}, "expect": {}}"#;
+        std::fs::write(&path, format!("{case}\n")).unwrap();
+        let cases = load(&path).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(cases[0].name, "variant (A).jsonl line 1");
+        assert_eq!(cases[0].loc, "variant (A).jsonl line 1 (x: (y))");
+    }
 }

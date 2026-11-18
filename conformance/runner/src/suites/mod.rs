@@ -651,8 +651,8 @@ mod tests {
 
         let list = "tx-invalid row 7 input 0 flags P2SH\ntx-invalid row 7\n";
         let mut k = Known::parse(Path::new("k"), list, &["tx-invalid"]).unwrap();
-        assert!(k.take("tx-invalid", &p2sh));
-        assert!(!k.take("tx-invalid", &witness));
+        assert!(k.take("tx-invalid", check_name(&p2sh)));
+        assert!(!k.take("tx-invalid", check_name(&witness)));
         let stale = k.stale(&["tx-invalid"]);
         assert_eq!(stale.len(), 1);
         assert_eq!(stale[0].location, "row 7");

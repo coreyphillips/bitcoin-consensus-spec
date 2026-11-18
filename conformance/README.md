@@ -118,7 +118,8 @@ An implementation that has a divergence it has accepted, or that cannot run a sc
 example, it lacks a network option the scenario needs), can still use the runner as a regression
 gate: `--known-failures FILE` names the checks it is known to fail. Each line that is not blank and
 does not start with `#` is `<suite> <check>`, where the check is what `FAIL` prints between
-`[suite]` and the first `:` or `(`, without the space before it:
+`[suite]` and the first `:` or `(`, without the space before it. A file name in the check counts
+whole, even when it holds one of those characters:
 
 ```text
 # BIP340 messages that are not 32 bytes: no API for them.

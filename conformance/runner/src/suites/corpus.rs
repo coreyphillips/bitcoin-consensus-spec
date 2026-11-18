@@ -534,7 +534,7 @@ pub fn replay_file(ctx: &mut Ctx, path: &Path, restart_shortcut: bool) -> FileRe
                 };
                 if normative {
                     r.normative += 1;
-                    if !matched && crate::known::take("corpus", &loc) {
+                    if !matched && crate::known::take("corpus", &format!("{name} check {n}")) {
                         r.l0_known += 1;
                         if ctx.verbose {
                             println!(
