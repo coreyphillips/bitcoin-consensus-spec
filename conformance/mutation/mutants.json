@@ -626,5 +626,269 @@
   "old": "pub struct UtxoView<'a> {\n    pub base: &'a UtxoSet,\n    pub changes: std::collections::HashMap<OutPoint, Option<Coin>>,\n}\n\nimpl<'a> UtxoView<'a> {\n    pub fn new(base: &'a UtxoSet) -> UtxoView<'a> {\n        UtxoView { base, changes: std::collections::HashMap::new() }\n    }\n\n    pub fn get(&self, outpoint: &OutPoint) -> Option<Coin> {\n        match self.changes.get(outpoint) {\n            Some(entry) => entry.clone(),\n            None => self.base.get(outpoint).cloned(),\n        }\n    }\n\n    pub fn spend(&mut self, outpoint: &OutPoint) -> Option<Coin> {\n        let coin = self.get(outpoint);\n        if coin.is_some() {\n            self.changes.insert(*outpoint, None);\n        }\n        coin\n    }\n",
   "new": "pub struct UtxoView<'a> {\n    pub base: &'a UtxoSet,\n    pub changes: std::collections::HashMap<OutPoint, Option<Coin>>,\n    pub spent_here: std::collections::HashSet<OutPoint>,\n}\n\nimpl<'a> UtxoView<'a> {\n    pub fn new(base: &'a UtxoSet) -> UtxoView<'a> {\n        UtxoView { base, changes: std::collections::HashMap::new(), spent_here: std::collections::HashSet::new() }\n    }\n\n    pub fn get(&self, outpoint: &OutPoint) -> Option<Coin> {\n        if self.spent_here.contains(outpoint) {\n            return None;\n        }\n        match self.changes.get(outpoint) {\n            Some(entry) => entry.clone(),\n            None => self.base.get(outpoint).cloned(),\n        }\n    }\n\n    pub fn spend(&mut self, outpoint: &OutPoint) -> Option<Coin> {\n        let coin = self.get(outpoint);\n        if coin.is_some() {\n            if matches!(self.changes.get(outpoint), Some(Some(_))) {\n                self.spent_here.insert(*outpoint);\n            } else {\n                self.changes.insert(*outpoint, None);\n            }\n        }\n        coin\n    }\n",
   "expect": "caught"
+ },
+ {
+  "name": "findanddelete-unaligned",
+  "kind": "script",
+  "file": "06-signature-hashes.md",
+  "old": "        if get_op(script, &mut pc).is_none() {\n            break;\n        }\n    }\n    if found {",
+  "new": "        if pc >= script.len() {\n            break;\n        }\n        pc += 1;\n    }\n    if found {",
+  "expect": "caught"
+ },
+ {
+  "name": "findanddelete-once",
+  "kind": "script",
+  "file": "06-signature-hashes.md",
+  "old": "        while script.len() - pc >= pattern.len() && &script[pc..pc + pattern.len()] == pattern {",
+  "new": "        if script.len() - pc >= pattern.len() && &script[pc..pc + pattern.len()] == pattern {",
+  "expect": "caught"
+ },
+ {
+  "name": "v0-opcount-off",
+  "kind": "script",
+  "file": "05-script-execution.md",
+  "old": "        if legacy_limits && opcode > OP_16 {",
+  "new": "        if sigversion == SigVersion::Base && opcode > OP_16 {",
+  "expect": "caught"
+ },
+ {
+  "name": "v0-multisig-opcount-not-added",
+  "kind": "script",
+  "file": "05-script-execution.md",
+  "old": "                    op_count += keys_count as usize;\n",
+  "new": "                    if sigversion == SigVersion::Base { op_count += keys_count as usize; }\n",
+  "expect": "caught"
+ },
+ {
+  "name": "v0-pushsize-off",
+  "kind": "script",
+  "file": "05-script-execution.md",
+  "old": "        if op.data.len() > MAX_SCRIPT_ELEMENT_SIZE {\n            return Err(ScriptError::PushSize);\n        }\n        if legacy_limits",
+  "new": "        if sigversion != SigVersion::WitnessV0 && op.data.len() > MAX_SCRIPT_ELEMENT_SIZE {\n            return Err(ScriptError::PushSize);\n        }\n        if legacy_limits",
+  "expect": "caught"
+ },
+ {
+  "name": "v0-disabled-only-executed",
+  "kind": "script",
+  "file": "05-script-execution.md",
+  "old": "        if is_disabled_opcode(opcode) {\n            return Err(ScriptError::DisabledOpcode);",
+  "new": "        if (executing || sigversion != SigVersion::WitnessV0) && is_disabled_opcode(opcode) {\n            return Err(ScriptError::DisabledOpcode);",
+  "expect": "caught"
+ },
+ {
+  "name": "v0-verif-ok-unexecuted",
+  "kind": "script",
+  "file": "05-script-execution.md",
+  "old": "        } else if executing || (OP_IF <= opcode && opcode <= OP_ENDIF) {",
+  "new": "        } else if executing || ((OP_IF <= opcode && opcode <= OP_ENDIF) && !(sigversion == SigVersion::WitnessV0 && (opcode == OP_VERIF || opcode == OP_VERNOTIF))) {",
+  "expect": "caught"
+ },
+ {
+  "name": "v0-scriptnum-5-bytes",
+  "kind": "script",
+  "file": "05-script-execution.md",
+  "old": "                    let a = script_num(top(stack, 2), DEFAULT_MAX_NUM_SIZE)?;\n                    let b = script_num(top(stack, 1), DEFAULT_MAX_NUM_SIZE)?;",
+  "new": "                    let a = script_num(top(stack, 2), if sigversion == SigVersion::Base { 4 } else { 5 })?;\n                    let b = script_num(top(stack, 1), if sigversion == SigVersion::Base { 4 } else { 5 })?;",
+  "expect": "caught"
+ },
+ {
+  "name": "dersig-base-only-checksig",
+  "kind": "script",
+  "file": "05-script-execution.md",
+  "old": "    if (flags & VERIFY_DERSIG) != 0 && !sig.is_empty() && !is_valid_signature_encoding(sig) {\n        return Err(ScriptError::SigDer);\n    }\n    Ok(checker",
+  "new": "    if (flags & VERIFY_DERSIG) != 0 && sigversion == SigVersion::Base && !sig.is_empty() && !is_valid_signature_encoding(sig) {\n        return Err(ScriptError::SigDer);\n    }\n    Ok(checker",
+  "expect": "caught"
+ },
+ {
+  "name": "dersig-base-only-multisig",
+  "kind": "script",
+  "file": "05-script-execution.md",
+  "old": "                        if (flags & VERIFY_DERSIG) != 0 && !sig.is_empty() && !is_valid_signature_encoding(&sig) {",
+  "new": "                        if (flags & VERIFY_DERSIG) != 0 && sigversion == SigVersion::Base && !sig.is_empty() && !is_valid_signature_encoding(&sig) {",
+  "expect": "caught"
+ },
+ {
+  "name": "v0-cltv-off",
+  "kind": "script",
+  "file": "05-script-execution.md",
+  "old": "                    if (flags & VERIFY_CHECKLOCKTIMEVERIFY) != 0 {",
+  "new": "                    if (flags & VERIFY_CHECKLOCKTIMEVERIFY) != 0 && sigversion != SigVersion::WitnessV0 {",
+  "expect": "caught"
+ },
+ {
+  "name": "v0-csv-off",
+  "kind": "script",
+  "file": "05-script-execution.md",
+  "old": "                    if (flags & VERIFY_CHECKSEQUENCEVERIFY) != 0 {",
+  "new": "                    if (flags & VERIFY_CHECKSEQUENCEVERIFY) != 0 && sigversion != SigVersion::WitnessV0 {",
+  "expect": "caught"
+ },
+ {
+  "name": "tapscript-cltv-off",
+  "kind": "script",
+  "file": "05-script-execution.md",
+  "old": "                    if (flags & VERIFY_CHECKLOCKTIMEVERIFY) != 0 {",
+  "new": "                    if (flags & VERIFY_CHECKLOCKTIMEVERIFY) != 0 && sigversion != SigVersion::Tapscript {",
+  "expect": "caught"
+ },
+ {
+  "name": "tapscript-csv-off",
+  "kind": "script",
+  "file": "05-script-execution.md",
+  "old": "                    if (flags & VERIFY_CHECKSEQUENCEVERIFY) != 0 {",
+  "new": "                    if (flags & VERIFY_CHECKSEQUENCEVERIFY) != 0 && sigversion != SigVersion::Tapscript {",
+  "expect": "caught"
+ },
+ {
+  "name": "tapscript-verif-ok-unexecuted",
+  "kind": "script",
+  "file": "05-script-execution.md",
+  "old": "        } else if executing || (OP_IF <= opcode && opcode <= OP_ENDIF) {",
+  "new": "        } else if executing || ((OP_IF <= opcode && opcode <= OP_ENDIF) && !(sigversion == SigVersion::Tapscript && (opcode == OP_VERIF || opcode == OP_VERNOTIF))) {",
+  "expect": "caught"
+ },
+ {
+  "name": "tapscript-multisig-fails-unexecuted",
+  "kind": "script",
+  "file": "05-script-execution.md",
+  "old": "        if is_disabled_opcode(opcode) {\n            return Err(ScriptError::DisabledOpcode);\n        }\n",
+  "new": "        if is_disabled_opcode(opcode) {\n            return Err(ScriptError::DisabledOpcode);\n        }\n        if sigversion == SigVersion::Tapscript && (opcode == OP_CHECKMULTISIG || opcode == OP_CHECKMULTISIGVERIFY) {\n            return Err(ScriptError::TapscriptCheckmultisig);\n        }\n",
+  "expect": "caught"
+ },
+ {
+  "name": "altstack-counted-base-only",
+  "kind": "script",
+  "file": "05-script-execution.md",
+  "old": "        if stack.len() + altstack.len() > MAX_STACK_SIZE {\n            return Err(ScriptError::StackSize);\n        }\n        opcode_pos += 1;",
+  "new": "        if stack.len() + (if sigversion == SigVersion::Base { altstack.len() } else { 0 }) > MAX_STACK_SIZE {\n            return Err(ScriptError::StackSize);\n        }\n        opcode_pos += 1;",
+  "expect": "caught"
+ },
+ {
+  "name": "unknown-leaf-skips-commitment",
+  "kind": "script",
+  "file": "07-script-verification.md",
+  "old": "        if !verify_taproot_commitment(control, program, &leaf_hash) {",
+  "new": "        if leaf_version == TAPROOT_LEAF_TAPSCRIPT && !verify_taproot_commitment(control, program, &leaf_hash) {",
+  "expect": "caught"
+ },
+ {
+  "name": "p2sh-v0-wrong-length-ok",
+  "kind": "script",
+  "file": "07-script-verification.md",
+  "old": "        } else {\n            Err(ScriptError::WitnessProgramWrongLength)\n        }",
+  "new": "        } else if is_p2sh {\n            Ok(())\n        } else {\n            Err(ScriptError::WitnessProgramWrongLength)\n        }",
+  "expect": "caught"
+ },
+ {
+  "name": "p2sh-witness-zero-program-ok",
+  "kind": "script",
+  "file": "07-script-verification.md",
+  "old": "        eval_script(&mut stack, &redeem_script, flags, checker, SigVersion::Base, &mut ExecData::default())?;\n        if stack.is_empty() || !cast_to_bool(&stack[stack.len() - 1]) {",
+  "new": "        eval_script(&mut stack, &redeem_script, flags, checker, SigVersion::Base, &mut ExecData::default())?;\n        if stack.is_empty() || (!cast_to_bool(&stack[stack.len() - 1]) && witness_program(&redeem_script).is_none()) {",
+  "expect": "caught"
+ },
+ {
+  "name": "witness-unexpected-skipped-for-p2sh",
+  "kind": "script",
+  "file": "07-script-verification.md",
+  "old": "    if (flags & VERIFY_WITNESS) != 0 && !had_witness && !witness.is_empty() {",
+  "new": "    if (flags & VERIFY_WITNESS) != 0 && !had_witness && !witness.is_empty() && !is_p2sh(script_pubkey) {",
+  "expect": "caught"
+ },
+ {
+  "name": "malleated-p2sh-check-v0-only",
+  "kind": "script",
+  "file": "07-script-verification.md",
+  "old": "                if script_sig != push_data(&redeem_script).as_slice() {",
+  "new": "                if version == 0 && script_sig != push_data(&redeem_script).as_slice() {",
+  "expect": "caught"
+ },
+ {
+  "name": "der-skipped-for-invalid-pubkey-multisig",
+  "kind": "script",
+  "file": "05-script-execution.md",
+  "old": "                        if (flags & VERIFY_DERSIG) != 0 && !sig.is_empty() && !is_valid_signature_encoding(&sig) {",
+  "new": "                        if (flags & VERIFY_DERSIG) != 0 && !sig.is_empty() && parse_pubkey(&pubkey).is_some() && !is_valid_signature_encoding(&sig) {",
+  "expect": "caught"
+ },
+ {
+  "name": "v0-scriptsize-off",
+  "kind": "script",
+  "file": "05-script-execution.md",
+  "old": "    if legacy_limits && script.len() > MAX_SCRIPT_SIZE {",
+  "new": "    if sigversion == SigVersion::Base && script.len() > MAX_SCRIPT_SIZE {",
+  "expect": "caught"
+ },
+ {
+  "name": "p2wsh-script-520",
+  "kind": "script",
+  "file": "07-script-verification.md",
+  "old": "            if sha256(script)[..] != program[..] {\n                return Err(ScriptError::WitnessProgramMismatch);\n            }\n",
+  "new": "            if sha256(script)[..] != program[..] {\n                return Err(ScriptError::WitnessProgramMismatch);\n            }\n            if script.len() > MAX_SCRIPT_ELEMENT_SIZE {\n                return Err(ScriptError::PushSize);\n            }\n",
+  "expect": "caught"
+ },
+ {
+  "name": "annex-one-item",
+  "kind": "script",
+  "file": "07-script-verification.md",
+  "old": "        if stack.len() >= 2 {\n            let last = &stack[stack.len() - 1];",
+  "new": "        if stack.len() >= 1 {\n            let last = &stack[stack.len() - 1];",
+  "expect": "caught"
+ },
+ {
+  "name": "csv-tx-disable-flag-ignored",
+  "kind": "script",
+  "file": "05-script-execution.md",
+  "old": "        if (tx_sequence & SEQUENCE_LOCKTIME_DISABLE_FLAG as i64) != 0 {\n            return false;\n        }\n",
+  "new": "",
+  "expect": "caught"
+ },
+ {
+  "name": "taproot-hashtype-0x80-ok",
+  "kind": "script",
+  "file": "06-signature-hashes.md",
+  "old": "    if !(hash_type <= 0x03 || (0x81..=0x83).contains(&hash_type)) {",
+  "new": "    if !(hash_type <= 0x03 || (0x80..=0x83).contains(&hash_type)) {",
+  "expect": "caught"
+ },
+ {
+  "name": "control-max-size-unchecked",
+  "kind": "script",
+  "file": "07-script-verification.md",
+  "old": "        && control.len() <= TAPROOT_CONTROL_MAX_SIZE\n",
+  "new": "",
+  "expect": "caught"
+ },
+ {
+  "name": "nulldummy-base-only",
+  "kind": "script",
+  "file": "05-script-execution.md",
+  "old": "                    if (flags & VERIFY_NULLDUMMY) != 0 && !top(stack, 1).is_empty() {",
+  "new": "                    if (flags & VERIFY_NULLDUMMY) != 0 && sigversion == SigVersion::Base && !top(stack, 1).is_empty() {",
+  "expect": "caught"
+ },
+ {
+  "name": "opsuccess-upto-253",
+  "kind": "script",
+  "file": "04-script-encoding.md",
+  "old": "        || (187..=254).contains(&opcode)",
+  "new": "        || (187..=253).contains(&opcode)",
+  "expect": "caught"
+ },
+ {
+  "name": "v0-stack-limit-off",
+  "kind": "script",
+  "file": "05-script-execution.md",
+  "old": "        if stack.len() + altstack.len() > MAX_STACK_SIZE {\n            return Err(ScriptError::StackSize);\n        }\n        opcode_pos += 1;",
+  "new": "        if sigversion != SigVersion::WitnessV0 && stack.len() + altstack.len() > MAX_STACK_SIZE {\n            return Err(ScriptError::StackSize);\n        }\n        opcode_pos += 1;",
+  "expect": "caught-level2"
+ },
+ {
+  "name": "p2wpkh-item-limit-off",
+  "kind": "script",
+  "file": "07-script-verification.md",
+  "old": "            execute_witness_script(witness, &script, flags, SigVersion::WitnessV0, checker, &mut execdata)\n        } else {",
+  "new": "            {\n                let mut stack = witness.to_vec();\n                eval_script(&mut stack, &script, flags, checker, SigVersion::WitnessV0, &mut execdata)?;\n                if stack.len() != 1 {\n                    return Err(ScriptError::CleanStack);\n                }\n                if !cast_to_bool(&stack[0]) {\n                    return Err(ScriptError::EvalFalse);\n                }\n                Ok(())\n            }\n        } else {",
+  "expect": "caught-level2"
  }
 ]
