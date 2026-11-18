@@ -75,10 +75,7 @@ pub fn run(ctx: &mut Ctx, vectors: &Path) -> Result<(), String> {
     let dir = vectors.join("custom");
     let paths = files(&dir)?;
     if paths.is_empty() {
-        ctx.stats
-            .details
-            .push(format!("custom: no *.jsonl files in {}", dir.display()));
-        return Ok(());
+        return Err(format!("no *.jsonl files in {}", dir.display()));
     }
     let mut cases = Vec::new();
     for p in &paths {

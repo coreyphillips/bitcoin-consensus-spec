@@ -1344,8 +1344,11 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
     }
     let files = corpus::corpus_files(&cfg.corpus)?;
     if files.is_empty() {
-        stats.details.push("peer-sync: no corpus files".into());
-        return Ok(());
+        let where_: Vec<String> = cfg.corpus.iter().map(|p| p.display().to_string()).collect();
+        return Err(format!(
+            "no corpus files (*.jsonl.gz) in {}",
+            where_.join(", ")
+        ));
     }
     stats.details.push(format!(
         "{:<34} {:>6} {:>6} {:>13} {:>13} {:>5} {:>8}  {}",
@@ -1381,7 +1384,13 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
         let loaded = match load(file) {
             Ok(l) => l,
             Err(e) => {
-                stats.fail(SUITE, verbose, &format!("{name} setup"), &e);
+                // A file that cannot be loaded is a corpus defect, not the node's: no
+                // `--known-failures` entry waives it.
+                stats.cases += 1;
+                stats.failed += 1;
+                if verbose {
+                    println!("FAIL     [{SUITE}] {name} setup: {e}");
+                }
                 stats
                     .details
                     .push(line("-", "-", "-", "-", "-", &format!("ERROR {e}")));

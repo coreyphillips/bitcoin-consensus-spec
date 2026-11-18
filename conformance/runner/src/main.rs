@@ -93,7 +93,7 @@ DERIVE OPTIONS:
 
 Exit status: 0 when every check passed at level 1 (level 0 for the corpus), 1 otherwise,
 2 for usage errors. Checks that need an operation the harness does not list are failures unless
-their suite is excluded.
+their suite is excluded. A selected suite that runs no check fails.
 ";
 
 struct Options {
@@ -521,6 +521,7 @@ fn cmd_run(opts: &Options) -> ExitCode {
         &results,
         if opts.raw { "raw" } else { "derived" },
         opts.fail_on_level2,
+        &[],
     );
     if restarts > 0 {
         println!("note: the harness died and was restarted {restarts} time(s)");
@@ -536,10 +537,17 @@ fn cmd_run(opts: &Options) -> ExitCode {
 }
 
 /// Prints the per-suite table, each suite's detail lines and the `RESULT:` line. Returns true
-/// when any suite failed at level 1 (level 0 for the corpus), could not run, has checks the
-/// harness does not support, when a `--known-failures` entry of a suite that ran named no
-/// failure, or when `fail_on_level2` is set and any level 2 check differed.
-fn print_report(results: &[(&str, Stats, Duration)], mode: &str, fail_on_level2: bool) -> bool {
+/// when any suite failed at level 1 (level 0 for the corpus), could not run, ran no check, has
+/// checks the harness does not support, when a `--known-failures` entry of a suite that ran
+/// named no failure, or when `fail_on_level2` is set and any level 2 check differed. A suite in
+/// `checked_elsewhere` ran a check in another report of the same command and is not failed for
+/// running none here.
+fn print_report(
+    results: &[(&str, Stats, Duration)],
+    mode: &str,
+    fail_on_level2: bool,
+    checked_elsewhere: &[&str],
+) -> bool {
     println!();
     println!(
         "{:<14} {:<8} {:>9} {:>9} {:>8} {:>8} {:>11} {:>8} {:>8}",
@@ -556,12 +564,14 @@ fn print_report(results: &[(&str, Stats, Duration)], mode: &str, fail_on_level2:
         } else {
             "-"
         };
-        if let Some(e) = &s.error {
-            if s.cases == 0 {
-                println!("{suite:<14} {mode:<8} {e}");
-                any_failure = true;
-                continue;
-            }
+        // An enforced level 2 comparison is a check: a corpus may hash its UTXO set only at
+        // non-normative checks, which `cases` does not count.
+        let ran = checked_elsewhere.contains(suite) || (fail_on_level2 && s.l2_checked > 0);
+        let error = suite_error(s, ran);
+        if let (Some(e), 0) = (error, s.cases) {
+            println!("{suite:<14} {mode:<8} {e}");
+            any_failure = true;
+            continue;
         }
         println!(
             "{:<14} {:<8} {:>9} {:>9} {:>8} {:>8} {:>11} {:>8} {:>7.1}s",
@@ -575,7 +585,7 @@ fn print_report(results: &[(&str, Stats, Duration)], mode: &str, fail_on_level2:
             s.unsupported,
             t.as_secs_f64()
         );
-        if let Some(e) = &s.error {
+        if let Some(e) = error {
             println!("{:<14} error: {e}", "");
             any_failure = true;
         }
@@ -638,6 +648,22 @@ fn print_report(results: &[(&str, Stats, Duration)], mode: &str, fail_on_level2:
     failed
 }
 
+/// Why a suite failed to run, if it did. A selected suite that ran no check fails: a wrong
+/// `--vectors` or `--corpus` path, or a vector file emptied by mistake, must not end in a pass.
+/// Checks the harness does not support already fail the run and keep their counts in the table.
+/// `ran_uncounted` says the suite ran a check that `s.cases` does not count. A failure waived by
+/// `--known-failures` is not a check: a corpus file that errors before its first checkpoint would
+/// otherwise pass on its waiver alone.
+fn suite_error(s: &Stats, ran_uncounted: bool) -> Option<&str> {
+    match &s.error {
+        Some(e) => Some(e),
+        None if s.cases == s.known && s.unsupported == 0 && !ran_uncounted => {
+            Some("ran no enforced check")
+        }
+        None => None,
+    }
+}
+
 /// The report's last line and whether the run failed. When level 2 alone fails the run, the line
 /// says so: the table shows the level 2 counts but not that they are what failed it.
 fn outcome(level1_failed: bool, l2_mismatches: u64, fail_on_level2: bool) -> (String, bool) {
@@ -682,6 +708,7 @@ fn cmd_derive(opts: &Options) -> ExitCode {
     });
     let mut files = Vec::new();
     let mut results = Vec::new();
+    let mut generated = Vec::new();
     for &suite in &selected {
         let started = Instant::now();
         eprintln!("deriving {suite} ...");
@@ -698,6 +725,9 @@ fn cmd_derive(opts: &Options) -> ExitCode {
                     stats.failed,
                     stats.l2_mismatches
                 );
+                if file.script_count() > 0 {
+                    generated.push(suite);
+                }
                 files.push((suites::script_source(suite).unwrap().1, file));
             }
             Err(e) => stats.error = Some(e),
@@ -734,14 +764,24 @@ fn cmd_derive(opts: &Options) -> ExitCode {
         );
     }
     drop(oracle);
+    // A suite checked by either phase ran: policy rows have no cross-check case, and tx-invalid's
+    // BADTX rows have no replay case. So did a suite whose derived file has an entry: each of its
+    // oracle answers was checked for validity agreeing with its error.
+    let checked: Vec<&str> = results
+        .iter()
+        .chain(&replay)
+        .filter(|r| r.1.cases > 0)
+        .map(|r| r.0)
+        .chain(generated)
+        .collect();
     println!("\ncross-check of the oracle's answers against the original vector expectations:");
     // Level 2 always fails the cross-check: like a level 1 failure, it is a runner or oracle bug.
-    let mut failed = print_report(&results, "raw", true);
+    let mut failed = print_report(&results, "raw", true, &checked);
     if !replay.is_empty() {
         println!(
             "\nreplay of Core's unit tests with the rows' original flags (policy flags included):"
         );
-        failed |= print_report(&replay, "core", true);
+        failed |= print_report(&replay, "core", true, &checked);
     }
     if failed {
         eprintln!("bcs-conformance: the cross-check failed; no derived file was written");
@@ -776,7 +816,94 @@ fn cmd_derive(opts: &Options) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::outcome;
+    use super::{outcome, print_report, suite_error};
+    use crate::check::Stats;
+    use std::time::Duration;
+
+    #[test]
+    fn a_suite_that_ran_no_check_fails() {
+        let empty = Stats::default();
+        assert_eq!(suite_error(&empty, false), Some("ran no enforced check"));
+        assert!(print_report(
+            &[("custom", empty, Duration::ZERO)],
+            "derived",
+            false,
+            &[]
+        ));
+
+        // A waived failure is not a check.
+        let waived = Stats {
+            cases: 1,
+            known: 1,
+            ..Default::default()
+        };
+        assert_eq!(suite_error(&waived, false), Some("ran no enforced check"));
+        assert!(print_report(
+            &[("corpus", waived, Duration::ZERO)],
+            "derived",
+            false,
+            &[]
+        ));
+
+        // Rows counted under a stated rule are not checks.
+        let mut only_rules = Stats::default();
+        only_rules.rule("needs options", 3);
+        assert!(print_report(
+            &[("peer-sync", only_rules, Duration::ZERO)],
+            "derived",
+            false,
+            &[]
+        ));
+
+        // In derive, a suite checked only by the other phase ran.
+        assert!(!print_report(
+            &[("tx-invalid", Stats::default(), Duration::ZERO)],
+            "core",
+            true,
+            &["tx-invalid"]
+        ));
+
+        // Level 2 comparisons are checks when they are enforced.
+        let l2_only = || Stats {
+            l2_checked: 1,
+            ..Default::default()
+        };
+        assert!(print_report(
+            &[("corpus", l2_only(), Duration::ZERO)],
+            "derived",
+            false,
+            &[]
+        ));
+        assert!(!print_report(
+            &[("corpus", l2_only(), Duration::ZERO)],
+            "derived",
+            true,
+            &[]
+        ));
+
+        let mut ran = Stats::default();
+        ran.pass();
+        assert_eq!(suite_error(&ran, false), None);
+        assert!(!print_report(
+            &[("custom", ran, Duration::ZERO)],
+            "derived",
+            false,
+            &[]
+        ));
+
+        // Unsupported checks fail on their own and keep their counts in the table.
+        let unsupported = Stats {
+            unsupported: 4,
+            ..Default::default()
+        };
+        assert_eq!(suite_error(&unsupported, false), None);
+        assert!(print_report(
+            &[("bip340", unsupported, Duration::ZERO)],
+            "derived",
+            false,
+            &[]
+        ));
+    }
 
     #[test]
     fn level2_fails_only_with_the_flag_and_then_says_so() {

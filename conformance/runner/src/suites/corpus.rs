@@ -97,7 +97,49 @@ pub fn read_events(path: &Path) -> Result<(Value, Vec<Value>), String> {
                 .map_err(|e| format!("{}: line {}: {e}", path.display(), i + 2))?,
         );
     }
+    check_counts(&meta, &events).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok((meta, events))
+}
+
+/// Compares the meta event's `counts` with the events read. A file cut short at a line boundary
+/// still decompresses and parses; only the counts written when it was recorded show that events
+/// are missing. A file without `counts` is not checked (CORPUS.md does not require it).
+fn check_counts(meta: &Value, events: &[Value]) -> Result<(), String> {
+    let Some(counts) = meta.get("counts") else {
+        return Ok(());
+    };
+    let counts = counts.as_object().ok_or("meta counts is not an object")?;
+    let of_type = |t: &str| events.iter().filter(|e| e["type"] == t).count();
+    let mut wrong = Vec::new();
+    for (key, want) in counts {
+        let got = match key.as_str() {
+            "events" => events.len(),
+            "blocks" => of_type("block"),
+            "headers" => of_type("headers"),
+            "invalidate" => of_type("invalidate"),
+            "restart" => of_type("restart"),
+            "checks" => of_type("check"),
+            "normative_checks" => events
+                .iter()
+                .filter(|e| e["type"] == "check" && e["normative"].as_bool().unwrap_or(true))
+                .count(),
+            _ => continue,
+        };
+        let want = want
+            .as_u64()
+            .ok_or_else(|| format!("meta counts.{key} is not a count"))?;
+        if got as u64 != want {
+            wrong.push(format!("{got} {key}, meta says {want}"));
+        }
+    }
+    if wrong.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "the file does not hold the events it was recorded with: {}",
+            wrong.join("; ")
+        ))
+    }
 }
 
 /// The serialized block of a `block` event: its `hex`, or the bytes of its blob (checked against
@@ -198,6 +240,7 @@ pub struct FileResult {
     pub l0_other_fail: u64,
     pub l1: u64,
     pub l1_fail: u64,
+    /// Level 2 checks made. A `utxo_hash` call that failed is an error, not a check.
     pub l2: u64,
     pub l2_fail: u64,
     /// Level 2 checks not compared because the harness does not list `utxo_hash` (also counted
@@ -551,15 +594,16 @@ pub fn replay_file(ctx: &mut Ctx, path: &Path, restart_shortcut: bool) -> FileRe
                 }
                 // Level 2.
                 if let Some(utxo) = ev.get("utxo") {
-                    r.l2 += 1;
                     if !ctx.supports("utxo_hash") {
                         // PROTOCOL.md section 4.13: optional for an implementation that keeps no
                         // UTXO set.
+                        r.l2 += 1;
                         r.l2_fail += 1;
                         r.l2_uncompared += 1;
                     } else {
                         match call(ctx, "utxo_hash", "") {
                             Ok(a) => {
+                                r.l2 += 1;
                                 let ok = a.get("hash_serialized_3")
                                     == utxo.get("hash_serialized_3")
                                     && a.get("txouts").and_then(Value::as_i64)
@@ -612,10 +656,7 @@ pub fn run(ctx: &mut Ctx, paths: &[PathBuf], restart_shortcut: bool) -> Result<(
             .map(|p| p.display().to_string())
             .collect::<Vec<_>>()
             .join(", ");
-        ctx.stats.details.push(format!(
-            "no corpus files (*.jsonl.gz) in {where_}: nothing to replay"
-        ));
-        return Ok(());
+        return Err(format!("no corpus files (*.jsonl.gz) in {where_}"));
     }
     let ops = [
         "chain_reset",
@@ -661,7 +702,9 @@ pub fn run(ctx: &mut Ctx, paths: &[PathBuf], restart_shortcut: bool) -> Result<(
         if !fr.errors.is_empty() {
             ctx.stats.cases += 1;
             let loc = fr.errors_location();
-            let known = crate::known::take("corpus", &loc);
+            // A file that could not be read is a corpus defect, not the harness's: no entry
+            // waives it.
+            let known = fr.first_error_event.is_some() && crate::known::take("corpus", &loc);
             if known {
                 ctx.stats.known += 1;
             } else {
@@ -743,11 +786,12 @@ mod tests {
     use std::time::Duration;
 
     /// A harness that refuses a `chain_reset` whose options carry `"refuse":true`, answers
-    /// `chain_tip` with tip `t` at height 0, and fails every other chain op as internal.
+    /// `chain_tip` with tip `t` at height 0, and fails every other chain op (`utxo_hash` too) as
+    /// internal.
     const STUB: &str = r#"while IFS= read -r line; do
   id=${line#*'"id":'}; id=${id%%[,\}]*}
   case "$line" in
-    *'"op":"info"'*) printf '{"id":%s,"ok":true,"name":"stub","version":"0","spec_version":"0","ops":["info","chain_reset","chain_tip"]}\n' "$id";;
+    *'"op":"info"'*) printf '{"id":%s,"ok":true,"name":"stub","version":"0","spec_version":"0","ops":["info","chain_reset","chain_tip","utxo_hash"]}\n' "$id";;
     *'"refuse":true'*) printf '{"id":%s,"ok":false,"error":"bad_request","message":"refused"}\n' "$id";;
     *'"op":"chain_reset"'*) printf '{"id":%s,"ok":true}\n' "$id";;
     *'"op":"chain_tip"'*) printf '{"id":%s,"ok":true,"tip":"t","height":0}\n' "$id";;
@@ -829,6 +873,43 @@ done"#;
             &[json!({"type": "reset", "network": "regtest", "options": {"refuse": true}})],
         );
         assert_eq!(r.errors_location(), "last errors from event 0");
+    }
+
+    #[test]
+    fn a_failed_utxo_hash_call_is_an_error_not_a_check() {
+        let r = replay(
+            "utxo",
+            &[
+                json!({"type": "reset", "network": "regtest"}),
+                json!({"type": "check", "n": 1, "tip": "t", "height": 0, "normative": false,
+                       "utxo": {"hash_serialized_3": "ab", "txouts": 1}}),
+            ],
+        );
+        assert_eq!(r.l2, 0);
+        assert_eq!(r.errors.len(), 1, "{:?}", r.errors);
+    }
+
+    #[test]
+    fn a_file_cut_short_fails_its_meta_counts() {
+        let meta = |counts: Value| json!({"type": "meta", "counts": counts});
+        let events = [
+            json!({"type": "reset"}),
+            json!({"type": "block"}),
+            json!({"type": "check", "normative": true}),
+            json!({"type": "check", "normative": false}),
+        ];
+        let full = json!({"events": 4, "blocks": 1, "headers": 0, "invalidate": 0,
+                          "restart": 0, "checks": 2, "normative_checks": 1});
+        assert_eq!(check_counts(&meta(full.clone()), &events), Ok(()));
+        // Recorded before CORPUS.md listed counts, or written by hand.
+        assert_eq!(check_counts(&json!({"type": "meta"}), &events), Ok(()));
+
+        let e = check_counts(&meta(full.clone()), &events[..1]).unwrap_err();
+        assert!(e.contains("1 events, meta says 4"), "{e}");
+        assert!(e.contains("0 checks, meta says 2"), "{e}");
+        assert!(check_counts(&meta(full), &[]).is_err());
+        assert!(check_counts(&meta(json!({"events": "4"})), &events).is_err());
+        assert!(check_counts(&meta(json!([4])), &events).is_err());
     }
 
     #[test]
