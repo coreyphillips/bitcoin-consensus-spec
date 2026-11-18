@@ -19,6 +19,10 @@ jobs:
       # chain tip sets, which fail the run only with these two flags.
       - name: Conformance suite against the reference
         run: ./target/release/bcs-conformance --impl ./target/release/reference-harness --fail-on-level2 --fail-on-tips
+      # Fails when a mutant names no Appendix A item or a number Appendix A
+      # does not have; the full audit runs in extended.yml.
+      - name: Appendix A items without a mutant
+        run: python3 conformance/mutation/run.py --items
       - name: No em or en dash characters
         run: |
           if grep -rnI --exclude-dir=target --exclude-dir=.git -e "$(printf '\xe2\x80\x94')" -e "$(printf '\xe2\x80\x93')" . ; then
