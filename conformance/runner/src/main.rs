@@ -705,6 +705,7 @@ fn cmd_derive(opts: &Options) -> ExitCode {
     });
     let mut files = Vec::new();
     let mut results = Vec::new();
+    let mut generated = Vec::new();
     for &suite in &selected {
         let started = Instant::now();
         eprintln!("deriving {suite} ...");
@@ -721,6 +722,9 @@ fn cmd_derive(opts: &Options) -> ExitCode {
                     stats.failed,
                     stats.l2_mismatches
                 );
+                if file.script_count() > 0 {
+                    generated.push(suite);
+                }
                 files.push((suites::script_source(suite).unwrap().1, file));
             }
             Err(e) => stats.error = Some(e),
@@ -758,12 +762,14 @@ fn cmd_derive(opts: &Options) -> ExitCode {
     }
     drop(oracle);
     // A suite checked by either phase ran: policy rows have no cross-check case, and tx-invalid's
-    // BADTX rows have no replay case.
+    // BADTX rows have no replay case. So did a suite whose derived file has an entry: each of its
+    // oracle answers was checked for validity agreeing with its error.
     let checked: Vec<&str> = results
         .iter()
         .chain(&replay)
         .filter(|r| r.1.cases > 0)
         .map(|r| r.0)
+        .chain(generated)
         .collect();
     println!("\ncross-check of the oracle's answers against the original vector expectations:");
     // Level 2 always fails the cross-check: like a level 1 failure, it is a runner or oracle bug.
