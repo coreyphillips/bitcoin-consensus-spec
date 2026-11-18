@@ -890,5 +890,101 @@
   "old": "            execute_witness_script(witness, &script, flags, SigVersion::WitnessV0, checker, &mut execdata)\n        } else {",
   "new": "            {\n                let mut stack = witness.to_vec();\n                eval_script(&mut stack, &script, flags, checker, SigVersion::WitnessV0, &mut execdata)?;\n                if stack.len() != 1 {\n                    return Err(ScriptError::CleanStack);\n                }\n                if !cast_to_bool(&stack[0]) {\n                    return Err(ScriptError::EvalFalse);\n                }\n                Ok(())\n            }\n        } else {",
   "expect": "caught-level2"
+ },
+ {
+  "name": "ecdsa-x-not-reduced",
+  "kind": "script",
+  "file": "02-cryptography.md",
+  "old": "        Some(point) => sc_reduce(point.x) == r,",
+  "new": "        Some(point) => point.x == r,",
+  "expect": "caught"
+ },
+ {
+  "name": "hybrid-parity-unchecked",
+  "kind": "script",
+  "file": "02-cryptography.md",
+  "old": "        if (bytes[0] == 0x06 || bytes[0] == 0x07) && y.bit(0) != (bytes[0] == 0x07) {",
+  "new": "        if false && (bytes[0] == 0x06 || bytes[0] == 0x07) && y.bit(0) != (bytes[0] == 0x07) {",
+  "expect": "caught"
+ },
+ {
+  "name": "xonly-reduce-mod-p",
+  "kind": "script",
+  "file": "02-cryptography.md",
+  "old": "    let p = match lift_x(U256::from_be_bytes(internal_key)) {",
+  "new": "    let x = U256::from_be_bytes(internal_key);\n    let p = match lift_x(if x >= FIELD_P { x.wrapping_sub(FIELD_P) } else { x }) {",
+  "expect": "caught"
+ },
+ {
+  "name": "witness-program-41-bytes",
+  "kind": "script",
+  "file": "04-script-encoding.md",
+  "old": "    if script.len() < 4 || script.len() > 42 {",
+  "new": "    if script.len() < 4 || script.len() > 43 {",
+  "expect": "caught"
+ },
+ {
+  "name": "witness-program-1-byte",
+  "kind": "script",
+  "file": "04-script-encoding.md",
+  "old": "    if script.len() < 4 || script.len() > 42 {",
+  "new": "    if script.len() < 3 || script.len() > 42 {",
+  "expect": "caught"
+ },
+ {
+  "name": "der-oversize-r-truncated",
+  "kind": "script",
+  "file": "02-cryptography.md",
+  "old": "    if r_len > 32 {\n        overflow = true;\n    } else {\n        compact[32 - r_len..32].copy_from_slice(&input[r_pos..r_pos + r_len]);\n    }",
+  "new": "    if r_len > 32 {\n        r_pos += r_len - 32;\n        r_len = 32;\n    }\n    if r_len > 32 {\n        overflow = true;\n    } else {\n        compact[32 - r_len..32].copy_from_slice(&input[r_pos..r_pos + r_len]);\n    }",
+  "expect": "caught"
+ },
+ {
+  "name": "der-oversize-s-truncated",
+  "kind": "script",
+  "file": "02-cryptography.md",
+  "old": "    if s_len > 32 {\n        overflow = true;\n    } else {\n        compact[64 - s_len..64].copy_from_slice(&input[s_pos..s_pos + s_len]);\n    }",
+  "new": "    if s_len > 32 {\n        s_pos += s_len - 32;\n        s_len = 32;\n    }\n    if s_len > 32 {\n        overflow = true;\n    } else {\n        compact[64 - s_len..64].copy_from_slice(&input[s_pos..s_pos + s_len]);\n    }",
+  "expect": "caught"
+ },
+ {
+  "name": "der-seq-long-length-rejected",
+  "kind": "script",
+  "file": "02-cryptography.md",
+  "old": "        lenbyte -= 0x80;\n        if lenbyte > len - pos {",
+  "new": "        lenbyte -= 0x80;\n        if true || lenbyte > len - pos {",
+  "expect": "caught"
+ },
+ {
+  "name": "der-int-long-length-rejected",
+  "kind": "script",
+  "file": "02-cryptography.md",
+  "old": "            lenbyte -= 0x80;\n            if lenbyte > len - *pos {",
+  "new": "            lenbyte -= 0x80;\n            if true || lenbyte > len - *pos {",
+  "expect": "caught"
+ },
+ {
+  "name": "noncanonical-fe-ok",
+  "kind": "script",
+  "file": "03-serialization.md",
+  "old": "                if v < 0x1_0000 {",
+  "new": "                if false && v < 0x1_0000 {",
+  "expect": "caught"
+ },
+ {
+  "name": "noncanonical-ff-ok",
+  "kind": "script",
+  "file": "03-serialization.md",
+  "old": "                if v < 0x1_0000_0000 {",
+  "new": "                if false && v < 0x1_0000_0000 {",
+  "expect": "caught"
+ },
+ {
+  "name": "opsuccess-34-undecided-removed",
+  "kind": "script",
+  "file": "04-script-encoding.md",
+  "old": "pub fn is_op_success(opcode: u8) -> bool {\n    opcode == 80",
+  "new": "pub fn is_op_success(opcode: u8) -> bool {\n    if [133, 189, 194, 196, 199, 201, 202, 203, 204, 205, 207, 208, 209, 210, 212, 213, 214, 218, 220, 221, 223, 225, 226, 227, 228, 230, 231, 237, 241, 242, 245, 246, 250, 251].contains(&opcode) {\n        return false;\n    }\n    opcode == 80",
+  "expect": "caught"
  }
 ]

@@ -153,6 +153,82 @@ for size in (520, 521):
     msg = bytes.fromhex(ask({"op": "sighash_taproot", "tx": tx(2, [(FUND, 0, b"", 0xffffffff)], OUTS, 0).hex(), "index": 0,
                              "spent_outputs": [{"amount": 5000, "script_pubkey": spk.hex()}], "hash_type": 0, "leaf_hash": leaf_hash.hex()})["sighash"])
     sv("tapscript %d-byte push in an unexecuted branch, signed key leaf" % size, b"", spk, [bip340_sign(leaf_key, msg), leaf, control])
+# Rules of chapters 02 to 04 that one-line mutants (conformance/mutation/mutants.json) broke without
+# failing any other suite, next to valid cases of the same shape.
+def legacy_sighash(script_code):
+    return int(ask({"op": "sighash_legacy", "tx": tx(2, [(FUND, 0, b"", 0xffffffff)], OUTS, 0).hex(), "script_code": script_code.hex(), "index": 0, "hash_type": 1})["sighash"], 16)
+def ecdsa_rs(d, z, want_high_r=False):
+    for k in range(1000, 2000):
+        r = pmul(k, G)[0] % N
+        if (r >= 2**255) == want_high_r:
+            s = pow(k, N - 2, N) * (z + r * d) % N
+            return r, min(s, N - s)
+def odd(pt): return pt[1] & 1
+# ECDSA compares R.x reduced modulo n with r. With x = n + c on the curve, (r, s) = (c, 1) verifies for
+# Q = c^-1 * (R - e*G), and only after the reduction.
+c = next(c for c in range(1, 100) if pow((N + c) ** 3 + 7, (P - 1) // 2, P) == 1)
+R = (N + c, pow((N + c) ** 3 + 7, (P + 1) // 4, P))
+e = legacy_sighash(checksig) % N
+Q = pmul(pow(c, N - 2, N), padd(R, pmul(N - e, G)))
+sv("ecdsa R.x = n + %d, r = %d (x reduced modulo n), bare CHECKSIG" % (c, c), push(der(c, 1) + b"\x01") + push(compressed(Q)), checksig, [])
+# A hybrid key's prefix (06 or 07) must match the parity of y.
+dk = 0x2222; K = pmul(dk, G)
+for label, prefix in (("matching", 6 + odd(K)), ("mismatched", 7 - odd(K))):
+    spk = push(bytes([prefix]) + K[0].to_bytes(32, "big") + K[1].to_bytes(32, "big")) + checksig
+    r, s = ecdsa_rs(dk, legacy_sighash(spk))
+    sv("hybrid public key with %s parity prefix, valid signature" % label, push(der(r, s) + b"\x01"), spk, [])
+# An R or S longer than 32 bytes makes the signature invalid even when its low 32 bytes are a valid value
+# (DERSIG allows the encoding). Without DERSIG, the lax parser skips or reads long-form lengths, ignores
+# whatever follows S and ignores the sign bit.
+spk = push(compressed(K)) + checksig
+z = legacy_sighash(spk)
+r, s = ecdsa_rs(dk, z)
+sv("DERSIG 33-byte R = 2^256 + valid r", push(der(2**256 + r, s) + b"\x01"), spk, [])
+sv("DERSIG 33-byte S = 2^256 + valid s", push(der(r, 2**256 + s) + b"\x01"), spk, [])
+def i32(v): return v.to_bytes(32, "big")
+R_, S_ = der_int(r), der_int(s)
+assert len(R_) == len(S_) == 34
+for name, sig in (
+    ("garbage after S", der(r, s) + b"\xde\xad\xbe\xef"),
+    ("sequence length too small", b"\x30\x05" + R_ + S_),
+    ("sequence length too large", b"\x30\x7f" + R_ + S_),
+    ("long-form sequence length (81 xx)", b"\x30\x81\x44" + R_ + S_),
+    ("long-form sequence length with junk length bytes (83 ff ff ff)", b"\x30\x83\xff\xff\xff" + R_ + S_),
+    ("long-form sequence length with no length bytes (80)", b"\x30\x80" + R_ + S_),
+    ("long-form R length (81 20)", b"\x30\x45\x02\x81\x20" + i32(r) + S_),
+    ("long-form S length with leading zeros (84 00 00 00 20)", b"\x30\x48" + R_ + b"\x02\x84\x00\x00\x00\x20" + i32(s)),
+    ("R length with 4 significant bytes (84 01 00 00 20)", b"\x30\x48\x02\x84\x01\x00\x00\x20" + i32(r) + S_),
+    ("30 zero bytes of padding before R and S", b"\x30\x80" + b"\x02\x3e" + bytes(30) + i32(r) + b"\x02\x3e" + bytes(30) + i32(s)),
+):
+    sv("lax DER: %s, no DERSIG" % name, push(sig + b"\x01"), spk, [], flags=["P2SH"])
+r, s = ecdsa_rs(dk, z, want_high_r=True)
+assert N - s >= 2**255 and len(der_int(s)) == 34
+sv("lax DER: negative R (top bit set, no pad), no DERSIG", push(b"\x30\x44\x02\x20" + i32(r) + der_int(s) + b"\x01"), spk, [], flags=["P2SH"])
+sv("lax DER: negative high S (top bit set, no pad), no DERSIG", push(b"\x30\x45" + der_int(r) + b"\x02\x20" + i32(N - s) + b"\x01"), spk, [], flags=["P2SH"])
+# Non-canonical CompactSize in the fe and ff forms (the fd form is above).
+tc("non-canonical input count (fe 01 00 00 00)", good[:4] + b"\xfe" + struct.pack("<I", 1) + good[5:])
+tc("non-canonical input count (ff 01 00 .. 00)", good[:4] + b"\xff" + struct.pack("<Q", 1) + good[5:])
+tc("non-canonical script length (fe 01 00 00 00)", good[:41] + b"\xfe" + struct.pack("<I", 1) + good[42:])
+tc("non-canonical output count (fe 01 00 00 00)", good[:47] + b"\xfe" + struct.pack("<I", 1) + good[48:])
+tc("non-canonical output count (ff 01 00 .. 00)", good[:47] + b"\xff" + struct.pack("<Q", 1) + good[48:])
+tc("witness: one input, stack of one empty item", good[:4] + b"\x00\x01" + good[4:-4] + b"\x01\x00" + good[-4:])
+# A taproot internal key at or above the field prime is invalid; it is not reduced modulo p.
+leaf = b"\x51"
+leaf_hash = tagged("TapLeaf", b"\xc0" + cs(len(leaf)) + leaf)
+one = (1, pow(8, (P + 1) // 4, P)); one = (1, P - one[1]) if odd(one) else one
+for label, x in (("x = 1 (valid, baseline)", 1), ("p + 1 (not below p; reduces to x = 1)", P + 1)):
+    key = x.to_bytes(32, "big")
+    out = padd(one, pmul(int.from_bytes(tagged("TapTweak", key + leaf_hash), "big"), G))
+    control = bytes([0xc0 | odd(out)]) + key
+    sv("taproot script path, internal key " + label, b"", b"\x51\x20" + i32(out[0]), [leaf, control])
+    cases.append(("taproot_commitment_verify, internal key " + label, {"op": "taproot_commitment_verify", "control_block": control.hex(), "script": leaf.hex(), "output_key": i32(out[0]).hex()}))
+# A witness program is 4 to 42 bytes: a version opcode and one direct push of 2 to 40 bytes.
+for version, n, wit in ((1, 41, [b"\x01"]), (1, 1, [b"\x01"]), (0, 41, []), (0, 1, []), (1, 40, [b"\x01"]), (1, 2, [b"\x01"])):
+    spk = bytes([0x50 + version if version else 0]) + push(bytes([7] * n))
+    sv("OP_%d with a %d-byte push (%d bytes: %s), %s" % (version, n, len(spk), "a witness program" if 2 <= n <= 40 else "not a witness program",
+                                                       "with a witness item" if wit else "empty witness"), b"", spk, wit)
+# P2SH is an exact byte template: a 20-byte hash pushed with OP_PUSHDATA1 is an ordinary script.
+sv("HASH160 PUSHDATA1(20) EQUAL is not P2SH: the preimage alone spends it", push(b"\x00"), b"\xa9\x4c\x14" + h160(b"\x00") + b"\x87", [])
 with open(OUT, "w") as f:
     for name, req in cases:
         resp = ask(req)
