@@ -23,9 +23,14 @@
 //!    them, back to back in chain order. The burst that holds a case's parent waits for the
 //!    node's request of the case block (at most [`HOLD`]), and the case block goes last, so the
 //!    two arrive together at the end of a run of blocks, as during initial block download.
-//! 3. **Checks.** When every chain block up to the parent is delivered, and the case block too (or
-//!    the node did not ask for it within [`REQUEST_WAIT`]), the runner sends `ping`, waits for the
-//!    `pong`, and asks the node for its tip on standard input ([`Session::settled_tip`]).
+//! 3. **Checks.** When every chain block up to the parent is delivered, and the case block too, the
+//!    runner sends `ping`, waits for the `pong`, and asks the node for its tip on standard input
+//!    ([`Session::settled_tip`]). While the node is not connected the runner waits for it to come
+//!    back and serves the case then. Only a case whose header breaks a rule may pass without its
+//!    block: one the node was sent on an open connection and did not ask for within
+//!    [`REQUEST_WAIT`]. Any other case fails when the node, after answering a tip request, still
+//!    does not ask for the block within [`REQUEST_WAIT`]. The details count the case blocks
+//!    delivered.
 //!
 //! Each scenario runs in two modes:
 //!
@@ -34,8 +39,9 @@
 //!   the final tip, and after `{"op":"stop"}` its `stopped` line must name it and the node must exit
 //!   with status 0. The line's `hash_serialized_3`, when present, must equal what the classifying
 //!   bitcoind reported at the final tip; a line without it is counted at level 2, as in the interop
-//!   suite. A failed check ends the node and the next check starts a fresh one, so one divergence
-//!   does not hide the checks after it.
+//!   suite. Before the chain is extended past a parent, the node is asked for its tip once more,
+//!   which must still be the parent. A failed check ends the node and the next check starts a
+//!   fresh one, so one divergence does not hide the checks after it.
 //! - **ibd**: a fresh node per case, whose peer offers the chain up to the parent and the case
 //!   block as its best chain from the start, so the case block ends the node's initial block
 //!   download. Some implementations validate initial block download in batches and only then
@@ -51,6 +57,7 @@ use crate::p2p::{self, Message};
 use crate::process;
 use crate::suites::{corpus, interop};
 use crate::tx::{sha256d, write_compact_size};
+use crate::work::U256;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{BufRead, BufReader, Write};
@@ -123,6 +130,22 @@ struct Case {
     parent: usize,
     block: Block,
     reason: String,
+}
+
+impl Case {
+    /// Whether a node must ask for the block: its header breaks none of Core's header rules, so
+    /// only the block shows what is wrong. Proposal mode skips proof of work, which is therefore
+    /// checked here.
+    fn requestable(&self) -> bool {
+        !header_rule(&self.reason) && pow_ok(&self.block.bytes[..80])
+    }
+}
+
+/// Core's `CheckProofOfWork` on a regtest header, whose bits Core has already checked.
+fn pow_ok(header: &[u8]) -> bool {
+    let bits = u32::from_le_bytes(header[72..76].try_into().unwrap());
+    U256::from_compact(bits)
+        .is_some_and(|t| !t.is_zero() && U256::from_le_bytes(&sha256d(&header[..80])) <= t)
 }
 
 /// A block hash (raw order) and its recorded byte variants, in file order.
@@ -599,6 +622,7 @@ impl<'a> Session<'a> {
             Ok(Event::Connected(id, writer, transport)) => {
                 if let Some((_, old, _)) = self.conn.take() {
                     old.close();
+                    self.drop_connection();
                 }
                 self.conn = Some((id, writer, transport));
                 self.ready = false;
@@ -613,11 +637,7 @@ impl<'a> Session<'a> {
             Ok(Event::Closed(id, _why)) => {
                 if self.conn.as_ref().is_some_and(|c| c.0 == id) {
                     self.conn = None;
-                    self.ready = false;
-                    // A pending barrier is met: the node dropped the connection after the blocks.
-                    if let Some((_, seen)) = &mut self.pong {
-                        *seen = true;
-                    }
+                    self.drop_connection();
                 }
             }
             Ok(Event::NodeLine(line)) => self.on_line(line),
@@ -646,6 +666,18 @@ impl<'a> Session<'a> {
         Ok(())
     }
 
+    /// The node's connection is gone. Its requests went with it (a node asks again on its next
+    /// connection), and a pending barrier is met: the node dropped the connection after the blocks.
+    fn drop_connection(&mut self) {
+        self.ready = false;
+        self.queue.clear();
+        self.deferred.clear();
+        self.outstanding.clear();
+        if let Some((_, seen)) = &mut self.pong {
+            *seen = true;
+        }
+    }
+
     fn on_line(&mut self, line: String) {
         if !line.starts_with('{') {
             return;
@@ -671,14 +703,18 @@ impl<'a> Session<'a> {
         }
     }
 
-    fn send(&mut self, command: &str, payload: &[u8]) -> Result<(), String> {
-        if let Some((_, writer, _)) = &mut self.conn {
-            if writer.send(command, payload).is_err() {
-                // The reader thread reports the closed connection.
-                writer.close();
-            }
+    /// Writes a message to the node's connection. Returns whether it was written: without a
+    /// connection, or when the write fails, nothing is sent.
+    fn send(&mut self, command: &str, payload: &[u8]) -> Result<bool, String> {
+        let Some((_, writer, _)) = &mut self.conn else {
+            return Ok(false);
+        };
+        if writer.send(command, payload).is_err() {
+            // The reader thread reports the closed connection.
+            writer.close();
+            return Ok(false);
         }
-        Ok(())
+        Ok(true)
     }
 
     fn on_message(&mut self, m: Message) -> Result<(), String> {
@@ -692,7 +728,9 @@ impl<'a> Session<'a> {
                 self.send("verack", &[])?;
             }
             "verack" => self.ready = true,
-            "ping" => self.send("pong", &m.payload)?,
+            "ping" => {
+                self.send("pong", &m.payload)?;
+            }
             "pong" => {
                 if let Some((nonce, seen)) = &mut self.pong {
                     if m.payload.len() == 8
@@ -739,6 +777,7 @@ impl<'a> Session<'a> {
             }
         }
         let mut separate = false;
+        let mut pushed = None;
         let id = self.conn.as_ref().map(|c| c.0);
         if let (true, Some(c), Some(id)) = (reached_end, self.current, id) {
             let case = &self.sc.cases[c];
@@ -747,12 +786,14 @@ impl<'a> Session<'a> {
                     separate = true;
                 } else {
                     headers.push(&case.block.bytes[..80]);
-                    self.x_pushed = Some((id, c));
+                    pushed = Some((id, c));
                 }
             }
         }
         let message = encode_headers(&headers);
-        self.send("headers", &message)?;
+        if self.send("headers", &message)? && pushed.is_some() {
+            self.x_pushed = pushed;
+        }
         if separate {
             self.push_case_header()?;
         }
@@ -768,11 +809,13 @@ impl<'a> Session<'a> {
         if !self.ready || sc.cases[c].parent != self.upto || self.x_pushed == Some((id, c)) {
             return Ok(());
         }
-        self.x_pushed = Some((id, c));
-        self.send(
+        if self.send(
             "headers",
             &encode_headers(&[&sc.cases[c].block.bytes[..80]]),
-        )
+        )? {
+            self.x_pushed = Some((id, c));
+        }
+        Ok(())
     }
 
     fn on_getdata(&mut self, payload: &[u8]) -> Result<(), String> {
@@ -825,20 +868,24 @@ impl<'a> Session<'a> {
         let Some(bytes) = self.lookup(hash) else {
             return Ok(());
         };
-        if !self.chain_pos.contains_key(hash) {
-            if self
+        let case = !self.chain_pos.contains_key(hash);
+        if case
+            && self
                 .case_sent
                 .get(hash)
                 .is_some_and(|t| t.elapsed() < CASE_RESEND)
-            {
-                if !self.deferred.contains(hash) {
-                    self.deferred.push(*hash);
-                }
-                return Ok(());
+        {
+            if !self.deferred.contains(hash) {
+                self.deferred.push(*hash);
             }
+            return Ok(());
+        }
+        if !self.send("block", bytes)? {
+            return Ok(());
+        }
+        if case {
             self.case_sent.insert(*hash, Instant::now());
         }
-        self.send("block", bytes)?;
         self.delivered.insert(*hash);
         self.outstanding.remove(hash);
         self.last_activity = Instant::now();
@@ -889,28 +936,70 @@ impl<'a> Session<'a> {
         self.push_case_header()
     }
 
-    /// Waits until chain blocks 1 to `upto` are delivered, and the case block too when `case` is
-    /// given (or the node has not asked for it within [`REQUEST_WAIT`]).
-    fn wait_delivered(&mut self, case: Option<&[u8; 32]>) -> Result<(), String> {
-        let mut complete_since: Option<Instant> = None;
+    /// Waits until chain blocks 1 to `upto` are delivered, and the block of case `case` too when
+    /// given. The node may give up on the case block only on an open connection that was sent
+    /// its header, after [`REQUEST_WAIT`]; a requestable one ([`Case::requestable`]) also gets
+    /// a tip request, so that a node that asks for blocks only once it has processed the ones
+    /// before is not cut short, and [`REQUEST_WAIT`] more. While the node is not connected, the
+    /// runner waits for it to connect again (up to [`STALL`]).
+    fn wait_delivered(&mut self, case: Option<usize>) -> Result<(), String> {
+        let sc: &'a Scenario = self.sc;
+        // The connection the case header went out on, and since when it has been open with
+        // nothing left to send but the case block.
+        let mut waiting: Option<(u64, Instant)> = None;
+        let mut asked = false;
         self.last_activity = Instant::now();
         loop {
             if self.delivered_prefix >= self.upto {
-                let since = *complete_since.get_or_insert_with(Instant::now);
-                match case {
-                    None => return Ok(()),
-                    Some(h) if self.delivered.contains(h) => return Ok(()),
-                    Some(_) if since.elapsed() >= REQUEST_WAIT => return Ok(()),
-                    Some(_) => {}
+                let Some(c) = case else { return Ok(()) };
+                let block = &sc.cases[c].block.hash;
+                if self.delivered.contains(block) {
+                    return Ok(());
+                }
+                let link = self.link().filter(|&id| self.x_pushed == Some((id, c)));
+                let pending = self.queue.contains(block) || self.deferred.contains(block);
+                match (link, waiting) {
+                    (Some(id), Some((on, since)))
+                        if id == on && !pending && since.elapsed() >= REQUEST_WAIT =>
+                    {
+                        if !sc.cases[c].requestable() || asked {
+                            return Ok(());
+                        }
+                        asked = true;
+                        self.barrier()?;
+                        self.query_tip()?;
+                        waiting = None;
+                        continue;
+                    }
+                    (Some(id), Some((on, _))) if id == on && !pending => {}
+                    (Some(id), _) => waiting = Some((id, Instant::now())),
+                    (None, _) => waiting = None,
                 }
             }
             if self.last_activity.elapsed() >= STALL {
-                let missing = self.delivered_prefix + 1;
+                let missing = match (self.delivered_prefix < self.upto, case) {
+                    (true, _) | (false, None) => {
+                        let k = self.delivered_prefix + 1;
+                        format!(
+                            "chain block {k} ({}) of {}",
+                            shorten(&sc.chain[k].display(), 16),
+                            self.upto
+                        )
+                    }
+                    (false, Some(c)) => format!(
+                        "the block ({}) on chain block {}, whose header {}",
+                        sc.cases[c].reason,
+                        self.upto,
+                        if self.link().is_some_and(|id| self.x_pushed == Some((id, c))) {
+                            "went out on this connection"
+                        } else {
+                            "has not gone out on this connection"
+                        }
+                    ),
+                };
                 return Err(self.with_stderr(format!(
-                    "no block requested for {} s; chain block {missing} ({}) of {} not delivered{}",
+                    "no block requested for {} s; {missing} not delivered{}",
                     STALL.as_secs(),
-                    shorten(&self.sc.chain[missing].display(), 16),
-                    self.upto,
                     if self.conn.is_none() {
                         ", and the node is not connected"
                     } else {
@@ -922,12 +1011,13 @@ impl<'a> Session<'a> {
         }
     }
 
-    /// `ping` and the matching `pong`: every message sent before it was read. A connection the
-    /// node closes meets the barrier too.
-    fn barrier(&mut self) -> Result<(), String> {
-        if !self.ready {
-            return Ok(());
-        }
+    /// `ping` and the matching `pong`: every message sent before it was read. Returns the
+    /// connection the `pong` came on; `None` when there was no connection or the node closed it,
+    /// which meets the barrier too.
+    fn barrier(&mut self) -> Result<Option<u64>, String> {
+        let Some(id) = self.link() else {
+            return Ok(None);
+        };
         let nonce = u64::from_le_bytes(
             sha256d(&format!("{:?}{}", Instant::now(), self.next_query).into_bytes())[..8]
                 .try_into()
@@ -943,7 +1033,7 @@ impl<'a> Session<'a> {
             self.pump(Duration::from_millis(50))?;
         }
         self.pong = None;
-        Ok(())
+        Ok((self.link() == Some(id)).then_some(id))
     }
 
     fn write_line(&mut self, line: &str) -> Result<(), String> {
@@ -985,12 +1075,14 @@ impl<'a> Session<'a> {
         self.conn.as_ref().filter(|_| self.ready).map(|c| c.0)
     }
 
-    /// The node's tip once it has settled. After the barrier the runner asks for the tip. An answer
-    /// other than `want` (and, with `confirm`, any answer) is taken only when the next answer,
+    /// The node's tip once it has settled. After the barrier the runner asks for the tip. A first
+    /// answer of `want` is taken when the `pong` before it came on the connection still open
+    /// after it, and `confirm` is not set. Any other answer is taken only when the next answer,
     /// asked after the node has requested no chain block for [`SETTLE`] on one open connection, is
     /// the same with no chain block requested and no connection opened or closed in between; until
     /// then the runner keeps serving, so a node that drops blocks it already had and fetches them
-    /// again, or drops the runner and connects again, is judged on where it ends.
+    /// again, or drops the runner and connects again, is judged on where it ends. A tip that has
+    /// not settled by the `--node-timeout` deadline is an error.
     fn settled_tip(
         &mut self,
         want: &str,
@@ -1000,7 +1092,7 @@ impl<'a> Session<'a> {
         let deadline = Instant::now() + self.timeout;
         let mut previous: Option<(String, i64, u64, Option<u64>)> = None;
         loop {
-            self.barrier()?;
+            let pong = self.barrier()?;
             let answer = self.query_tip()?;
             let (requests, link) = (self.requests, self.link());
             if previous.as_ref().is_some_and(|p| {
@@ -1009,11 +1101,27 @@ impl<'a> Session<'a> {
             {
                 return Ok(answer);
             }
-            if !confirm && previous.is_none() && answer.0 == want && answer.1 == want_height {
+            if !confirm
+                && previous.is_none()
+                && pong.is_some()
+                && pong == link
+                && answer.0 == want
+                && answer.1 == want_height
+            {
                 return Ok(answer);
             }
             if Instant::now() >= deadline {
-                return Ok(answer);
+                return Err(format!(
+                    "the tip did not settle within {} s; the last answer was {} height {}{}",
+                    self.timeout.as_secs(),
+                    short(&answer.0),
+                    answer.1,
+                    if link.is_none() {
+                        ", with the node not connected"
+                    } else {
+                        ""
+                    }
+                ));
             }
             previous = Some((answer.0, answer.1, requests, link));
             // Quiet: no chain block requested for SETTLE on one open connection, and none left to
@@ -1032,39 +1140,74 @@ impl<'a> Session<'a> {
         }
     }
 
-    /// Runs one case: Ok(None) when the tip is the parent, Ok(Some(mismatch)) otherwise. The
-    /// case of a session started with `initial` is already announced.
-    fn run_case(&mut self, c: usize) -> Result<Option<String>, String> {
+    /// Runs one case: Ok(None) when the tip is the parent and the block was delivered (unless
+    /// the node need not ask for it, see [`Case::requestable`]), Ok(Some(mismatch)) otherwise.
+    /// The case of a session started with `initial` is already announced. With `recheck` (the
+    /// last case on its parent before the chain is extended), an unconfirmed tip is asked for
+    /// once more, so a node that answered before it had processed the case block, and then
+    /// accepted it, is not hidden by the chain that follows.
+    fn run_case(&mut self, c: usize, recheck: bool) -> Result<Option<String>, String> {
         let sc: &'a Scenario = self.sc;
         let case = &sc.cases[c];
         if self.current != Some(c) {
             self.extend(case.parent)?;
             self.announce(c)?;
         }
-        self.wait_delivered(Some(&case.block.hash))?;
-        let want = &sc.chain[case.parent];
-        let (tip, height) = self.settled_tip(&want.display(), case.parent as i64, self.confirm)?;
-        Ok(
-            (tip != want.display() || height != case.parent as i64).then(|| {
-                format!(
-                    "tip {} height {height}, expected {} height {} (the block was {}, Core: {}){}",
-                    short(&tip),
-                    short(&want.display()),
-                    case.parent,
-                    if self.delivered.contains(&case.block.hash) {
-                        "delivered"
-                    } else {
-                        "announced, never requested"
-                    },
+        self.wait_delivered(Some(c))?;
+        let want = sc.chain[case.parent].display();
+        let height = case.parent as i64;
+        let delivered = self.delivered.contains(&case.block.hash);
+        let block = if delivered {
+            "delivered"
+        } else {
+            "announced, never requested"
+        };
+        let (tip, h) = self.settled_tip(&want, height, self.confirm)?;
+        if tip != want || h != height {
+            return Ok(Some(format!(
+                "tip {} height {h}, expected {} height {height} (the block was {block}, Core: {}){}",
+                short(&tip),
+                short(&want),
+                case.reason,
+                self.tip_note(&tip)
+            )));
+        }
+        if !delivered && case.requestable() {
+            return Ok(Some(format!(
+                "the node never asked for the block (Core: {}), whose header breaks no header rule",
+                case.reason
+            )));
+        }
+        if recheck && !self.confirm {
+            self.barrier()?;
+            let (again, h) = self.query_tip()?;
+            if again != want || h != height {
+                return Ok(Some(format!(
+                    "tip {} height {h} when asked again, after {} height {height} (Core: {}){}",
+                    short(&again),
+                    short(&want),
                     case.reason,
-                    if tip == case.block.display() {
-                        "; the tip is the rejected block"
-                    } else {
-                        ""
-                    }
+                    self.tip_note(&again)
+                )));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Names the case block a reported tip is, if it is one.
+    fn tip_note(&self, tip: &str) -> String {
+        let sc: &'a Scenario = self.sc;
+        self.announced
+            .iter()
+            .find(|(h, _)| hex::encode_reversed(h.as_slice()) == tip)
+            .map(|(_, &c)| {
+                format!(
+                    "; the tip is the rejected block {} (Core: {})",
+                    short(tip),
+                    sc.cases[c].reason
                 )
-            }),
-        )
+            })
+            .unwrap_or_default()
     }
 
     /// The end: the whole chain, the final tip, then `stop`.
@@ -1241,6 +1384,9 @@ struct ModeResult {
     failed: u64,
     not_run: u64,
     nodes: u64,
+    /// Passed cases whose block reached the node. The others passed without it because their
+    /// header breaks a rule, so the node had no reason to ask for the block.
+    delivered: u64,
     /// The final tip passed without `hash_serialized_3` (level 2).
     utxo_unreported: bool,
 }
@@ -1326,7 +1472,13 @@ fn run_checks(
         }
         let s = session.as_mut().unwrap();
         let outcome = match check {
-            Some(c) => s.run_case(*c),
+            Some(c) => {
+                let parent = sc.cases[*c].parent;
+                let recheck = checks
+                    .get(i + 1)
+                    .is_none_or(|next| next.is_none_or(|n| sc.cases[n].parent != parent));
+                s.run_case(*c, recheck)
+            }
             None => s.finish(),
         };
         transports.extend(s.transports.iter().copied());
@@ -1335,6 +1487,11 @@ fn run_checks(
             Ok(None) => {
                 node_errors = 0;
                 r.passed += 1;
+                if let Some(c) = check {
+                    if s.delivered.contains(&sc.cases[*c].block.hash) {
+                        r.delivered += 1;
+                    }
+                }
                 stats.pass();
                 // As in the interop suite, level 2 is judged only on a final tip that passed.
                 if let Some(reported) = s.utxo_reported.take() {
@@ -1537,7 +1694,9 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
             stats.rule(RULE_IBD_LIMIT, left_out);
         }
         let mut detail = format!(
-            "transport {}, {} valid siblings left out",
+            "blocks delivered: follow {}, ibd {}; transport {}, {} valid siblings left out",
+            follow.delivered,
+            ibd.delivered,
             if transports.is_empty() {
                 "none".to_string()
             } else {
@@ -1577,12 +1736,15 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
             t.failed += r.failed;
             t.not_run += r.not_run;
             t.nodes += r.nodes;
+            t.delivered += r.delivered;
         }
     }
     stats.details.push(format!(
-        "peer-sync total: follow {} passed, ibd {} passed, {} nodes started",
+        "peer-sync total: follow {} passed ({} case blocks delivered), ibd {} passed ({} case blocks delivered), {} nodes started",
         totals.0.text(),
+        totals.0.delivered,
         totals.1.text(),
+        totals.1.delivered,
         totals.0.nodes + totals.1.nodes
     ));
     let _ = std::fs::remove_dir(&base);
@@ -1655,6 +1817,170 @@ mod tests {
         let (problems, reported) =
             line(json!({"tip": tip, "height": 4, "hash_serialized_3": core}));
         assert_eq!((problems.len(), reported), (1, None));
+    }
+
+    const REGTEST_GENESIS: &str =
+        "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206";
+
+    /// A header on regtest genesis whose proof of work is valid, or invalid when `valid` is false.
+    fn header_on_genesis(valid: bool) -> [u8; 80] {
+        let mut h = [0u8; 80];
+        h[..4].copy_from_slice(&4u32.to_le_bytes());
+        h[4..36].copy_from_slice(&raw_hash(REGTEST_GENESIS).unwrap());
+        h[68..72].copy_from_slice(&1_296_688_700u32.to_le_bytes());
+        h[72..76].copy_from_slice(&0x207f_ffffu32.to_le_bytes());
+        for nonce in 0u32.. {
+            h[76..80].copy_from_slice(&nonce.to_le_bytes());
+            if pow_ok(&h) == valid {
+                return h;
+            }
+        }
+        unreachable!()
+    }
+
+    #[test]
+    fn requestable_cases() {
+        assert!(pow_ok(&header_on_genesis(true)));
+        assert!(!pow_ok(&header_on_genesis(false)));
+        let case = |valid: bool, reason: &str| Case {
+            parent: 0,
+            block: Block {
+                hash: sha256d(&header_on_genesis(valid)),
+                bytes: header_on_genesis(valid).to_vec(),
+            },
+            reason: reason.into(),
+        };
+        assert!(case(true, "bad-txns-inputs-missingorspent").requestable());
+        assert!(!case(true, "bad-diffbits").requestable());
+        // Proposal mode does not check proof of work, so Core names a later rule.
+        assert!(!case(false, "bad-txns-inputs-missingorspent").requestable());
+    }
+
+    /// A node that completes the handshake, answers `ping`, and reports regtest genesis as its
+    /// tip. With `ask` it requests every header it is sent; with `never` it requests nothing.
+    const FAKE_NODE: &str = r#"
+import hashlib, json, socket, struct, sys, threading
+host, port = sys.argv[1].rsplit(":", 1)
+mode, genesis = sys.argv[2], sys.argv[3]
+magic = bytes.fromhex("fabfb5da")
+def dsha(b): return hashlib.sha256(hashlib.sha256(b).digest()).digest()
+s = socket.create_connection((host, int(port)))
+lock = threading.Lock()
+def send(cmd, p):
+    with lock:
+        s.sendall(magic + cmd.encode().ljust(12, b"\0") + struct.pack("<I", len(p)) + dsha(p)[:4] + p)
+def exact(n):
+    b = b""
+    while len(b) < n:
+        c = s.recv(n - len(b))
+        if not c: raise EOFError
+        b += c
+    return b
+def reader():
+    try:
+        while True:
+            h = exact(24)
+            cmd = h[4:16].rstrip(b"\0").decode()
+            p = exact(struct.unpack("<I", h[16:20])[0])
+            if cmd == "version": send("verack", b"")
+            elif cmd == "ping": send("pong", p)
+            elif cmd == "headers" and mode == "ask" and p[0]:
+                send("getdata", bytes([p[0]]) + b"".join(
+                    struct.pack("<I", 0x40000002) + dsha(p[1 + 81 * i:81 + 81 * i]) for i in range(p[0])))
+    except (EOFError, OSError):
+        pass
+threading.Thread(target=reader, daemon=True).start()
+send("version", struct.pack("<iQq", 70016, 8, 0) + bytes(52) + struct.pack("<Q", 1) + b"\0" + struct.pack("<ib", 0, 0))
+for line in sys.stdin:
+    if json.loads(line)["op"] == "tip":
+        print(json.dumps({"event": "tip", "id": json.loads(line)["id"], "tip": genesis, "height": 0}), flush=True)
+"#;
+
+    /// Runs one follow-mode case on regtest genesis against [`FAKE_NODE`]: the verdict and
+    /// whether the case block was delivered. `None` without `python3`.
+    fn fake_node_case(mode: &str, reason: &str) -> Option<(Option<String>, bool)> {
+        if process::spawn(process::shell("python3 -c ''").stdin(Stdio::null()))
+            .ok()
+            .and_then(|mut c| c.wait().ok())
+            .is_none_or(|s| !s.success())
+        {
+            eprintln!("skipped: no python3");
+            return None;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "bcs-peer-sync-test-{mode}-{reason}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("fake_node.py");
+        std::fs::write(&script, FAKE_NODE).unwrap();
+        let header = header_on_genesis(true);
+        let mut bytes = header.to_vec();
+        bytes.push(0);
+        let sc = Scenario {
+            name: "test".into(),
+            options: json!({}),
+            chain: vec![Block {
+                hash: raw_hash(REGTEST_GENESIS).unwrap(),
+                bytes: Vec::new(),
+            }],
+            utxo_hash: String::new(),
+            cases: vec![Case {
+                parent: 0,
+                block: Block {
+                    hash: sha256d(&header),
+                    bytes,
+                },
+                reason: reason.into(),
+            }],
+            valid_siblings: 0,
+            unclassified: Vec::new(),
+        };
+        let cfg = Config {
+            bitcoind: PathBuf::new(),
+            node: format!(
+                "python3 -I {} {{peer}} {mode} {REGTEST_GENESIS}",
+                script.display()
+            ),
+            corpus: Vec::new(),
+            port_range: (0, 0),
+            node_timeout: Duration::from_secs(30),
+            keep_temp: false,
+            ibd_limit: None,
+        };
+        let mut s = Session::start(&cfg, &sc, &dir, None).unwrap();
+        let verdict = s.run_case(0, true).unwrap();
+        let delivered = s.delivered.contains(&sc.cases[0].block.hash);
+        s.end();
+        drop(s);
+        let _ = std::fs::remove_dir_all(&dir);
+        Some((verdict, delivered))
+    }
+
+    #[test]
+    fn case_block_requested_and_delivered_passes() {
+        if let Some((verdict, delivered)) = fake_node_case("ask", "bad-txns-nonfinal") {
+            assert_eq!(verdict, None);
+            assert!(delivered);
+        }
+    }
+
+    #[test]
+    fn case_block_never_requested_fails() {
+        if let Some((verdict, delivered)) = fake_node_case("never", "bad-txns-nonfinal") {
+            assert!(!delivered);
+            let verdict = verdict.expect("a node that never asked for the block passed");
+            assert!(verdict.contains("never asked for the block"), "{verdict}");
+        }
+    }
+
+    #[test]
+    fn header_rule_case_passes_without_the_block() {
+        if let Some((verdict, delivered)) = fake_node_case("never", "bad-diffbits") {
+            assert_eq!(verdict, None);
+            assert!(!delivered);
+        }
     }
 
     #[test]

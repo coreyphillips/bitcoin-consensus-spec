@@ -385,12 +385,18 @@ holding a case's parent also waits, up to 2 seconds, for the node to ask for the
 then goes last, so the parent and the rejected block reach the node together at the end of a run
 of blocks, as in initial block download.
 
-**Checks.** Once every chain block up to the parent is delivered, and the case block too (or the
-node has not asked for it within 2 seconds of having the rest), the runner sends `ping`, waits for
-the `pong`, and asks for the tip. It must be the parent. When the answer is anything else, and in
-the ibd mode for every answer, the runner keeps serving, asks again once the node has requested
-no chain block for a second, and decides on two answers in a row that agree with no chain block
-requested between them, all on one connection. A node that drops downloaded blocks after a
+**Checks.** Once every chain block up to the parent is delivered, and the case block too, the
+runner sends `ping`, waits for the `pong`, and asks for the tip. It must be the parent. A node
+that is not connected is waited for (up to 2 minutes), and served the case when it is back. Only a
+case whose header breaks one of Core's header rules (or its proof of work) may pass without the
+node asking for its block, and only once the node was sent the header on an open connection and
+let 2 seconds pass. For any other case the runner asks for the tip once those 2 seconds pass, waits
+2 seconds more, and fails the case if the block was never requested. The first answer counts
+only when the `pong` before it came on the connection still open after it. When the answer is
+anything else, and in the ibd mode for every answer, the runner keeps serving, asks again once the
+node has requested no chain block for a second, and decides on two answers in a row that agree
+with no chain block requested between them, all on one connection; a tip that has not settled by
+`--node-timeout` fails the check. A node that drops downloaded blocks after a
 rejection and fetches them again, or drops the runner and connects again, is judged on where it
 ends; a node asking again for a rejected block (Core does, for a block
 it dropped as mutated) is still served.
@@ -402,7 +408,10 @@ Each scenario runs in two modes:
   its tip must be the final tip and, after `{"op":"stop"}`, its `stopped` line must name it and it
   must exit with status 0. The line's `hash_serialized_3`, when present, must equal the
   classifying bitcoind's `gettxoutsetinfo` at the final tip; a line without it counts at level 2,
-  as in the interop suite. A failed check ends the node and the next check starts a fresh one.
+  as in the interop suite. Before the chain is extended past a parent, the node is asked for its
+  tip once more, which must still be the parent (a node that answered before it had processed the
+  case block, and accepted it, would otherwise be hidden by the chain that follows). A failed check
+  ends the node and the next check starts a fresh one.
   Locations: `<scenario> follow <block hash>` and `<scenario> follow final tip`.
 - **ibd**: a fresh node per case, offered the chain up to the parent and the case block as its
   peer's best chain from the start, so the rejected block ends the node's initial block download.
@@ -413,7 +422,8 @@ Each scenario runs in two modes:
 A check that fails because the node did not answer (no connection, no `pong`, no tip, an `error`
 line) counts like a wrong tip; after three such checks in a row the rest of the mode is reported as
 `<scenario> <mode> not run`. The detail line of each scenario shows the cases, each mode's
-passes, the nodes started, the transports and what was left out. `--node-timeout` (default 600
+passes, how many passed cases had their block delivered, the nodes started, the transports and
+what was left out. `--node-timeout` (default 600
 seconds) bounds each wait for the node; a node that requests nothing while blocks it needs are
 missing fails after 120 seconds. A node gets the same case block at most once a second: Core asks
 again, as soon as it has it, for a block that fails its context-free checks (a peer may have sent a

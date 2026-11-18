@@ -31,6 +31,12 @@ impl U256 {
         U256([v, 0, 0, 0])
     }
 
+    /// A hash in raw (little-endian) byte order as a number, as Core's `UintToArith256`.
+    pub fn from_le_bytes(b: &[u8; 32]) -> U256 {
+        let limb = |i: usize| u64::from_le_bytes(b[8 * i..8 * i + 8].try_into().unwrap());
+        U256([limb(0), limb(1), limb(2), limb(3)])
+    }
+
     pub fn is_zero(&self) -> bool {
         self.0 == [0; 4]
     }

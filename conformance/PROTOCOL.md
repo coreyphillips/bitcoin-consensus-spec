@@ -297,7 +297,7 @@ There is no `{stop_at}`: the runner says when to stop, and refuses a template th
 
 Required behavior:
 
-1. Start from an empty data directory, apply the network options, connect only to `{peer}`, and synchronize. The runner accepts the version 1 transport and the BIP324 version 2 transport. Keep running when the peer sends a block the node finds invalid. A node that disconnects the peer for it must connect to `{peer}` again; the runner keeps listening.
+1. Start from an empty data directory, apply the network options, connect only to `{peer}`, and synchronize. The runner accepts the version 1 transport and the BIP324 version 2 transport. Keep running when the peer sends a block the node finds invalid. A node that disconnects the peer for it must connect to `{peer}` again; the runner keeps listening, and waits for the node to come back before it judges a block. Request every block of the peer's best chain whose header the node accepts, including one it will then find invalid: a block whose header breaks none of Bitcoin Core's header rules fails its check when the node, after answering a tip request, has not asked for it within 2 seconds.
 2. Read requests from standard input, one JSON object per line:
    - `{"op":"tip","id":n}`: once every block the node has received has been processed (connected, or found invalid), write `{"event":"tip","id":n,"tip":hash,"height":integer}`. The runner sends `ping` and waits for the `pong` before each request, so every block it sent before is received.
    - `{"op":"stop"}`: write `{"event":"stopped","tip":hash,"height":integer,"hash_serialized_3":hash}` (`hash_serialized_3` optional, as in section 5) and exit with status 0.
@@ -306,7 +306,7 @@ Required behavior:
 
 Corpus blocks carry the times they were recorded, usually days or more before the run. A node whose "initial block download" state depends on the age of its tip (Bitcoin Core's `-maxtipage`, 24 hours by default) stays in that state for the whole scenario, so a node command must not wait for it to clear before answering, unless it raises that limit.
 
-A node whose answers can run ahead of its validation still gets a fair verdict: when an answer is not the expected tip, and in the suite's ibd mode for every answer, the runner keeps serving requests and asks again once the node has requested no block of the chain for one second, and it judges the node by two answers in a row that agree with no block of the chain requested between them. The quiet second and both answers must fall on one connection: a node that drops the runner and connects again is still synchronizing.
+A node whose answers can run ahead of its validation still gets a fair verdict: when an answer is not the expected tip, and in the suite's ibd mode for every answer, the runner keeps serving requests and asks again once the node has requested no block of the chain for one second, and it judges the node by two answers in a row that agree with no block of the chain requested between them. The quiet second and both answers must fall on one connection: a node that drops the runner and connects again is still synchronizing. For the same reason, a first answer that is the expected tip counts only when the `pong` before it came on a connection still open after it.
 
 ## 6. Versioning
 
