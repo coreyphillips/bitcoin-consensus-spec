@@ -588,9 +588,9 @@ pub fn replay_file(
                 }
                 // Level 1.
                 if ev.get("tips").is_some() {
-                    r.l1 += 1;
                     match call(ctx, "chain_tips", "") {
                         Ok(a) => {
+                            r.l1 += 1;
                             let want = tips_set(&ev["tips"]);
                             let got = tips_set(a.get("tips").unwrap_or(&Value::Null));
                             if want != got {
