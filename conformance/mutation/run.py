@@ -35,15 +35,21 @@ RUNNER = os.path.join(
     "release", "bcs-conformance")
 SCRIPT_SUITES = ["script-tests", "tx-valid", "tx-invalid", "sighash", "bip341", "bip340", "script-assets", "custom"]
 VERDICTS = ["caught", "caught-level2", "survived"]
-# A check whose call got no answer, worded as the runner's CallError (harness.rs). Any other
-# failed check got an answer that differs from the expected one.
-HARNESS_ERROR = re.compile(r": (internal|harness died|protocol violation|bad_request): |: the harness command ")
+# A check whose call got no answer, worded as the runner's CallError (harness.rs), or whose answer
+# lacks the field it checks. Any other failed check got an answer that differs from the expected one.
+HARNESS_ERROR = re.compile(
+    r": (internal|harness died|protocol violation|bad_request): |: the harness command |: response has no ")
+# A normative corpus check, printed by --verbose, whose tip query answered with a tip.
+TIP_DIFFERS = re.compile(r"^(DIVERGE|FAIL) +\[corpus\] .*?: expected tip \S+ height \S+, got (?!error: |\(no tip\))")
 # A row of the runner's suite table: suite, mode, cases, passed, failed, level2, l2-checked,
 # unsupported, time.
 SUITE_ROW = re.compile(r"^(\S+)\s+\S+\s+(\d+)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+[\d.]+s$")
 # A file row of the corpus table: name, checks, four level fractions, errors, time.
 CORPUS_ROW = re.compile(r"\s\d+(\s+\d+/\d+){4}\s+(\d+)\s+[\d.]+s$")
 LEVELS = ["level 0", "level 0 non-normative", "level 1", "level 2"]
+# What the unmodified reference reports for the whole block corpus. A missing corpus file lowers
+# every total and still passes, so update this with the corpus (README.md records the same numbers).
+CORPUS_TOTALS = "level 0 5282/5282, level 0 non-normative 1/1, level 1 1237/1237, level 2 2292/2292"
 
 
 def run_runner(args):
@@ -87,7 +93,7 @@ def script_verdict(harness):
 
 def corpus_verdict(harness):
     """Runs the block corpus. Returns the verdict, its detail and what ran."""
-    out = run_runner(["corpus", "--impl", shlex.quote(harness)])
+    out = run_runner(["corpus", "--impl", shlex.quote(harness), "--verbose"])
     lines = out.stdout.splitlines()
     total = next((line for line in lines if line.startswith("total (")), None)
     if total is None:
@@ -99,7 +105,9 @@ def corpus_verdict(harness):
     ran = ", ".join("%s %s/%s" % (LEVELS[i], a, b) for i, (a, b) in enumerate(fractions))
     misses = ["%s %s/%s" % (LEVELS[i], a, b) for i, (a, b) in enumerate(fractions) if a != b]
     notes = misses + ([plural(errors, "harness error")] if errors else [])
-    if fractions[0][0] != fractions[0][1]:
+    # A failed tip query also counts as a normative miss. Only the first 21 misses of each file
+    # are printed, so a tip that differs only after those is reported as an error.
+    if any(TIP_DIFFERS.match(line) for line in lines):
         return "caught", ", ".join(notes), ran
     if out.returncode != 0 or errors:
         return "error", "; ".join(["no normative tip differs"] + notes), ran
@@ -157,6 +165,8 @@ def baseline(kinds, work, pool):
         if failure:
             raise SystemExit("the unmodified reference: %s, %s" % failure)
         for kind, (verdict, detail, ran) in zip(kinds, pool.map(lambda k: EVALUATE[k](harness), kinds)):
+            if verdict == "survived" and kind == "block" and ran != CORPUS_TOTALS:
+                verdict, detail = "incomplete", "%s, expected %s" % (ran, CORPUS_TOTALS)
             ok = verdict == "survived"
             print("%-30s %-6s %-15s %-9s %s" % (
                 "(unmodified)", kind, "passed" if ok else verdict, "" if ok else "UNEXPECTED",

@@ -5,7 +5,7 @@ A test suite is only as good as the bugs it catches. Each mutant in `mutants.jso
 - `script` mutants: the vector suites and `custom`;
 - `block` mutants: the `corpus` suite.
 
-Before any mutant, an unmodified copy goes through the same steps and must pass every check of those suites, at every level. Otherwise a run with no block corpus, or with a harness that does not start, would catch every mutant. The copies build into their own `target` directories, whatever `CARGO_TARGET_DIR` says.
+Before any mutant, an unmodified copy goes through the same steps and must pass every check of those suites, at every level. Its block corpus totals must also equal `CORPUS_TOTALS` in `run.py`, which changes with the corpus. Otherwise a run with no block corpus, or with a harness that does not start, would catch every mutant. The copies build into their own `target` directories, whatever `CARGO_TARGET_DIR` says.
 
 ```sh
 cargo build --release
