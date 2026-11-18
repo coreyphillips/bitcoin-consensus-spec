@@ -1,7 +1,8 @@
 //! The harness child process and the JSON-lines protocol of conformance/PROTOCOL.md.
 
 use serde_json::{Map, Value};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::os::fd::AsRawFd;
 use std::process::{ChildStdin, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
@@ -78,6 +79,10 @@ fn spawn(command: &str) -> Result<Process, String> {
     )
     .map_err(|e| format!("cannot start harness `{command}`: {e}"))?;
     let stdin = child.stdin.take().expect("piped stdin");
+    if let Err(e) = set_nonblocking(&stdin) {
+        crate::process::end(&mut child);
+        return Err(format!("cannot set up harness `{command}`: {e}"));
+    }
     let stdout = child.stdout.take().expect("piped stdout");
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -103,6 +108,67 @@ fn spawn(command: &str) -> Result<Process, String> {
         stdin,
         lines: rx,
     })
+}
+
+/// Makes writes to the harness return instead of blocking when its input pipe is full, so that a
+/// harness that stops reading in the middle of a large request cannot hold the runner past its
+/// timeout or its stop check ([`send`]).
+fn set_nonblocking(stdin: &ChildStdin) -> std::io::Result<()> {
+    let fd = stdin.as_raw_fd();
+    // SAFETY: fcntl(2) on a descriptor the runner owns; it only reads and sets its status flags.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Writes `line` to the harness. While its input pipe is full, this waits for the harness to read
+/// until `deadline`, looking for a stopped process every [`crate::process::STOP_CHECK`].
+fn send(
+    process: &mut Process,
+    line: &[u8],
+    deadline: Instant,
+    timeout: Duration,
+) -> Result<(), CallError> {
+    let mut rest = line;
+    while !rest.is_empty() {
+        match process.stdin.write(rest) {
+            Ok(0) => {
+                return Err(CallError::Died(
+                    "cannot write request: no byte taken".into(),
+                ))
+            }
+            Ok(n) => {
+                rest = &rest[n..];
+                continue;
+            }
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+            Err(e) => return Err(CallError::Died(format!("cannot write request: {e}"))),
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(CallError::Died(format!(
+                "request not read within {} s",
+                timeout.as_secs()
+            )));
+        }
+        let wait = left.min(crate::process::STOP_CHECK).as_millis().max(1) as libc::c_int;
+        let mut fd = libc::pollfd {
+            fd: process.stdin.as_raw_fd(),
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        // SAFETY: poll(2) on one pollfd the runner owns. A closed pipe also ends the wait, and the
+        // next write reports it.
+        if unsafe { libc::poll(&mut fd, 1, wait) } == 0 {
+            if let Some(stop) = crate::process::stopped(&process.child) {
+                return Err(CallError::Stopped(stop.to_string()));
+            }
+        }
+    }
+    Ok(())
 }
 
 impl Harness {
@@ -217,12 +283,8 @@ impl Harness {
             .process
             .as_mut()
             .ok_or_else(|| CallError::Died("harness is not running".into()))?;
-        process
-            .stdin
-            .write_all(line.as_bytes())
-            .and_then(|_| process.stdin.flush())
-            .map_err(|e| CallError::Died(format!("cannot write request: {e}")))?;
         let deadline = Instant::now() + timeout;
+        send(process, line.as_bytes(), deadline, timeout)?;
         let text = loop {
             let left = deadline.saturating_duration_since(Instant::now());
             match process
@@ -350,5 +412,52 @@ mod tests {
         let started = Instant::now();
         assert!(matches!(h.call("x", ""), Err(CallError::Stopped(_))));
         assert!(started.elapsed() < Duration::from_millis(100));
+    }
+
+    /// Starts `command`, which answers `info` and then reads nothing more, and sends it a request
+    /// far larger than a pipe holds. Returns the result, the time it took, and the harness. Fails
+    /// rather than hangs if the write blocks.
+    fn call_large(command: &str, timeout: Duration) -> (CallError, Duration, Harness) {
+        let mut h = Harness::start(command, timeout).unwrap();
+        let body = format!("\"tx\":\"{}\"", "00".repeat(1 << 20));
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let r = h.call("x", &body);
+            let _ = tx.send((r, started.elapsed(), h));
+        });
+        let (r, took, h) = rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the request write blocked");
+        (r.expect_err("the call succeeded"), took, h)
+    }
+
+    /// A harness stopped after `info` is found while a large request waits to be read, and is
+    /// ended without a restart.
+    #[test]
+    fn a_large_request_to_a_stopped_harness_fails_at_once() {
+        let (e, took, h) = call_large(
+            r#"read l; echo '{"id":1,"ok":true,"ops":["x"]}'; kill -STOP $$"#,
+            Duration::from_secs(60),
+        );
+        assert!(matches!(e, CallError::Stopped(_)), "{e}");
+        assert!(took < Duration::from_secs(10), "{took:?}");
+        assert_eq!(h.restarts(), 0);
+        assert!(h.process.is_none());
+    }
+
+    /// A harness that stops reading in the middle of a request fails at the timeout.
+    #[test]
+    fn a_large_request_the_harness_does_not_read_times_out() {
+        let (e, took, h) = call_large(
+            r#"read l; echo '{"id":1,"ok":true,"ops":["x"]}'; exec sleep 30"#,
+            Duration::from_secs(1),
+        );
+        assert!(
+            matches!(&e, CallError::Died(m) if m == "request not read within 1 s"),
+            "{e}"
+        );
+        assert!(took < Duration::from_secs(10), "{took:?}");
+        assert_eq!(h.restarts(), 1);
     }
 }
