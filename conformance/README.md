@@ -16,6 +16,7 @@ Tooling that checks an implementation of the specification against Bitcoin Core 
 | `vectors/pow/` | Proof-of-work and difficulty adjustment cases on every network, in the same format |
 | `vectors/signet/` | Signet block solution cases under chosen challenges, in the same format |
 | `vectors/blocks/` | The block corpus: scenarios recorded from Core's functional tests (`CORPUS.md`) |
+| `vectors/chainwork/` | One signet scenario in the corpus format where the chain with most work is not the longest |
 
 The runner does not depend on the reference crate: it must stay independent of what it tests.
 
@@ -268,8 +269,8 @@ combinations (plus the same `tx_check`s, with Core's reject reason at level 2).
 
 ## Corpus suite
 
-`corpus` replays every `vectors/blocks/*.jsonl.gz` file (or the files and directories given with
-`--corpus`, repeatable) exactly as `CORPUS.md` section 4 says: `reset` becomes `chain_reset` (the
+`corpus` replays every `vectors/blocks/*.jsonl.gz` and `vectors/chainwork/*.jsonl.gz` file (or the
+files and directories given with `--corpus`, repeatable) exactly as `CORPUS.md` section 4 says: `reset` becomes `chain_reset` (the
 returned genesis must equal the event's), `block`, `headers` and `invalidate` become
 `chain_process_block` (with `now`, `via`, and `requested` when present; blobs are read, and the
 block hash, blob size and blob SHA-256 are checked), `chain_process_headers` (with `now` and
@@ -279,7 +280,8 @@ again (responses not scored); with `--restart-shortcut`, a restart whose options
 force sends nothing. A `check` becomes `chain_tip`, plus `chain_tips` when it carries `tips` and
 `utxo_hash` when it carries `utxo`.
 
-- **Level 0** (required): tip and height at every normative check. The table's `cases`, `passed`
+- **Level 0** (required): tip and height at every normative check, and the chain work where the
+  check carries it (`vectors/chainwork` only). The table's `cases`, `passed`
   and `failed` count these; a harness error or a corrupt file also fails (once per file).
 - Non-normative checks are compared and reported (`L0 other`) but never fail the run.
 - **Level 1** (optional): the set of (hash, height, status) chain tips. Reported only, unless

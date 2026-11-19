@@ -247,7 +247,7 @@ Response: `{"tip": hash, "height": integer}` after the operation.
 
 ### 4.11 `chain_tip`
 
-Response: `{"tip": hash, "height": integer, "chainwork": hex}`. `tip` is in display order. `chainwork` is the cumulative work of the active chain as a 32-byte big-endian number in hex (as Bitcoin Core's `getblockchaininfo` prints it).
+Response: `{"tip": hash, "height": integer, "chainwork": hex}`. `tip` is in display order. `chainwork` is the cumulative work of the active chain as a 32-byte big-endian number in hex (as Bitcoin Core's `getblockchaininfo` prints it). The corpus compares it at level 0 where a check carries it (CORPUS.md section 2.7).
 
 ### 4.12 `chain_tips`
 

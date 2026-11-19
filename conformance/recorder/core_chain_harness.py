@@ -3,7 +3,8 @@
 by Bitcoin Core v32.1 itself.
 
 Every chain_reset starts a fresh regtest bitcoind (no network, no wallet) with
-the requested consensus options; every event first sets the node clock with
+the requested consensus options, or a custom signet one for network "signet"
+with a "signetchallenge" option; every event first sets the node clock with
 setmocktime(now). Blocks go through submitblock, headers through submitheader,
 invalidations through invalidateblock.
 
@@ -89,11 +90,12 @@ def core_version():
 
 
 class Node:
-    def __init__(self, options):
+    def __init__(self, network, options):
         self.dir = tempfile.mkdtemp(prefix="bcs-harness-")
         self.port = free_port()
         self.id = 0
-        args = [BITCOIND, "-regtest", "-datadir=" + self.dir, "-rpcport=%d" % self.port,
+        self.network = network
+        args = [BITCOIND, "-" + network, "-datadir=" + self.dir, "-rpcport=%d" % self.port,
                 "-rpcbind=127.0.0.1", "-rpcallowip=127.0.0.1", "-server=1", "-listen=0", "-connect=0",
                 "-dnsseed=0", "-fixedseeds=0", "-discover=0", "-natpmp=0", "-listenonion=0",
                 "-disablewallet", "-printtoconsole=0", "-rpcthreads=4", "-rpcservertimeout=600",
@@ -106,7 +108,9 @@ class Node:
             args.append("-test=" + t)
         for vb in (options or {}).get("vbparams", []):
             args.append("-vbparams=" + vb)
-        unknown = set((options or {}).keys()) - {"testactivationheight", "test", "vbparams"}
+        if "signetchallenge" in (options or {}):
+            args.append("-signetchallenge=" + options["signetchallenge"])
+        unknown = set((options or {}).keys()) - {"testactivationheight", "test", "vbparams", "signetchallenge"}
         if unknown:
             raise BadRequest("unsupported options: %s" % ", ".join(sorted(unknown)))
         self.proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -117,7 +121,7 @@ class Node:
             if self.proc.poll() is not None:
                 raise RuntimeError("bitcoind exited: %s" % self.proc.stderr.read().decode(errors="replace"))
             try:
-                cookie = open(os.path.join(self.dir, "regtest", ".cookie")).read().strip()
+                cookie = open(os.path.join(self.dir, self.network, ".cookie")).read().strip()
                 self.auth = "Basic " + base64.b64encode(cookie.encode()).decode()
                 self.call("getblockcount")
                 break
@@ -173,6 +177,12 @@ class Node:
         now = int(now)
         if now <= 0:
             raise BadRequest("now must be positive")
+        if self.network != "regtest":
+            # setmocktime is regtest only. Core then judges a future timestamp by its real clock,
+            # which gives the same answer only for a block dated before `now + 2 hours`.
+            if now > time.time():
+                raise BadRequest("now is ahead of the real clock, which a %s node cannot mock" % self.network)
+            return
         if now != self.mocktime:
             self.call("setmocktime", now)
             self.mocktime = now
@@ -338,12 +348,15 @@ class Harness:
         if op == "info":
             return {"name": "bitcoin-core-chain-harness", "version": core_version(), "spec_version": "v32.1-1", "ops": OPS}
         if op == "chain_reset":
-            if req.get("network", "regtest") != "regtest":
-                raise BadRequest("only regtest is supported")
+            network = req.get("network", "regtest")
+            options = req.get("options") or {}
+            # No scenario runs on the default signet, whose blocks need its signers.
+            if not (network == "regtest" or network == "signet" and "signetchallenge" in options):
+                raise BadRequest("only regtest and custom signets are supported")
             if self.node is not None:
                 self.node.stop()
                 self.node = None
-            self.node = Node(req.get("options") or {})
+            self.node = Node(network, options)
             return {"genesis": self.node.call("getblockhash", 0)}
         if op == "chain_process_block":
             node = self.need_node()

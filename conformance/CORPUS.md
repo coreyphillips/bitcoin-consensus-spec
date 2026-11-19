@@ -17,6 +17,7 @@ conformance/vectors/blocks/blobs/<sha256>.blk.gz
 - Each file is gzip-compressed JSON Lines: UTF-8, one JSON object per line, no line spans more than one event. The first line is a `meta` event; every other line is an event with a `type` field, in replay order.
 - `blobs/` holds sidecar files for large blocks, so that lines stay short: a `block` event carries either `hex` or `blob`. In this corpus, blocks larger than 1,000,000 bytes use blobs, and in `feature_block_reorg` blocks larger than 100,000 bytes. A blob file is the gzip-compressed raw block, named by the SHA256 of the uncompressed bytes. Blobs are shared between scenarios.
 - Unknown fields must be ignored. Field names starting with an underscore never appear.
+- `conformance/vectors/chainwork/most-work.jsonl.gz` is in the same format but was not recorded: its blocks are mined by a script, on a custom signet, so that the chain with most work is shorter than another chain (`vectors/chainwork/README.md`). Its expectations were confirmed by replaying it through Bitcoin Core v32.1. The `corpus` suite replays it with the recorded scenarios.
 
 Encodings follow `PROTOCOL.md` section 3: bytes are lowercase hex, hashes are in display order, integers are JSON numbers, times are Unix seconds.
 
@@ -44,8 +45,8 @@ Start from a fresh chain. Always the second line.
 
 | Field | Meaning |
 |---|---|
-| `network` | Always `"regtest"` in this corpus |
-| `options` | Consensus parameter overrides, exactly the `options` object of `chain_reset` (`PROTOCOL.md` 4.8): `testactivationheight` (deployment name to activation height) and `test` (list, `"bip94"` enables the BIP94 rules). Empty object if none. |
+| `network` | `"regtest"` in every recorded scenario; `"signet"` in `most-work` |
+| `options` | Consensus parameter overrides, exactly the `options` object of `chain_reset` (`PROTOCOL.md` 4.8): `testactivationheight` (deployment name to activation height), `test` (list, `"bip94"` enables the BIP94 rules) and, for signet, `signetchallenge`. Empty object if none. |
 | `genesis` | Expected genesis hash (a sanity check of the `chain_reset` response) |
 | `args` | Informational: the node's command line, without machine-specific paths and ports |
 
@@ -100,6 +101,7 @@ A checkpoint: the node's state at this point, read after every earlier event had
 | Field | Level | Meaning |
 |---|---|---|
 | `tip`, `height` | 0 | Active chain tip (display order) and its height |
+| `chainwork` | 0 | Optional: the active chain's total work, as `chain_tip` reports it (64 hex digits). Only `most-work` carries it; on regtest every block has work 2, so it would add nothing to a height |
 | `normative` | | `true` if level 0 must match. `false` if it depends on behavior the corpus cannot pin down; `why` says what |
 | `tips` | 1 | All chain tips, as Bitcoin Core's `getchaintips` reports them: `hash`, `height`, `status` (`active`, `valid-fork`, `valid-headers`, `headers-only`, `invalid`). Present when the set has at most 64 entries, on the last check before each `restart`, and on the last check of the file (every block a test gets rejected stays a tip, so the set can grow to thousands). |
 | `utxo` | 2 | Present when the tip changed since the last check that carried one: `hash_serialized_3` (display order) and `txouts` for the active tip, as `gettxoutsetinfo` reports them |
@@ -121,7 +123,7 @@ A runner processes the events of a file in order and maps them to `PROTOCOL.md` 
 | `headers` | `chain_process_headers` with `headers`, `now`, and `via` (an optional field, see section 7) |
 | `invalidate` | `chain_invalidate` with `hash` (a harness may also accept `now`) |
 | `restart` | `chain_reset` with the `network` of the last `reset` and the `options` of the `restart`, followed by every `block`, `headers` and `invalidate` request sent since the last `reset`, again, in the same order and with the same fields. Responses to this re-delivery are not scored. |
-| `check` | `chain_tip`: level 0 compares `tip` and `height`. `chain_tips`, only if the check has `tips`: level 1 compares the set of (`hash`, `height`, `status`) triples, ignoring order. `utxo_hash`, only if the check has `utxo`: level 2 compares `hash_serialized_3` and `txouts`. |
+| `check` | `chain_tip`: level 0 compares `tip` and `height`, and `chainwork` when the check has it (hex digits in either case). `chain_tips`, only if the check has `tips`: level 1 compares the set of (`hash`, `height`, `status`) triples, ignoring order. `utxo_hash`, only if the check has `utxo`: level 2 compares `hash_serialized_3` and `txouts`. |
 
 Shortcut for restarts: when a `restart` carries the same `options` as the ones in force, a runner may skip it entirely (send nothing). Both ways reproduce every normative check in this corpus.
 
