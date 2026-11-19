@@ -48,9 +48,10 @@ pub fn pinned_version() -> String {
 /// expected ones, and another release can differ from the one the corpus was recorded from.
 pub fn check_version(binary: &Path) -> Result<(), String> {
     let pinned = pinned_version();
-    // An empty data directory, so that no bitcoin.conf of the user's is read.
+    // An empty data directory, so that no bitcoin.conf of the user's is read. It is removed
+    // afterwards, so it must be one this call created: `create_dir` fails if it already exists.
     let datadir = std::env::temp_dir().join(format!("bcs-version-{}", std::process::id()));
-    std::fs::create_dir_all(&datadir)
+    std::fs::create_dir(&datadir)
         .map_err(|e| format!("cannot create {}: {e}", datadir.display()))?;
     let out = Command::new(binary)
         .arg("-version")
