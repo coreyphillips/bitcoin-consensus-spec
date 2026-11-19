@@ -8,6 +8,7 @@ Tooling that checks an implementation of the specification against Bitcoin Core 
 | `PROTOCOL.md` | The JSON-lines protocol between the runner and an implementation's harness program |
 | `oracle-core/` | `oracle-core-harness`: a harness whose answers come from Bitcoin Core v32.1's own C++ consensus code, compiled from source |
 | `runner/` | `bcs-conformance`: starts a harness, runs the suites, derives expectations from the oracle |
+| `tools/` | `differential.py`: seeded random requests sent to two harnesses, every differing answer printed |
 | `vectors/core/` | `script_tests.json`, `tx_valid.json`, `tx_invalid.json`, `sighash.json`, `bip341_wallet_vectors.json`, byte-identical to Core v32.1's `src/test/data/` |
 | `vectors/qa-assets/` | `script_assets_test.json` from the bitcoin-core/qa-assets repository |
 | `vectors/bip340/` | `test-vectors.csv` from BIP340 |
