@@ -38,6 +38,7 @@ const CORE_SOURCES: &[&str] = &[
     "consensus/merkle.cpp",
     "kernel/chainparams.cpp",
     "util/time.cpp",
+    "signet.cpp",
 ];
 
 fn fail(msg: &str) -> ! {
@@ -225,6 +226,7 @@ fn main() {
         .file(manifest.join("cpp/oracle.cpp"))
         .file(manifest.join("cpp/check.cpp"))
         .file(manifest.join("cpp/pow.cpp"))
+        .file(manifest.join("cpp/signet.cpp"))
         .file(manifest.join("cpp/log.cpp"));
     for file in CORE_SOURCES {
         cpp.file(src.join(file));

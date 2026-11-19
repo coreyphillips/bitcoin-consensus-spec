@@ -48,6 +48,8 @@ jobs:
         run: sh .github/compare-derived.sh conformance/vectors/derived "$RUNNER_TEMP/derived"
       - name: The committed pow vectors are the oracle's answers
         run: ./target/release/bcs-conformance --impl conformance/oracle-core/target/release/oracle-core-harness --suite pow --fail-on-level2
+      - name: The committed signet vectors are the oracle's answers
+        run: ./target/release/bcs-conformance --impl conformance/oracle-core/target/release/oracle-core-harness --suite signet --fail-on-level2
 
   corpus:
     runs-on: ubuntu-latest

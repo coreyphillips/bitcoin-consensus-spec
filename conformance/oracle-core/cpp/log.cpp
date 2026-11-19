@@ -1,23 +1,22 @@
-// The logging hooks Core's kernel/chainparams.cpp links against.
+// The logging hooks Core's kernel/chainparams.cpp and signet.cpp link against.
 //
-// util/log.h leaves util::log::Log to the application. Core's own definition (logging.cpp) and
+// util/log.h leaves these to the application. Core's own definitions (logging.cpp) and
 // util/threadnames.cpp would pull in the logger and the generated bitcoin-build-config.h. The only
-// log call in chainparams.cpp is for a signet with a custom challenge, which the oracle never
-// builds, so these write the message to standard error and nothing more.
+// log calls on the oracle's paths are chainparams.cpp's line for every signet with a custom
+// challenge (one per `signet_check` request) and signet.cpp's debug lines, which say no more than
+// the answer does. So nothing is logged.
 
 #include <util/log.h>
 #include <util/threadnames.h>
 
-#include <cstdio>
 #include <string>
 
 namespace util {
 std::string ThreadGetInternalName() { return {}; }
 
 namespace log {
-void Log(Entry entry)
-{
-    std::fwrite(entry.message.data(), 1, entry.message.size(), stderr);
-}
+void Log(Entry) {}
+bool ShouldDebugLog(Category) { return false; }
+bool ShouldTraceLog(Category) { return false; }
 } // namespace log
 } // namespace util

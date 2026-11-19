@@ -3,7 +3,7 @@
 //!
 //! It reads one JSON request per line on standard input and writes one JSON response per line on
 //! standard output. Chain operations are not provided (`unsupported_op`); the proof-of-work
-//! operations take the chain they need in the request.
+//! and signet operations take the headers or the block they need in the request.
 
 mod ffi;
 
@@ -28,6 +28,7 @@ const OPS: &[&str] = &[
     "pow_compact",
     "pow_check",
     "pow_next_work",
+    "signet_check",
 ];
 
 /// Operations outside PROTOCOL.md, listed under `extensions` in `info` (not under `ops`).
@@ -118,6 +119,7 @@ fn handle_line(line: &str) -> String {
         "pow_compact" => pow_compact(obj),
         "pow_check" => pow_check(obj),
         "pow_next_work" => pow_next_work(obj),
+        "signet_check" => signet_check(obj),
         other => Err(Failure::Unsupported(format!(
             "oracle-core only provides the operations that need no chain state, not {other}"
         ))),
@@ -432,4 +434,11 @@ fn pow_next_work(req: &Fields) -> Result<Fields, Failure> {
     }
     let bits = ffi::pow_next_work(network, parent_height, &headers, time)?;
     Ok(fields(json!({"bits": bits})))
+}
+
+fn signet_check(req: &Fields) -> Result<Fields, Failure> {
+    let block = hex_field(req, "block")?;
+    let challenge = hex_field(req, "challenge")?;
+    let valid = ffi::signet_check(&block, &challenge)?;
+    Ok(fields(json!({"valid": valid})))
 }

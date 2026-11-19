@@ -12,6 +12,7 @@ const RC_BAD_SPENT: c_int = -3;
 const RC_BAD_FLAGS: c_int = -4;
 const RC_BAD_NETWORK: c_int = -5;
 const RC_BAD_CHAIN: c_int = -6;
+const RC_BAD_BLOCK: c_int = -7;
 const RC_EXCEPTION: c_int = -100;
 
 /// Flag bits of the C ABI, in protocol order (cpp/oracle.cpp maps them to Core's constants).
@@ -113,6 +114,12 @@ extern "C" {
         time: u32,
         out_bits: *mut u32,
     ) -> c_int;
+    fn bcs_core_signet_check(
+        block: *const u8,
+        block_len: usize,
+        challenge: *const u8,
+        challenge_len: usize,
+    ) -> c_int;
 }
 
 /// Network names of the protocol, in the order of the C ABI (cpp/pow.cpp).
@@ -154,6 +161,9 @@ fn rc_to_bool(rc: c_int) -> Result<bool, CoreError> {
         ))),
         RC_BAD_CHAIN => Err(CoreError::BadRequest(
             "chain must hold the headers from the first block of the parent's difficulty period to the parent".into(),
+        )),
+        RC_BAD_BLOCK => Err(CoreError::BadRequest(
+            "block does not deserialize or has trailing bytes".into(),
         )),
         RC_EXCEPTION => Err(CoreError::Internal(format!("Bitcoin Core threw: {}", last_exception()))),
         other => Err(CoreError::Internal(format!("unexpected return code {other}"))),
@@ -441,4 +451,18 @@ pub fn pow_next_work(
     };
     rc_to_bool(rc)?;
     Ok(out)
+}
+
+/// `CheckSignetBlockSolution` on a signet with the given challenge (cpp/signet.cpp).
+pub fn signet_check(block: &[u8], challenge: &[u8]) -> Result<bool, CoreError> {
+    // SAFETY: both buffers are live for the call.
+    let rc = unsafe {
+        bcs_core_signet_check(
+            block.as_ptr(),
+            block.len(),
+            challenge.as_ptr(),
+            challenge.len(),
+        )
+    };
+    rc_to_bool(rc)
 }

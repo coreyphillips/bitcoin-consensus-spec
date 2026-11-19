@@ -157,6 +157,7 @@ const OPS: &[&str] = &[
     "pow_compact",
     "pow_check",
     "pow_next_work",
+    "signet_check",
     "chain_reset",
     "chain_process_block",
     "chain_process_headers",
@@ -306,6 +307,27 @@ fn handle(op: &str, req: &Fields, chain: &mut Option<ChainState>) -> Result<Opti
             let parent = headers[headers.len() - 1];
             let bits = next_work_required(&consensus, parent_height as i32, &parent, &ancestor, time);
             obj(vec![("bits", Json::Int(bits as i128))])
+        }
+        "signet_check" => {
+            let bytes = get_hex(req, "block")?;
+            // Whole bytes only, as the oracle reads them: chain_process_block ignores trailing
+            // bytes, but a case here must name exactly one block.
+            let mut reader = Reader::new(&bytes);
+            let block = (|| -> Result<Block, DecodeError> {
+                let header = read_block_header(&mut reader)?;
+                let count = reader.read_compact_size()?;
+                let mut transactions = Vec::new();
+                for _ in 0..count {
+                    transactions.push(read_transaction(&mut reader)?);
+                }
+                Ok(Block { header, transactions })
+            })()
+            .ok()
+            .filter(|_| reader.remaining() == 0)
+            .ok_or_else(|| BadRequest("block does not deserialize or has trailing bytes".into()))?;
+            let options = NetworkOptions { signet_challenge: Some(get_hex(req, "challenge")?), ..NetworkOptions::default() };
+            let consensus = network_params(Network::Signet, &options).consensus;
+            obj(vec![("valid", Json::Bool(check_signet_block_solution(&block, &consensus)))])
         }
         "chain_reset" => {
             let network = parse_network(get_str(req, "network")?).map_err(BadRequest)?;

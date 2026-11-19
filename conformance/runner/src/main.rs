@@ -366,6 +366,7 @@ fn suite_ops(suite: &str) -> &'static [&'static str] {
             "schnorr_verify",
         ],
         "pow" => &["pow_compact", "pow_check", "pow_next_work"],
+        "signet" => &["signet_check"],
         "corpus" => &[
             "chain_reset",
             "chain_process_block",
@@ -502,6 +503,7 @@ fn cmd_run(opts: &Options) -> ExitCode {
             "bip340" => suites::bip340::run(&mut ctx, &paths.vectors),
             "custom" => suites::custom::run(&mut ctx, &paths.vectors, "custom"),
             "pow" => suites::custom::run(&mut ctx, &paths.vectors, "pow"),
+            "signet" => suites::custom::run(&mut ctx, &paths.vectors, "signet"),
             "corpus" => suites::corpus::run(
                 &mut ctx,
                 &corpus_paths(opts, &paths),
