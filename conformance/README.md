@@ -370,7 +370,8 @@ which one was used. One case per chain:
   `submitblock`, with `bitcoind` started with `-testactivationheight=name@height` and `-test=bip94`
   from the scenario's `reset` options. When a hash has several recorded byte variants (mutated
   copies), they are tried in file order until `bitcoind` accepts one; `bitcoind`'s tip must then be
-  the scenario's final tip.
+  the scenario's final tip. A corpus file named like a generated chain is refused, because
+  failures and `--known-failures` entries (`interop chain <name>`) name a chain by its name alone.
 
 `{options}` in the node command (PROTOCOL.md section 5) becomes the scenario's `reset` options as
 one shell-quoted JSON object (the `options` of `chain_reset`), so a node can apply the same consensus
