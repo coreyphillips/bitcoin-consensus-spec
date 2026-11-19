@@ -157,8 +157,28 @@ pub fn bitcoind_args(options: &Value) -> Result<Vec<String>, String> {
     Ok(args)
 }
 
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
+/// The node command of this suite and of peer-sync (PROTOCOL.md sections 5 and 5.1): `template`
+/// with its placeholders filled in. `{datadir}` and `{options}` each become one shell word, since
+/// the data directory is named after the corpus file. Without `stop_at`, `{stop_at}` stays as it is.
+pub fn node_command(
+    template: &str,
+    node_dir: &Path,
+    peer: &str,
+    stop_at: Option<&str>,
+    options: &Value,
+) -> String {
+    let datadir = crate::process::shell_quote(&node_dir.display().to_string());
+    let options = crate::process::shell_quote(&options.to_string());
+    let mut values = vec![
+        ("{network}", "regtest"),
+        ("{datadir}", datadir.as_str()),
+        ("{peer}", peer),
+        ("{options}", options.as_str()),
+    ];
+    if let Some(stop_at) = stop_at {
+        values.push(("{stop_at}", stop_at));
+    }
+    crate::process::expand(template, &values)
 }
 
 /// What the node reported.
@@ -416,13 +436,13 @@ fn run_chain(
         }
     }
 
-    let command = cfg
-        .node
-        .replace("{network}", "regtest")
-        .replace("{datadir}", &node_dir.display().to_string())
-        .replace("{peer}", &format!("127.0.0.1:{}", core.p2p_port))
-        .replace("{stop_at}", &tip)
-        .replace("{options}", &shell_quote(&chain.options.to_string()));
+    let command = node_command(
+        &cfg.node,
+        &node_dir,
+        &format!("127.0.0.1:{}", core.p2p_port),
+        Some(&tip),
+        &chain.options,
+    );
     let stderr_path = root.join("node-stderr.log");
     let outcome = run_node(&command, &stderr_path, cfg.node_timeout)?;
     core.stop();
@@ -728,10 +748,33 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The data directory reaches the node as one unchanged argument whatever the corpus file's
+    /// name holds, and a placeholder in it is not expanded.
     #[test]
-    fn shell_quoting() {
-        assert_eq!(shell_quote(r#"{"a":1}"#), r#"'{"a":1}'"#);
-        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+    fn node_command_arguments() {
+        let dir =
+            Path::new("/tmp/002-with space $(echo x) `echo y`; 'q' \"dq\" * {peer} {options}/node");
+        let options = json!({"a": "it's {datadir}"});
+        let template = "printf '[%s]' {network} {datadir} {peer} {stop_at} {options}";
+        let run = |command: &str| {
+            let out = crate::process::shell(command).output().unwrap();
+            assert!(out.status.success(), "{command}");
+            String::from_utf8(out.stdout).unwrap()
+        };
+        assert_eq!(
+            run(&node_command(
+                template,
+                dir,
+                "127.0.0.1:1",
+                Some("00ab"),
+                &options
+            )),
+            format!("[regtest][{}][127.0.0.1:1][00ab][{options}]", dir.display())
+        );
+        assert_eq!(
+            node_command("{stop_at}", dir, "127.0.0.1:1", None, &options),
+            "{stop_at}"
+        );
     }
 
     /// A node command that is stopped fails at once, not after the node timeout.

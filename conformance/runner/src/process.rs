@@ -46,6 +46,31 @@ pub fn shell(command: &str) -> Command {
     c
 }
 
+/// `s` as one `sh` word holding exactly `s`: single-quoted, each `'` written as `'\''`.
+pub fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// `template` with every occurrence of each placeholder in `values` replaced by its value. The
+/// template is read once, so an inserted value is never searched for placeholders: a data
+/// directory named after a corpus file may hold `{peer}`.
+pub fn expand(template: &str, values: &[(&str, &str)]) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    'next: while let Some(c) = rest.chars().next() {
+        for (placeholder, value) in values {
+            if let Some(after) = rest.strip_prefix(placeholder) {
+                out.push_str(value);
+                rest = after;
+                continue 'next;
+            }
+        }
+        out.push(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    out
+}
+
 /// A command started by [`spawn`]: its own process, the leader of its process group. It derefs to
 /// that process's [`Child`].
 pub struct Group {
@@ -320,6 +345,28 @@ fn become_subreaper() {}
 mod tests {
     use super::*;
     use std::process::Stdio;
+
+    #[test]
+    fn shell_quoting() {
+        assert_eq!(shell_quote(r#"{"a":1}"#), r#"'{"a":1}'"#);
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+        for s in ["", "a b", "it's", "$(id) `id` ;|&<>*?~\\\"\n\t!#{}"] {
+            let out = Command::new("sh")
+                .arg("-c")
+                .arg(format!("printf '%s' {}", shell_quote(s)))
+                .output()
+                .unwrap();
+            assert_eq!(String::from_utf8(out.stdout).unwrap(), s);
+        }
+    }
+
+    #[test]
+    fn expansion_reads_the_template_once() {
+        let values = [("{a}", "{b}"), ("{b}", "x"), ("{é}", "y")];
+        assert_eq!(expand("{a} {b} {é}{c} {", &values), "{b} x y{c} {");
+        assert_eq!(expand("é{a}é", &values), "é{b}é");
+        assert_eq!(expand("", &values), "");
+    }
 
     /// Starts `sleep 300 &` followed by `rest`, and returns the command with that `sleep`'s pid.
     fn spawn_with_background(name: &str, rest: &str) -> (Group, i32) {
