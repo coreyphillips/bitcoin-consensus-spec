@@ -332,7 +332,7 @@ The consensus parameters of a network without test overrides (specification chap
 | `pow_limit` | hex | 32 bytes big-endian |
 | `pow_target_timespan`, `pow_target_spacing` | integer | Seconds |
 | `pow_allow_min_difficulty_blocks`, `pow_no_retargeting`, `enforce_bip94` | bool | |
-| `script_flag_exceptions` | array | `[hash, [flag, ...]]` pairs: a block hash in display order and the flags that replace `P2SH`, `WITNESS` and `TAPROOT` for it (chapter 10 section 10.6), with flag names as in 4.2. Sorted by hash |
+| `script_flag_exceptions` | array | `[hash, [flag, ...]]` pairs: a block hash in display order and the flags that replace `P2SH`, `WITNESS` and `TAPROOT` for it (chapter 10 section 10.6), with flag names as in 4.2, in the order of the table in section 3.1. Sorted by hash |
 | `signet_challenge` | hex or null | Null on networks other than signet |
 | `message_start` | hex | 4 bytes |
 | `default_port` | integer | |

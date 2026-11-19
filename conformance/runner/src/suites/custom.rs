@@ -114,8 +114,12 @@ pub fn run(ctx: &mut Ctx, vectors: &Path, subdir: &str) -> Result<(), String> {
             .expect
             .iter()
             .filter(|(k, _)| *k != "script_error" && *k != "reason")
-            .filter(|(k, v)| field(k) != **v)
-            .map(|(k, v)| format!("{k}: expected {v}, got {}", field(k)))
+            // A missing field fails even where null is expected (`signet_challenge`).
+            .filter(|(k, v)| !got.contains_key(*k) || field(k) != **v)
+            .map(|(k, v)| match got.get(k) {
+                Some(g) => format!("{k}: expected {v}, got {g}"),
+                None => format!("{k}: expected {v}, got no such field"),
+            })
             .collect();
         if !level1.is_empty() {
             ctx.fail_as(&case.name, &case.loc, &shorten(&level1.join("; "), 400));
