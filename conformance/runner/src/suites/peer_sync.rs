@@ -55,7 +55,7 @@
 //!   `--ibd-limit` bounds the cases per scenario (default 32, evenly spaced).
 
 use crate::bitcoind::{free_ports, Bitcoind};
-use crate::check::{shorten, Stats};
+use crate::check::{short_hash, shorten, Stats};
 use crate::hex;
 use crate::listen::{self, Event, SendError, Writer};
 use crate::p2p::{self, Message};
@@ -1255,7 +1255,7 @@ impl<'a> Session<'a> {
                 return Err(format!(
                     "the tip did not settle within {} s; the last answer was {} height {}{}",
                     self.timeout.as_secs(),
-                    short(&answer.0),
+                    short_hash(&answer.0),
                     answer.1,
                     if link.is_none() {
                         ", with the node not connected"
@@ -1307,8 +1307,8 @@ impl<'a> Session<'a> {
         if tip != want || h != height {
             return Ok(Some(format!(
                 "tip {} height {h}, expected {} height {height} (the block was {block}, Core: {}){}",
-                short(&tip),
-                short(&want),
+                short_hash(&tip),
+                short_hash(&want),
                 case.reason,
                 self.tip_note(&tip)
             )));
@@ -1325,8 +1325,8 @@ impl<'a> Session<'a> {
             if again != want || h != height {
                 return Ok(Some(format!(
                     "tip {} height {h} when asked again, after {} height {height} (Core: {}){}",
-                    short(&again),
-                    short(&want),
+                    short_hash(&again),
+                    short_hash(&want),
                     case.reason,
                     self.tip_note(&again)
                 )));
@@ -1344,7 +1344,7 @@ impl<'a> Session<'a> {
             .map(|(_, &c)| {
                 format!(
                     "; the tip is the rejected block {} (Core: {})",
-                    short(tip),
+                    short_hash(tip),
                     sc.cases[c].reason
                 )
             })
@@ -1362,8 +1362,8 @@ impl<'a> Session<'a> {
         if tip != want || height != n as i64 {
             return Ok(Some(format!(
                 "tip {} height {height}, expected the final tip {} height {n}",
-                short(&tip),
-                short(&want)
+                short_hash(&tip),
+                short_hash(&want)
             )));
         }
         self.write_line(&json!({"op": "stop"}).to_string())?;
@@ -1462,14 +1462,6 @@ fn header_rule(reason: &str) -> bool {
     ]
     .iter()
     .any(|p| reason.starts_with(p))
-}
-
-fn short(hash: &str) -> String {
-    if hash.len() == 64 {
-        format!("{}..{}", &hash[..8], &hash[56..])
-    } else {
-        hash.to_string()
-    }
 }
 
 fn encode_headers(headers: &[&[u8]]) -> Vec<u8> {

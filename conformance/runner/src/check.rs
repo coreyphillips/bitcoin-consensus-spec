@@ -330,6 +330,16 @@ impl<'h> Ctx<'h> {
     }
 }
 
+/// A hash for messages: 64 hex digits as their first and last eight, anything else (from a
+/// harness or a node that answered something else) in full.
+pub fn short_hash(hash: &str) -> String {
+    if hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        format!("{}..{}", &hash[..8], &hash[56..])
+    } else {
+        hash.to_string()
+    }
+}
+
 /// Text of one vector row for messages, shortened to `max` characters.
 pub fn shorten(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
@@ -337,5 +347,25 @@ pub fn shorten(text: &str, max: usize) -> String {
     } else {
         let head: String = text.chars().take(max).collect();
         format!("{head}...")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_hashes() {
+        let hash = format!("0123abcd{}89abCDEF", "0".repeat(48));
+        assert_eq!(short_hash(&hash), "0123abcd..89abCDEF");
+        // 64 bytes, but not 64 hex digits: in full, with no slice inside a character.
+        for odd in [
+            format!("{}é{}", "a".repeat(7), "a".repeat(55)),
+            "g".repeat(64),
+        ] {
+            assert_eq!(odd.len(), 64);
+            assert_eq!(short_hash(&odd), odd);
+        }
+        assert_eq!(short_hash("?"), "?");
     }
 }

@@ -23,7 +23,7 @@
 //! errors as `<file> errors from event <n>`, `<n>` being the event whose replay recorded the first
 //! one.
 
-use crate::check::{shorten, Ctx};
+use crate::check::{short_hash, shorten, Ctx};
 use crate::hex;
 use crate::tx::sha256d;
 use flate2::read::MultiGzDecoder;
@@ -317,17 +317,9 @@ impl FileResult {
     }
 }
 
-fn short(hash: &str) -> String {
-    if hash.len() == 64 {
-        format!("{}..{}", &hash[..8], &hash[56..])
-    } else {
-        hash.to_string()
-    }
-}
-
 fn tip_text(v: &Value) -> String {
     match (v["tip"].as_str(), v["height"].as_i64()) {
-        (Some(t), Some(h)) => format!("{} height {h}", short(t)),
+        (Some(t), Some(h)) => format!("{} height {h}", short_hash(t)),
         _ => "(no tip)".to_string(),
     }
 }
@@ -338,7 +330,10 @@ fn describe_event(idx: usize, ev: &Value, answer: &Result<Map<String, Value>, St
     let mut s = format!("event {idx} (line {}) {t}", idx + 2);
     match t {
         "block" => {
-            s.push_str(&format!(" {}", short(ev["hash"].as_str().unwrap_or("?"))));
+            s.push_str(&format!(
+                " {}",
+                short_hash(ev["hash"].as_str().unwrap_or("?"))
+            ));
             if let Some(via) = ev["via"].as_str() {
                 s.push_str(&format!(" via {via}"));
             }
@@ -353,7 +348,10 @@ fn describe_event(idx: usize, ev: &Value, answer: &Result<Map<String, Value>, St
                 s.push_str(&format!(" via {via}"));
             }
         }
-        "invalidate" => s.push_str(&format!(" {}", short(ev["hash"].as_str().unwrap_or("?")))),
+        "invalidate" => s.push_str(&format!(
+            " {}",
+            short_hash(ev["hash"].as_str().unwrap_or("?"))
+        )),
         _ => {}
     }
     if let Some(now) = ev["now"].as_i64() {
@@ -378,7 +376,7 @@ fn describe_event(idx: usize, ev: &Value, answer: &Result<Map<String, Value>, St
                 s.push_str(&format!(", tip {}", tip_text(&a)));
             }
             if let Some(b) = a["best_header"].as_str() {
-                s.push_str(&format!(", best header {}", short(b)));
+                s.push_str(&format!(", best header {}", short_hash(b)));
             }
         }
     }
@@ -542,7 +540,7 @@ pub fn replay_file(
                 let label = ev["label"].as_str().unwrap_or("");
                 let want = format!(
                     "{} height {}",
-                    short(ev["tip"].as_str().unwrap_or("?")),
+                    short_hash(ev["tip"].as_str().unwrap_or("?")),
                     ev["height"]
                 );
                 let at = format!(
@@ -1064,6 +1062,26 @@ done"#;
         assert_eq!(fails("work-absent", None), 0);
         assert_eq!(fails("work-same", Some("02")), 0);
         assert_eq!(fails("work-differs", Some("04")), 1);
+    }
+
+    #[test]
+    fn a_tip_that_is_not_hex_fails_its_check() {
+        // 64 bytes, with a two-byte character across byte 8.
+        let tip = format!("{}é{}", "a".repeat(7), "a".repeat(55));
+        assert_eq!(tip.len(), 64);
+        let script = stub_with(
+            r#""tip":"t","height""#,
+            &format!(r#""tip":"{tip}","height""#),
+        );
+        let events = [
+            json!({"type": "reset", "network": "regtest"}),
+            json!({"type": "check", "n": 1, "tip": "t", "height": 0}),
+        ];
+        let r = with_stub("tip-not-hex", &events, &script, |ctx, path| {
+            replay_file(ctx, path, false, false)
+        });
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        assert_eq!(r.l0_fail, 1);
     }
 
     #[test]
