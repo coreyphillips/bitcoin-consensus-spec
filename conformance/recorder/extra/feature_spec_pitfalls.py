@@ -42,8 +42,13 @@ k. An output created and spent in one block stays spent. A block creates P
    together as in initial sync. A different re-spend through submitblock and
    one three blocks above are rejected too. A block that spends P:1 and
    re-spends P:0 is rejected as a whole, and P:1 can then be spent.
+l. Bytes after the last transaction of a block are ignored: a block followed
+   by six extra bytes is accepted over P2P and through submitblock. A block
+   message whose transaction count is in a non-canonical encoding does not
+   deserialize and changes nothing; the correct copy of the same block, sent
+   next, is accepted (Core's feature_block.py b64a).
 
-Parts a to g, j and k run on node 0 (default regtest parameters). Two more nodes, never
+Parts a to g and j to l run on node 0 (default regtest parameters). Two more nodes, never
 connected to anything but the test, each get their own corpus file:
 
 h. Node 1 activates BIP34 at height 2 and BIP66 and BIP65 only at 300, so the
@@ -132,6 +137,7 @@ class SpecPitfallsTest(BitcoinTestFramework):
         self.test_anti_dos_work()
         self.test_output_count()
         self.test_respend_of_same_block_spend()
+        self.test_block_encoding()
 
         self.node = self.nodes[1]
         self.test_version_floor_before_dersig()
@@ -454,6 +460,34 @@ class SpecPitfallsTest(BitcoinTestFramework):
         self.submit(self.make_block([spend_other, respend(6 * COIN)]), "bad-txns-inputs-missingorspent")
         block = self.make_block([spend_other, self.spend(COutPoint(first.txid_int, 0), 10 * COIN)])
         self.send([block])
+        assert_equal(self.node.getbestblockhash(), block.hash_hex)
+
+    # ------------------------------------------------------------ l
+
+    def send_raw_block(self, data):
+        self.peer.send_without_ping(msg_generic(b"block", data))
+        self.peer.sync_with_ping()
+
+    def test_block_encoding(self):
+        self.log.info("l. Bytes after the last transaction are ignored; a block that does not deserialize changes nothing")
+        self.log.info("l1. Six extra bytes over P2P")
+        block = self.make_block()
+        self.send_raw_block(block.serialize() + bytes(6))
+        assert_equal(self.node.getbestblockhash(), block.hash_hex)
+
+        self.log.info("l2. Six extra bytes through submitblock")
+        block = self.make_block()
+        assert_equal(self.node.submitblock(block.serialize().hex() + "00" * 6), None)
+        assert_equal(self.node.getbestblockhash(), block.hash_hex)
+
+        self.log.info("l3. A non-canonical transaction count, then the correct copy")
+        tip = self.node.getbestblockhash()
+        block = self.make_block()
+        raw = block.serialize()
+        assert_equal(raw[80], 1)
+        self.send_raw_block(raw[:80] + b"\xfd\x01\x00" + raw[81:])
+        assert_equal(self.node.getbestblockhash(), tip)
+        self.send_raw_block(raw)
         assert_equal(self.node.getbestblockhash(), block.hash_hex)
 
     # ------------------------------------------------------------ h (node 1)
