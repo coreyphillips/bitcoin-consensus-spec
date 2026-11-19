@@ -32,7 +32,6 @@ use crate::suites::corpus;
 use crate::tx::sha256d;
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::mpsc;
@@ -182,7 +181,7 @@ fn run_node(command: &str, stderr_path: &Path, timeout: Duration) -> Result<Node
     let stdout = child.stdout.take().expect("piped stdout");
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
+        for line in crate::process::output_lines(stdout) {
             if tx.send(line).is_err() {
                 break;
             }
@@ -762,6 +761,22 @@ mod tests {
             "{}",
             out.problems[0]
         );
+    }
+
+    /// A line that is not UTF-8 does not end the node's output: the stopped line after it is read.
+    #[test]
+    fn a_line_that_is_not_utf8_is_skipped() {
+        let path = std::env::temp_dir().join(format!("bcs-interop-utf8-{}", std::process::id()));
+        let out = run_node(
+            r#"printf '\377 not UTF-8\n{"event":"stopped","tip":"00","height":0}\n'"#,
+            &path,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(out.problems.is_empty(), "{:?}", out.problems);
+        assert_eq!(out.stopped.unwrap()["tip"], "00");
+        assert!(out.exit.unwrap().success());
     }
 
     /// A node that closes its output and runs on is ended at the node timeout, and one that

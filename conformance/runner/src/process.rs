@@ -20,7 +20,7 @@
 //! subreaper instead, is handed those processes, and reaps them when it ends their group.
 
 use std::fmt;
-use std::io;
+use std::io::{self, BufRead, BufReader, Read};
 use std::ops::{Deref, DerefMut};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command};
@@ -44,6 +44,29 @@ pub fn shell(command: &str) -> Command {
     let mut c = Command::new("sh");
     c.arg("-c").arg(command).process_group(0);
     c
+}
+
+/// The lines of a node command's standard output, without their `\n` or `\r\n`. Only lines that
+/// start with `{` are messages (PROTOCOL.md section 5, item 4), so any other line may hold any
+/// bytes: a line that is not UTF-8 is decoded lossily instead of ending the output.
+pub fn output_lines(output: impl Read) -> impl Iterator<Item = io::Result<String>> {
+    let mut reader = BufReader::new(output);
+    std::iter::from_fn(move || {
+        let mut line = Vec::new();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) => None,
+            Ok(_) => {
+                if line.last() == Some(&b'\n') {
+                    line.pop();
+                    if line.last() == Some(&b'\r') {
+                        line.pop();
+                    }
+                }
+                Some(Ok(String::from_utf8_lossy(&line).into_owned()))
+            }
+            Err(e) => Some(Err(e)),
+        }
+    })
 }
 
 /// A command started by [`spawn`]: its own process, the leader of its process group. It derefs to
@@ -320,6 +343,17 @@ fn become_subreaper() {}
 mod tests {
     use super::*;
     use std::process::Stdio;
+
+    /// A line that is not UTF-8 is read, and so is every line after it.
+    #[test]
+    fn output_lines_read_past_a_line_that_is_not_utf8() {
+        let output: &[u8] = b"a\r\n\xff\xfe junk\n{\"event\":\"tip\"}\nlast";
+        let lines: Vec<String> = output_lines(output).map(Result::unwrap).collect();
+        assert_eq!(
+            lines,
+            ["a", "\u{fffd}\u{fffd} junk", "{\"event\":\"tip\"}", "last"]
+        );
+    }
 
     /// Starts `sleep 300 &` followed by `rest`, and returns the command with that `sleep`'s pid.
     fn spawn_with_background(name: &str, rest: &str) -> (Group, i32) {
