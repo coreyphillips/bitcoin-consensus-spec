@@ -454,12 +454,15 @@ pub fn replay_file(
                 f.insert("options".into(), opts.clone());
                 match call(ctx, "chain_reset", &body(f)) {
                     Ok(a) => {
-                        if let (Some(want), Some(got)) = (
-                            ev["genesis"].as_str(),
-                            a.get("genesis").and_then(Value::as_str),
-                        ) {
-                            if want != got {
-                                r.errors.push(format!("event {idx}: chain_reset returned genesis {got}, expected {want}"));
+                        if let Some(want) = ev["genesis"].as_str() {
+                            match a.get("genesis").and_then(Value::as_str) {
+                                Some(got) if got == want => {}
+                                Some(got) => r.errors.push(format!(
+                                    "event {idx}: chain_reset returned genesis {got}, expected {want}"
+                                )),
+                                None => r.errors.push(format!(
+                                    "event {idx}: chain_reset returned no genesis, expected {want}"
+                                )),
                             }
                         }
                     }
@@ -1082,6 +1085,38 @@ done"#;
         });
         assert!(r.errors.is_empty(), "{:?}", r.errors);
         assert_eq!(r.l0_fail, 1);
+    }
+
+    #[test]
+    fn chain_reset_must_return_the_events_genesis() {
+        let events = [
+            json!({"type": "reset", "network": "regtest", "genesis": "g"}),
+            json!({"type": "check", "n": 1, "tip": "t", "height": 0}),
+        ];
+        let errors = |name: &str, answer: Option<&str>| {
+            let script = match answer {
+                None => STUB.to_string(),
+                Some(g) => stub_with(
+                    r#""op":"chain_reset"'*) printf '{"id":%s,"ok":true}"#,
+                    &format!(
+                        r#""op":"chain_reset"'*) printf '{{"id":%s,"ok":true,"genesis":"{g}"}}"#
+                    ),
+                ),
+            };
+            with_stub(name, &events, &script, |ctx, path| {
+                replay_file(ctx, path, false, false)
+            })
+            .errors
+        };
+        assert_eq!(errors("genesis-same", Some("g")), Vec::<String>::new());
+        assert_eq!(
+            errors("genesis-differs", Some("h")),
+            ["event 0: chain_reset returned genesis h, expected g"]
+        );
+        assert_eq!(
+            errors("genesis-absent", None),
+            ["event 0: chain_reset returned no genesis, expected g"]
+        );
     }
 
     #[test]

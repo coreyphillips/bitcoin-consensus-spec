@@ -333,12 +333,8 @@ fn selected_suites(
     Ok(chosen)
 }
 
-fn start(opts: &Options, what: &str) -> Result<Harness, String> {
-    let cmd = opts
-        .harness
-        .as_deref()
-        .ok_or_else(|| format!("{what} is required"))?;
-    let h = Harness::start(cmd, opts.timeout)?;
+fn start(cmd: &str, timeout: Duration) -> Result<Harness, String> {
+    let h = Harness::start(cmd, timeout)?;
     println!(
         "harness: {} {} (spec {}), ops: {}",
         h.info.name,
@@ -441,16 +437,16 @@ fn cmd_run(opts: &Options) -> ExitCode {
     let needs_harness = selected
         .iter()
         .any(|s| suites::suite(s).is_some_and(|i| i.needs_harness));
-    let mut harness = if needs_harness {
-        match start(opts, "--impl") {
+    let mut harness = match (needs_harness, opts.harness.as_deref()) {
+        (false, _) => None,
+        (true, None) => return usage_error("--impl is required"),
+        (true, Some(cmd)) => match start(cmd, opts.timeout) {
             Ok(h) => Some(h),
             Err(e) => {
                 eprintln!("bcs-conformance: {e}");
                 return ExitCode::FAILURE;
             }
-        }
-    } else {
-        None
+        },
     };
     let paths = paths(opts);
     let mode = if opts.raw { Mode::Raw } else { Mode::Derived };
@@ -731,7 +727,10 @@ fn cmd_derive(opts: &Options) -> ExitCode {
         Ok(s) => s,
         Err(e) => return usage_error(&e),
     };
-    let mut oracle = match start(opts, "--oracle") {
+    let Some(cmd) = opts.harness.as_deref() else {
+        return usage_error("--oracle is required");
+    };
+    let mut oracle = match start(cmd, opts.timeout) {
         Ok(h) => h,
         Err(e) => {
             eprintln!("bcs-conformance: {e}");
