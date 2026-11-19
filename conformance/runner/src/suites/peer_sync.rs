@@ -416,10 +416,6 @@ struct Session<'a> {
     deferred: Vec<[u8; 32]>,
 }
 
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
-
 impl<'a> Session<'a> {
     /// Starts the node. With `initial`, the runner offers the chain up to that case's parent and
     /// the case block from the start, so the case block ends the node's initial synchronization.
@@ -443,12 +439,13 @@ impl<'a> Session<'a> {
             let magic = p2p::network("regtest").unwrap().magic;
             std::thread::spawn(move || listen::accept_loop(listener, magic, tx, stop));
         }
-        let command = cfg
-            .node
-            .replace("{network}", "regtest")
-            .replace("{datadir}", &node_dir.display().to_string())
-            .replace("{peer}", &format!("127.0.0.1:{port}"))
-            .replace("{options}", &shell_quote(&sc.options.to_string()));
+        let command = interop::node_command(
+            &cfg.node,
+            &node_dir,
+            &format!("127.0.0.1:{port}"),
+            None,
+            &sc.options,
+        );
         let stderr_path = dir.join("node-stderr.log");
         let stderr = std::fs::File::create(&stderr_path)
             .map_err(|e| format!("cannot create {}: {e}", stderr_path.display()))?;
@@ -1590,6 +1587,7 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
     if cfg.node.contains("{stop_at}") {
         return Err(RULE_STOP_AT.into());
     }
+    interop::check_datadir_unquoted(&cfg.node)?;
     let files = corpus::corpus_files(&cfg.corpus)?;
     if files.is_empty() {
         let where_: Vec<String> = cfg.corpus.iter().map(|p| p.display().to_string()).collect();
@@ -1886,9 +1884,13 @@ mod tests {
     }
 
     /// A node that completes the handshake, answers `ping`, and reports regtest genesis as its
-    /// tip. With `ask` it requests every header it is sent; with `never` it requests nothing.
+    /// tip. With `ask` it requests every header it is sent; with `never` it requests nothing. It
+    /// exits at once unless its fourth argument, and last, is the path in `datadir` next to it.
     const FAKE_NODE: &str = r#"
-import hashlib, json, socket, struct, sys, threading
+import hashlib, json, os, socket, struct, sys, threading
+with open(os.path.join(os.path.dirname(sys.argv[0]), "datadir"), encoding="utf-8") as f:
+    if sys.argv[4:] != [f.read()]:
+        sys.exit("unexpected data directory arguments %r" % sys.argv[4:])
 host, port = sys.argv[1].rsplit(":", 1)
 mode, genesis = sys.argv[2], sys.argv[3]
 magic = bytes.fromhex("fabfb5da")
@@ -1944,6 +1946,14 @@ for line in sys.stdin:
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("fake_node.py");
         std::fs::write(&script, FAKE_NODE).unwrap();
+        // Shell syntax, as a corpus file's name may hold, in the directory the session runs in.
+        let session_dir = dir.join("with space $(echo x); 'q' * {peer}");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(
+            dir.join("datadir"),
+            session_dir.join("node").display().to_string(),
+        )
+        .unwrap();
         let header = header_on_genesis(true);
         let mut bytes = header.to_vec();
         bytes.push(0);
@@ -1969,8 +1979,8 @@ for line in sys.stdin:
         let cfg = Config {
             bitcoind: PathBuf::new(),
             node: format!(
-                "python3 -I {} {{peer}} {mode} {REGTEST_GENESIS}",
-                script.display()
+                "python3 -I {} {{peer}} {mode} {REGTEST_GENESIS} {{datadir}}",
+                process::shell_quote(&script.display().to_string())
             ),
             corpus: Vec::new(),
             port_range: (0, 0),
@@ -1978,7 +1988,7 @@ for line in sys.stdin:
             keep_temp: false,
             ibd_limit: None,
         };
-        let mut s = Session::start(&cfg, &sc, &dir, None).unwrap();
+        let mut s = Session::start(&cfg, &sc, &session_dir, None).unwrap();
         let verdict = s.run_case(0, true).unwrap();
         let delivered = s.delivered.contains(&sc.cases[0].block.hash);
         s.end();

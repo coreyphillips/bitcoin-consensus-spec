@@ -345,9 +345,9 @@ For each chain the runner starts a fresh `bitcoind -regtest` in a temporary data
 free ports from `--port-range` (default 29000-29999; ports something listens on are skipped),
 `-listen=1 -bind=127.0.0.1 -debug=net -connect=0 -v2transport=0`, no whitelist and no seeds,
 loads the chain, and runs the node command (`sh -c`) with `{network}` (`regtest`), `{datadir}` (an
-empty directory), `{peer}` (`127.0.0.1:<port>`) and `{stop_at}` (bitcoind's tip, except in
-`generate-300-stop-at-100`) substituted. It waits for the node's `{"event":"stopped",...}` line
-(`--node-timeout`, default 600 seconds), checks
+empty directory, as one shell-quoted argument), `{peer}` (`127.0.0.1:<port>`) and `{stop_at}`
+(bitcoind's tip, except in `generate-300-stop-at-100`) substituted. It waits for the node's
+`{"event":"stopped",...}` line (`--node-timeout`, default 600 seconds), checks
 that the node exits with status 0, and compares `tip` and `height` with `getbestblockhash` and
 `getblockcount`, and `hash_serialized_3`, when the node reports it, with `gettxoutsetinfo`. A node
 that keeps no UTXO set may leave `hash_serialized_3` out (PROTOCOL.md section 5); the chain is then

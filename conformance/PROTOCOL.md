@@ -362,10 +362,12 @@ The interop suite runs the implementation as a real node next to Bitcoin Core (t
 | Placeholder | Value |
 |---|---|
 | `{network}` | `main`, `testnet3`, `testnet4`, `signet` or `regtest` |
-| `{datadir}` | An empty directory for the node's data. A node that keeps no data may ignore it. |
+| `{datadir}` | An empty directory for the node's data, as one shell-quoted argument. A node that keeps no data may ignore it. |
 | `{peer}` | `host:port` of the Bitcoin Core node to connect to |
 | `{stop_at}` | Block hash (display order) at which to stop. It may be below the peer's tip. |
 | `{options}` | The network options object of section 4.8 as one shell-quoted JSON argument, `'{}'` when there are none |
+
+The runner fills the template in one pass, so text it inserts is never read for placeholders. `{datadir}` and `{options}` arrive already quoted, so the template must not quote them again. The runner refuses a template that writes `{datadir}` inside quotes. The directory's path may hold spaces or shell syntax.
 
 The runner skips, as a stated rule, every scenario that needs network options when the template has no `{options}`.
 
@@ -385,7 +387,7 @@ The peer-sync suite also runs the implementation as a real node, but the runner 
 | Placeholder | Value |
 |---|---|
 | `{network}` | `regtest` |
-| `{datadir}` | An empty directory for the node's data |
+| `{datadir}` | An empty directory for the node's data, as one shell-quoted argument |
 | `{peer}` | `127.0.0.1:port` of the runner |
 | `{options}` | As in section 5 |
 

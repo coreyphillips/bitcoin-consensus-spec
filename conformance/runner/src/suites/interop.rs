@@ -157,8 +157,69 @@ pub fn bitcoind_args(options: &Value) -> Result<Vec<String>, String> {
     Ok(args)
 }
 
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
+/// The node command of this suite and of peer-sync (PROTOCOL.md sections 5 and 5.1): `template`
+/// with its placeholders filled in. `{datadir}` and `{options}` each become one shell word, since
+/// the data directory is named after the corpus file. Without `stop_at`, `{stop_at}` stays as it is.
+pub fn node_command(
+    template: &str,
+    node_dir: &Path,
+    peer: &str,
+    stop_at: Option<&str>,
+    options: &Value,
+) -> String {
+    let datadir = crate::process::shell_quote(&node_dir.display().to_string());
+    let options = crate::process::shell_quote(&options.to_string());
+    let mut values = vec![
+        ("{network}", "regtest"),
+        ("{datadir}", datadir.as_str()),
+        ("{peer}", peer),
+        ("{options}", options.as_str()),
+    ];
+    if let Some(stop_at) = stop_at {
+        values.push(("{stop_at}", stop_at));
+    }
+    crate::process::expand(template, &values)
+}
+
+/// Refuses a node command that writes `{datadir}` inside quotes. [`node_command`] quotes the path
+/// itself, so a quoted placeholder would give the node added quote characters or a path split at
+/// each space.
+pub fn check_datadir_unquoted(template: &str) -> Result<(), String> {
+    let mut quote = None;
+    // For each open `(` or `$(`, the quoting its `)` returns to.
+    let mut outer = Vec::new();
+    let mut prev = ' ';
+    let mut chars = template.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        match (quote, c) {
+            (Some('\''), '\'') | (Some('"'), '"') => quote = None,
+            (None, '\'' | '"') => quote = Some(c),
+            (None | Some('"'), '\\') => {
+                chars.next();
+            }
+            // A comment: its quote characters open nothing.
+            (None, '#') if prev.is_whitespace() || ";&|()<>".contains(prev) => {
+                while chars.next_if(|&(_, c)| c != '\n').is_some() {}
+            }
+            // A command substitution starts unquoted, even inside double quotes.
+            (None | Some('"'), '$') if chars.next_if(|&(_, c)| c == '(').is_some() => {
+                outer.push(quote);
+                quote = None;
+            }
+            (None, '(') => outer.push(None),
+            (None, ')') => quote = outer.pop().flatten(),
+            (Some(_), '{') if template[i..].starts_with("{datadir}") => {
+                return Err(
+                    "the node command quotes {datadir}, which the runner already passes \
+                     as one shell-quoted argument: write it bare (PROTOCOL.md section 5)"
+                        .into(),
+                );
+            }
+            _ => {}
+        }
+        prev = c;
+    }
+    Ok(())
 }
 
 /// What the node reported.
@@ -416,13 +477,13 @@ fn run_chain(
         }
     }
 
-    let command = cfg
-        .node
-        .replace("{network}", "regtest")
-        .replace("{datadir}", &node_dir.display().to_string())
-        .replace("{peer}", &format!("127.0.0.1:{}", core.p2p_port))
-        .replace("{stop_at}", &tip)
-        .replace("{options}", &shell_quote(&chain.options.to_string()));
+    let command = node_command(
+        &cfg.node,
+        &node_dir,
+        &format!("127.0.0.1:{}", core.p2p_port),
+        Some(&tip),
+        &chain.options,
+    );
     let stderr_path = root.join("node-stderr.log");
     let outcome = run_node(&command, &stderr_path, cfg.node_timeout)?;
     core.stop();
@@ -573,6 +634,7 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
             cfg.bitcoind.display()
         ));
     }
+    check_datadir_unquoted(&cfg.node)?;
     let chains = chains(&cfg.corpus)?;
     if chains
         .iter()
@@ -728,10 +790,59 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The data directory reaches the node as one unchanged argument whatever the corpus file's
+    /// name holds, and a placeholder in it is not expanded.
     #[test]
-    fn shell_quoting() {
-        assert_eq!(shell_quote(r#"{"a":1}"#), r#"'{"a":1}'"#);
-        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+    fn node_command_arguments() {
+        let dir =
+            Path::new("/tmp/002-with space $(echo x) `echo y`; 'q' \"dq\" * {peer} {options}/node");
+        let options = json!({"a": "it's {datadir}"});
+        let template = "printf '[%s]' {network} {datadir} {peer} {stop_at} {options}";
+        let run = |command: &str| {
+            let out = crate::process::shell(command).output().unwrap();
+            assert!(out.status.success(), "{command}");
+            String::from_utf8(out.stdout).unwrap()
+        };
+        assert_eq!(
+            run(&node_command(
+                template,
+                dir,
+                "127.0.0.1:1",
+                Some("00ab"),
+                &options
+            )),
+            format!("[regtest][{}][127.0.0.1:1][00ab][{options}]", dir.display())
+        );
+        assert_eq!(
+            node_command("{stop_at}", dir, "127.0.0.1:1", None, &options),
+            "{stop_at}"
+        );
+    }
+
+    #[test]
+    fn quoted_datadir_is_refused() {
+        for ok in [
+            "node --datadir {datadir}",
+            r#"node '--x' "it's" {datadir}/x "y""#,
+            r#"node \' \" {datadir} "a\"b" '\'"#,
+            "# node's data path\nnode --datadir {datadir}",
+            r#"node --datadir "$(echo {datadir})" "$((1 + (2)))" {datadir}"#,
+        ] {
+            assert_eq!(check_datadir_unquoted(ok), Ok(()), "{ok}");
+        }
+        for quoted in [
+            "node --datadir '{datadir}'",
+            r#"node --datadir "{datadir}""#,
+            r#"node "--datadir={datadir}""#,
+            "node '--datadir={datadir}/x'",
+            r#"node "a\"b {datadir}""#,
+            "# node's data path\nnode --datadir '{datadir}'",
+            "node x#' {datadir}'",
+            r#"node --datadir "$(echo "{datadir}")""#,
+            r#"node "$( (echo a) ) {datadir}""#,
+        ] {
+            assert!(check_datadir_unquoted(quoted).is_err(), "{quoted}");
+        }
     }
 
     /// A node command that is stopped fails at once, not after the node timeout.
