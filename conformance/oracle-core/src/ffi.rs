@@ -120,6 +120,7 @@ extern "C" {
         challenge: *const u8,
         challenge_len: usize,
     ) -> c_int;
+    fn bcs_core_network_params(network: c_int, json: *mut *const c_char) -> c_int;
 }
 
 /// Network names of the protocol, in the order of the C ABI (cpp/pow.cpp).
@@ -465,4 +466,17 @@ pub fn signet_check(block: &[u8], challenge: &[u8]) -> Result<bool, CoreError> {
         )
     };
     rc_to_bool(rc)
+}
+
+/// Core's `CChainParams` of the network, as the JSON object of the protocol's `network_params`.
+pub fn network_params(network: &str) -> Result<String, CoreError> {
+    let code = network_code(network)?;
+    let mut json: *const c_char = std::ptr::null();
+    // SAFETY: the C++ side stores the text in a thread-local string and points `json` at it.
+    let rc = unsafe { bcs_core_network_params(code, &mut json) };
+    rc_to_bool(rc)?;
+    // SAFETY: on success `json` is a NUL-terminated string valid until the next call.
+    Ok(unsafe { CStr::from_ptr(json) }
+        .to_string_lossy()
+        .into_owned())
 }

@@ -1337,7 +1337,7 @@
   "old": "        flags = *exception;",
   "new": "        let _ = exception;",
   "expect": "survived",
-  "note": "The exceptions are three mainnet and testnet3 blocks, and no suite connects a block from those networks. #41 tracks a test."
+  "note": "The exceptions are three mainnet and testnet3 blocks, and no suite connects a block from those networks. The `params` suite checks the list, not that `block_script_flags` applies it. Catching it needs the block-connect vectors of #41."
  },
  {
   "name": "bip30-repeat-blocks-not-exempt",
@@ -1347,7 +1347,7 @@
   "old": "    (height == 91842 && hash_to_display(hash)",
   "new": "    (height == 91843 && hash_to_display(hash)",
   "expect": "survived",
-  "note": "Mainnet only, and no suite connects a mainnet block. #41 tracks a test."
+  "note": "Mainnet only, and no suite connects a mainnet block. Catching it needs the block-connect vectors of #41."
  },
  {
   "name": "bip30-limit-never",
@@ -1357,47 +1357,43 @@
   "old": "    if enforce_bip30 || height >= BIP34_IMPLIES_BIP30_LIMIT {",
   "new": "    if enforce_bip30 {",
   "expect": "survived",
-  "note": "No corpus chain reaches height 1,983,702. #41 tracks a test."
+  "note": "No corpus chain reaches height 1,983,702. Catching it needs the block-connect vectors of #41."
  },
  {
   "name": "mainnet-bip66-height-plus-one",
-  "kind": "block",
+  "kind": "script",
   "file": "12-network-parameters.md",
   "item": null,
   "old": "            consensus.bip66_height = 363_725;",
   "new": "            consensus.bip66_height = 363_726;",
-  "expect": "survived",
-  "note": "Mainnet only, and no suite connects a mainnet block. #41 tracks a test."
+  "expect": "caught"
  },
  {
   "name": "mainnet-csv-height-wrong",
-  "kind": "block",
+  "kind": "script",
   "file": "12-network-parameters.md",
   "item": null,
   "old": "            consensus.csv_height = 419_328;",
   "new": "            consensus.csv_height = 419_329;",
-  "expect": "survived",
-  "note": "Mainnet only, and no suite connects a mainnet block. #41 tracks a test."
+  "expect": "caught"
  },
  {
   "name": "testnet4-no-bip94",
-  "kind": "block",
+  "kind": "script",
   "file": "12-network-parameters.md",
   "item": 61,
   "old": "            consensus.pow_allow_min_difficulty_blocks = true;\n            consensus.enforce_bip94 = true;",
   "new": "            consensus.pow_allow_min_difficulty_blocks = true;\n            consensus.enforce_bip94 = false;",
-  "expect": "survived",
-  "note": "Testnet4 only, and no suite connects a testnet4 block; the corpus tests BIP94 through regtest's -test=bip94. #41 tracks a test."
+  "expect": "caught"
  },
  {
   "name": "halving-interval-main-wrong",
-  "kind": "block",
+  "kind": "script",
   "file": "12-network-parameters.md",
   "item": null,
   "old": "        subsidy_halving_interval: 210_000,",
   "new": "        subsidy_halving_interval: 210_001,",
-  "expect": "survived",
-  "note": "Every network but regtest uses it, and no suite connects a block from one. #41 tracks a test."
+  "expect": "caught"
  },
  {
   "name": "utxo-hash-coinbase-bit-dropped",

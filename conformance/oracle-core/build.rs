@@ -227,6 +227,7 @@ fn main() {
         .file(manifest.join("cpp/check.cpp"))
         .file(manifest.join("cpp/pow.cpp"))
         .file(manifest.join("cpp/signet.cpp"))
+        .file(manifest.join("cpp/params.cpp"))
         .file(manifest.join("cpp/log.cpp"));
     for file in CORE_SOURCES {
         cpp.file(src.join(file));

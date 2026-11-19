@@ -50,6 +50,8 @@ jobs:
         run: ./target/release/bcs-conformance --impl conformance/oracle-core/target/release/oracle-core-harness --suite pow --fail-on-level2
       - name: The committed signet vectors are the oracle's answers
         run: ./target/release/bcs-conformance --impl conformance/oracle-core/target/release/oracle-core-harness --suite signet --fail-on-level2
+      - name: The committed params vectors are the oracle's answers
+        run: ./target/release/bcs-conformance --impl conformance/oracle-core/target/release/oracle-core-harness --suite params --fail-on-level2
 
   corpus:
     runs-on: ubuntu-latest

@@ -1,6 +1,5 @@
-//! The `custom` suite: targeted cases in `conformance/vectors/custom/*.jsonl`. The `pow` and
-//! `signet` suites run `conformance/vectors/pow/*.jsonl` and `conformance/vectors/signet/*.jsonl`
-//! the same way.
+//! The `custom` suite: targeted cases in `conformance/vectors/custom/*.jsonl`. The `pow`, `signet`
+//! and `params` suites run `conformance/vectors/<suite>/*.jsonl` the same way.
 //!
 //! Each line is `{"name": ..., "request": <a PROTOCOL.md request without id>, "expect": <response
 //! fields>}`. The request is sent as it is. Every expected field must match the response:

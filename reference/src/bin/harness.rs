@@ -158,6 +158,7 @@ const OPS: &[&str] = &[
     "pow_check",
     "pow_next_work",
     "signet_check",
+    "network_params",
     "chain_reset",
     "chain_process_block",
     "chain_process_headers",
@@ -307,6 +308,47 @@ fn handle(op: &str, req: &Fields, chain: &mut Option<ChainState>) -> Result<Opti
             let parent = headers[headers.len() - 1];
             let bits = next_work_required(&consensus, parent_height as i32, &parent, &ancestor, time);
             obj(vec![("bits", Json::Int(bits as i128))])
+        }
+        "network_params" => {
+            let network = parse_network(get_str(req, "network")?).map_err(BadRequest)?;
+            let params = network_params(network, &NetworkOptions::default());
+            let c = &params.consensus;
+            let hash = |h: &Hash256| Json::Str(hash_to_display(h));
+            let int = |n: i64| Json::Int(n as i128);
+            let mut exceptions: Vec<(String, ScriptFlags)> =
+                c.script_flag_exceptions.iter().map(|(h, f)| (hash_to_display(h), *f)).collect();
+            exceptions.sort();
+            let exceptions = exceptions
+                .into_iter()
+                .map(|(h, flags)| {
+                    let names = FLAG_NAMES
+                        .iter()
+                        .filter(|(_, bit)| flags & bit != 0)
+                        .map(|(n, _)| Json::Str(n.to_string()))
+                        .collect();
+                    Json::Arr(vec![Json::Str(h), Json::Arr(names)])
+                })
+                .collect();
+            obj(vec![
+                ("genesis_hash", hash(&c.genesis_hash)),
+                ("subsidy_halving_interval", int(c.subsidy_halving_interval.into())),
+                ("bip34_height", int(c.bip34_height.into())),
+                ("bip34_hash", hash(&c.bip34_hash)),
+                ("bip65_height", int(c.bip65_height.into())),
+                ("bip66_height", int(c.bip66_height.into())),
+                ("csv_height", int(c.csv_height.into())),
+                ("segwit_height", int(c.segwit_height.into())),
+                ("pow_limit", Json::Str(hex_encode(&c.pow_limit.to_be_bytes()))),
+                ("pow_target_timespan", int(c.pow_target_timespan)),
+                ("pow_target_spacing", int(c.pow_target_spacing)),
+                ("pow_allow_min_difficulty_blocks", Json::Bool(c.pow_allow_min_difficulty_blocks)),
+                ("pow_no_retargeting", Json::Bool(c.pow_no_retargeting)),
+                ("enforce_bip94", Json::Bool(c.enforce_bip94)),
+                ("script_flag_exceptions", Json::Arr(exceptions)),
+                ("signet_challenge", c.signet_challenge.as_ref().map_or(Json::Null, |s| Json::Str(hex_encode(s)))),
+                ("message_start", Json::Str(hex_encode(&params.magic))),
+                ("default_port", int(params.default_port.into())),
+            ])
         }
         "signet_check" => {
             let bytes = get_hex(req, "block")?;
