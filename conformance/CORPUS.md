@@ -19,6 +19,7 @@ conformance/vectors/blocks/blobs/<sha256>.blk.gz
 - Unknown fields must be ignored. Field names starting with an underscore never appear.
 - `conformance/vectors/chainwork/most-work.jsonl.gz` is in the same format but was not recorded: its blocks are mined by a script, on a custom signet, so that the chain with most work is shorter than another chain (`vectors/chainwork/README.md`). Its expectations were confirmed by replaying it through Bitcoin Core v32.1. The `corpus` suite replays it with the recorded scenarios.
 - `conformance/vectors/signet/signet-blocks.jsonl.gz` is mined and signed the same way, on a custom signet whose challenge is a key, so that blocks without a valid solution must be rejected (`vectors/signet/README.md`). It was confirmed the same way and is replayed with them too.
+- `conformance/vectors/mtp/median-time-past.jsonl.gz` is mined by a script on regtest, so that blocks near genesis are decided by the upper median of an even number of timestamps (`vectors/mtp/README.md`). It was confirmed the same way and is replayed with them too.
 
 Encodings follow `PROTOCOL.md` section 3: bytes are lowercase hex, hashes are in display order, integers are JSON numbers, times are Unix seconds.
 
