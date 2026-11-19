@@ -1,7 +1,7 @@
-//! The commands the runner starts through `sh -c`: the harness (`--impl`, PROTOCOL.md section 1)
-//! and the node commands of the interop and peer-sync suites (sections 5 and 5.1). Each runs in a
-//! process group of its own, so ending one reaches every process it started: a wrapper killed
-//! while its node runs on leaves nothing behind.
+//! The processes the runner starts: through `sh -c`, the harness (`--impl`, PROTOCOL.md section 1)
+//! and the node commands of the interop and peer-sync suites (sections 5 and 5.1), and the regtest
+//! bitcoind of those suites. Each runs in a process group of its own, so ending one reaches every
+//! process it started: a wrapper killed while its node runs on leaves nothing behind.
 //!
 //! A process group of its own is also out of the terminal's reach, so a Ctrl-C or Ctrl-\ would no
 //! longer stop it. While a group runs it is registered, and SIGINT, SIGQUIT, SIGTERM or SIGHUP to
@@ -39,10 +39,10 @@ pub const STOP_CHECK: Duration = Duration::from_millis(500);
 const SLOTS: usize = 256;
 static GROUPS: [AtomicI32; SLOTS] = [const { AtomicI32::new(0) }; SLOTS];
 
-/// `sh -c command`, to start in a process group of its own with [`spawn`].
+/// `sh -c command`, to start with [`spawn`].
 pub fn shell(command: &str) -> Command {
     let mut c = Command::new("sh");
-    c.arg("-c").arg(command).process_group(0);
+    c.arg("-c").arg(command);
     c
 }
 
@@ -120,10 +120,10 @@ impl Group {
     }
 }
 
-/// Starts `command` (from [`shell`]) and registers its process group.
+/// Starts `command` in a process group of its own and registers that group.
 pub fn spawn(command: &mut Command) -> io::Result<Group> {
     setup();
-    let child = command.spawn()?;
+    let child = command.process_group(0).spawn()?;
     let group = child.id() as i32;
     for slot in &GROUPS {
         if slot
@@ -172,6 +172,12 @@ pub fn end(child: &mut Group) {
     for slot in &GROUPS {
         let _ = slot.compare_exchange(group, 0, Ordering::SeqCst, Ordering::SeqCst);
     }
+}
+
+/// Whether `group` is registered, so that a signal to the runner ends it.
+#[cfg(test)]
+pub fn registered(group: i32) -> bool {
+    GROUPS.iter().any(|s| s.load(Ordering::SeqCst) == group)
 }
 
 /// A stopped process in a command's process group. Displayed as the rest of a sentence that
