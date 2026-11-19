@@ -1,11 +1,14 @@
 """Writes the block-connect suite's cases: historic blocks with the coins they spend, and
 constructed blocks around the BIP34-implies-BIP30 limit.
 
-Usage: python3 -I generate.py <cache-dir> <out.jsonl.gz>
+Usage: [ELECTRUM=host:port,...] python3 -I generate.py <cache-dir> <out.jsonl.gz>
 
-Blocks, the transactions they spend and ancestor timestamps come from a public Esplora API
-(mempool.space) and are cached as fetched in <cache-dir>, so a second run reads nothing from the
-network. Every historic block is on the chain Bitcoin Core v32.1 accepts, so its verdict is valid.
+Blocks and ancestor timestamps come from a public Esplora API (mempool.space), and so do the
+transactions they spend unless ELECTRUM names Electrum servers (SSL ports) for mainnet. Esplora
+serves one spent transaction per request and slows down after a few thousand, so the large blocks
+need ELECTRUM: those servers answer pipelined requests, and also give the ancestor timestamps.
+Everything is cached in <cache-dir>, so a second run reads nothing from the network. Every
+historic block is on the chain Bitcoin Core v32.1 accepts, so its verdict is valid.
 The constructed cases at heights 1,983,701 and 1,983,702 cannot come from a chain; their verdicts
 follow `ConnectBlock` in Core's `src/validation.cpp` (see README.md).
 """
@@ -15,8 +18,11 @@ import gzip
 import hashlib
 import json
 import os
+import socket
+import ssl
 import struct
 import sys
+import threading
 import time
 import urllib.request
 
@@ -36,6 +42,17 @@ HISTORIC = [
     ("testnet3", 394, "00000000dd30457c001f4095d208cc1296b0eed002427aa599874af7a432b105", "testnet3 script flag exception: no P2SH"),
     ("main", 363724, "00000000000000000fb32e0d606a42615d44d93449a36ba64ee018de6009f898", "below the BIP66 height"),
     ("main", 363725, "00000000000000000379eaa19dce8c9b722d46ae6a57c2f1a988119488b50931", "BIP66 height"),
+    ("main", 210000, "000000000000048b95347e83192f69cf0366076336c639f9b7228e9ba171342e", "first halving"),
+    ("main", 227930, "0000000000000251b3834c8d5b9c041bfaa0fedb93c0f16099d0072ed6b629d6", "below the BIP34 height"),
+    ("main", 227931, "000000000000024b89b42a942fe0d9fea3bb44ab7bd1b19115dd6a759c0808b8", "BIP34 height"),
+    ("main", 388380, "000000000000000009f886db2c7c12a497603e86378bace3ead93d350be3f38c", "below the BIP65 height"),
+    ("main", 388381, "000000000000000004c2b624ed5d7756c508d90fd0da2c7c679febfa6c4735f0", "BIP65 height"),
+    ("main", 419327, "0000000000000000051804b4c2da5298c4573386bf1d4242bf0e26a49ec32e42", "below the CSV height"),
+    ("main", 419328, "000000000000000004a1b34462cb8aeebd5799177f7a29cf28f2d1961716b5b5", "CSV height"),
+    ("main", 481823, "000000000000000000cbeff0b533f8e1189cf09dfbebf57a8ebe349362811b80", "below the segwit height"),
+    ("main", 481824, "0000000000000000001c8018d9cb3b742ef25114f27563e3fc4a1902167f9893", "segwit height"),
+    ("main", 692261, "0000000000000000000f14c35b2d841e986ab5441de8c585d5ffe55ea1e395ad",
+     "script flag exception: no taproot"),
 ]
 
 # The coinbase a BIP30 exempt block repeats: it is still unspent when the repeat is connected.
@@ -95,7 +112,8 @@ class Reader:
 
 
 def parse_tx(r):
-    """Returns (txid, version, inputs [(prev_txid_display, vout, sequence)], output count)."""
+    """Returns (txid, version, inputs [(prev_txid_display, vout, sequence)],
+    outputs [(amount, script_pubkey hex)])."""
     start = r.i
     version = r.u32()
     segwit = r.b[r.i] == 0 and r.b[r.i + 1] == 1
@@ -108,10 +126,10 @@ def parse_tx(r):
         vout = r.u32()
         r.take(r.varint())
         inputs.append((display(prev), vout, r.u32()))
-    outputs = r.varint()
-    for _ in range(outputs):
-        r.take(8)
-        r.take(r.varint())
+    outputs = []
+    for _ in range(r.varint()):
+        amount = struct.unpack("<q", r.take(8))[0]
+        outputs.append((amount, r.take(r.varint()).hex()))
     body_end = r.i
     if segwit:
         for _ in inputs:
@@ -135,6 +153,133 @@ def block_mtp(network, block_hash):
     return fetch(network, f"/block/{block_hash}")["mediantime"]
 
 
+ELECTRUM = [s for s in os.environ.get("ELECTRUM", "").split(",") if s]
+_connections = threading.local()
+
+
+def electrum(requests):
+    """Sends [(method, params)] down one connection to an Electrum server, pipelined, and returns
+    the results in order. A failed batch is sent again, to the next server."""
+    conns = _connections.__dict__.setdefault("conns", {})
+    for attempt in range(3 * len(ELECTRUM)):
+        server = ELECTRUM[(attempt + threading.get_ident()) % len(ELECTRUM)]
+        try:
+            if server not in conns:
+                host, port = server.rsplit(":", 1)
+                # Public servers mostly have self-signed certificates. Nothing they send is taken
+                # on trust beyond what Esplora would be: transactions are checked against their
+                # txids, and heights against the hash of the header at that height.
+                ctx = ssl.create_default_context()
+                ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
+                sock = socket.create_connection((host, int(port)), timeout=20)
+                conns[server] = ctx.wrap_socket(sock, server_hostname=host).makefile("rwb")
+                requests = [("server.version", ["bcs-generate", "1.4"])] + requests
+            f = conns[server]
+            for i, (method, params) in enumerate(requests):
+                f.write(json.dumps({"jsonrpc": "2.0", "id": i, "method": method, "params": params}).encode() + b"\n")
+            f.flush()
+            results = {}
+            while len(results) < len(requests):
+                line = f.readline()
+                if not line:
+                    raise ConnectionError("connection closed")
+                msg = json.loads(line)
+                if msg.get("id") is None:
+                    continue  # a subscription notification
+                if msg.get("error"):
+                    raise RuntimeError(msg["error"])
+                results[msg["id"]] = msg["result"]
+            out = [results[i] for i in range(len(requests))]
+            return out[1:] if requests[0][0] == "server.version" else out
+        except Exception as e:
+            conns.pop(server, None)
+            requests = [r for r in requests if r[0] != "server.version"]
+            error = f"{server}: {e}"
+            print(f"electrum {error}, sending again", file=sys.stderr)
+            time.sleep(min(2 ** attempt, 30))
+    raise RuntimeError(f"electrum: {error}")
+
+
+def cached(network, kind, name, compute):
+    key = os.path.join(CACHE, network, kind, name)
+    if os.path.exists(key):
+        with open(key) as f:
+            return json.load(f)
+    value = compute()
+    os.makedirs(os.path.dirname(key), exist_ok=True)
+    with open(key + ".tmp", "w") as f:
+        json.dump(value, f)
+    os.replace(key + ".tmp", key)
+    return value
+
+
+def electrum_headers(start, count):
+    """`count` headers from `start`, each linked to the one before it."""
+    raw = bytes.fromhex(electrum([("blockchain.block.headers", [start, count])])[0]["hex"])
+    headers = [raw[i:i + 80] for i in range(0, len(raw), 80)]
+    if len(headers) != count or any(headers[i][4:36] != sha256d(headers[i - 1]) for i in range(1, count)):
+        raise ValueError(f"electrum: headers {start} to {start + count - 1} do not form a chain")
+    return headers
+
+
+def electrum_txs(txids):
+    """{txid: {"hex", "height"}} for transactions in blocks."""
+    replies = electrum([("blockchain.headers.subscribe", [])]
+                       + [("blockchain.transaction.get", [t, True]) for t in txids])
+    tip = replies[0]["height"]
+    out = {}
+    for txid, reply in zip(txids, replies[1:]):
+        raw = bytes.fromhex(reply["hex"])
+        r = Reader(raw)
+        if parse_tx(r)[0] != txid or r.i != len(raw):
+            raise ValueError(f"electrum: {txid}: the served transaction has another txid")
+        out[txid] = {"hex": reply["hex"], "height": tip - reply["confirmations"] + 1, "block": reply["blockhash"]}
+    # A block found during the batch makes a height one too low.
+    heights = sorted({h for tx in out.values() for h in (tx["height"], tx["height"] + 1)})
+    headers = electrum([("blockchain.block.header", [h]) for h in heights])
+    hashes = {display(sha256d(bytes.fromhex(header))): h for h, header in zip(heights, headers)}
+    for txid, tx in out.items():
+        if hashes.get(tx["block"]) not in (tx["height"], tx["height"] + 1):
+            raise ValueError(f"electrum: {txid}: no block {tx['block']} at height {tx['height']}")
+        tx["height"] = hashes[tx["block"]]
+    return {t: {"hex": tx["hex"], "height": tx["height"]} for t, tx in out.items()}
+
+
+def spent_txs(network, txids, pool):
+    """{txid: (outputs [(amount, script_pubkey hex)], height, coinbase)}."""
+    if ELECTRUM and network == "main":
+        todo = [t for t in txids if not os.path.exists(os.path.join(CACHE, network, "electrum-tx", t))]
+        batches = [todo[i:i + 50] for i in range(0, len(todo), 50)]
+
+        # Cached by the worker, so a batch that fails does not lose those that finished after it.
+        def fetch_batch(batch):
+            for t, tx in electrum_txs(batch).items():
+                cached(network, "electrum-tx", t, lambda: tx)
+        list(pool.map(fetch_batch, batches))
+        out = {}
+        for t in txids:
+            tx = cached(network, "electrum-tx", t, None)
+            _, _, ins, outputs = parse_tx(Reader(bytes.fromhex(tx["hex"])))
+            out[t] = (outputs, tx["height"], ins[0][:2] == ("00" * 32, 0xffffffff))
+        return out
+    out = {}
+    for t, tx in zip(txids, pool.map(lambda t: fetch(network, f"/tx/{t}"), txids)):
+        out[t] = ([(o["value"], o["scriptpubkey"]) for o in tx["vout"]], tx["status"]["block_height"],
+                  tx["vin"][0]["is_coinbase"])
+    return out
+
+
+def ancestor(network, height):
+    """(hash, median time past) of the block at `height`."""
+    if ELECTRUM and network == "main":
+        def compute():
+            headers = electrum_headers(height - 10, 11)
+            return [display(sha256d(headers[-1])), sorted(struct.unpack("<I", h[68:72])[0] for h in headers)[5]]
+        return tuple(cached(network, "electrum-ancestor", str(height), compute))
+    block_hash = fetch(network, f"/block-height/{height}")
+    return block_hash, block_mtp(network, block_hash)
+
+
 def historic_case(network, height, block_hash, name, pool):
     raw = fetch(network, f"/block/{block_hash}/raw", binary=True)
     header, txs = parse_block(raw)
@@ -145,7 +290,7 @@ def historic_case(network, height, block_hash, name, pool):
         raise ValueError(f"{block_hash}: height {info['height']}, not {height}")
     created = {txid for txid, _, _, _ in txs}
     prev_txids = sorted({p for _, _, ins, _ in txs[1:] for p, _, _ in ins if p not in created})
-    prev = dict(zip(prev_txids, pool.map(lambda t: fetch(network, f"/tx/{t}"), prev_txids)))
+    prev = spent_txs(network, prev_txids, pool)
 
     coins = {}
     bip68_heights = set()
@@ -153,12 +298,11 @@ def historic_case(network, height, block_hash, name, pool):
         for p, vout, sequence in ins:
             if p in created:
                 continue
-            tx = prev[p]
-            out = tx["vout"][vout]
-            coin_height = tx["status"]["block_height"]
-            coins[(p, vout)] = {"txid": p, "vout": vout, "amount": out["value"],
-                                "script_pubkey": out["scriptpubkey"], "height": coin_height,
-                                "coinbase": tx["vin"][0]["is_coinbase"]}
+            outputs, coin_height, coinbase = prev[p]
+            amount, script_pubkey = outputs[vout]
+            coins[(p, vout)] = {"txid": p, "vout": vout, "amount": amount,
+                                "script_pubkey": script_pubkey, "height": coin_height,
+                                "coinbase": coinbase}
             # Chapter 08 calculate_sequence_locks reads the median time past before the coin's block.
             if height >= CSV_HEIGHT[network] and version >= 2 and not sequence & (1 << 31):
                 bip68_heights.add(max(coin_height - 1, 0))
@@ -166,12 +310,11 @@ def historic_case(network, height, block_hash, name, pool):
         old_hash = next(h for n, ht, h, _ in HISTORIC if ht == OVERWRITTEN[height])
         old_raw = fetch(network, f"/block/{old_hash}/raw", binary=True)
         _, old_txs = parse_block(old_raw)
-        old = fetch(network, f"/tx/{old_txs[0][0]}")
         if old_txs[0][0] != txs[0][0]:
             raise ValueError(f"{height}: the coinbase does not repeat that of {OVERWRITTEN[height]}")
-        for vout, out in enumerate(old["vout"]):
-            coins[(old_txs[0][0], vout)] = {"txid": old_txs[0][0], "vout": vout, "amount": out["value"],
-                                           "script_pubkey": out["scriptpubkey"],
+        for vout, (amount, script_pubkey) in enumerate(old_txs[0][3]):
+            coins[(old_txs[0][0], vout)] = {"txid": old_txs[0][0], "vout": vout, "amount": amount,
+                                           "script_pubkey": script_pubkey,
                                            "height": OVERWRITTEN[height], "coinbase": True}
 
     parent = display(header[4:36])
@@ -179,9 +322,8 @@ def historic_case(network, height, block_hash, name, pool):
     bip34_height, bip34_hash = BIP34[network]
     if height > bip34_height:
         ancestors[bip34_height] = (bip34_hash, block_mtp(network, bip34_hash))
-    for h in sorted(bip68_heights - set(ancestors)):
-        ancestor = fetch(network, f"/block-height/{h}")
-        ancestors[h] = (ancestor, block_mtp(network, ancestor))
+    missing = sorted(bip68_heights - set(ancestors))
+    ancestors.update(zip(missing, pool.map(lambda h: ancestor(network, h), missing)))
     request = {
         "op": "block_connect",
         "network": network,
@@ -243,7 +385,7 @@ def main():
     os.makedirs(CACHE, exist_ok=True)
     only = os.environ.get("ONLY")
     cases = []
-    with concurrent.futures.ThreadPoolExecutor(6) as pool:
+    with concurrent.futures.ThreadPoolExecutor(8) as pool:
         for network, height, block_hash, name in HISTORIC:
             if only and str(height) not in only.split(","):
                 continue

@@ -1340,6 +1340,16 @@
   "note": "Caught by the block-connect vectors (#115): blocks 170060 on mainnet and 394 on testnet3 fail under `P2SH`."
  },
  {
+  "name": "taproot-exception-keeps-taproot",
+  "kind": "block",
+  "file": "12-network-parameters.md",
+  "item": 49,
+  "old": "(hash_from_hex(\"0000000000000000000f14c35b2d841e986ab5441de8c585d5ffe55ea1e395ad\"), VERIFY_P2SH | VERIFY_WITNESS),",
+  "new": "(hash_from_hex(\"0000000000000000000f14c35b2d841e986ab5441de8c585d5ffe55ea1e395ad\"), VERIFY_P2SH | VERIFY_WITNESS | VERIFY_TAPROOT),",
+  "expect": "caught",
+  "note": "Caught by the block-connect vectors (#126): mainnet block 692261 fails under `TAPROOT`."
+ },
+ {
   "name": "bip30-repeat-blocks-not-exempt",
   "kind": "block",
   "file": "10-blocks.md",
