@@ -80,6 +80,7 @@ Rules Bitcoin Core v32.1 enforces (Core: `PeerManagerImpl::ProcessMessage`, `src
 
 - The first bytes on a connection decide the transport: Bitcoin Core treats a connection whose first message is not a version 1 `version` message as a version 2 (BIP324) handshake. The first message MUST be `version`.
 - The peer's protocol version must be at least 31800, and its nonce must not equal one Bitcoin Core sent (that would be a connection to itself).
+- A message received before the peer's `version` is ignored, `verack` included, and so is a second `version`.
 - Before `verack`, only `version`, `verack`, `wtxidrelay`, `sendaddrv2`, `sendtxrcncl`, `feature`, `sendheaders` and `sendcmpct` are processed; anything else is ignored.
 - `wtxidrelay`, `sendaddrv2` and `feature` received **after** `verack` cause a disconnect. A node that sends them must send them between its `version` and its `verack`.
 - A `feature` message (protocol version 70017) from a peer whose negotiated version is below 70017, or with a malformed payload, causes a disconnect. A node that advertises 70016 MUST NOT send `feature`.
@@ -413,7 +414,7 @@ pub fn decode_inv(payload: &[u8]) -> Result<Vec<(u32, Hash256)>, DecodeError> {
 
 ## 14.5 A minimal synchronizing peer
 
-The function below connects to one peer, performs the handshake, downloads headers and blocks until the active tip equals `stop_at` (in headers-only mode, until the header `stop_at` is known), and answers `ping` and `getheaders` along the way. Without `stop_at`, it stops when the peer has no more headers (headers-only mode) or when nothing has happened for `idle_limit` seconds. Until the peer's `verack` arrives it ignores every message but `version` and `verack`, and it fails with an error if the handshake has not completed 60 seconds after the connection opened. Nothing the peer sends can move that deadline. It also fails with an error when it makes no progress for `idle_limit` seconds with a target still unreached or a `getheaders` request still unanswered, when the peer stops reading for `idle_limit` seconds, when a requested block does not arrive within `BLOCK_REQUEST_TIMEOUT_SECS`, when the peer sends a block that cannot be decoded or that fails validation, and when the peer breaks the framing rules. The idle limit counts from the handshake, whether or not the peer has sent its last headers, so no peer can keep the node waiting forever. After a full batch of headers the node asks for more, unless the batch added no header: asking again would only bring the same batch back. While a target is unknown it asks for headers again every 10 seconds, because a peer that is itself still synchronizing does not announce new blocks. The target may be below the peer's tip. Once its header is known, only it and its ancestors are requested, and the target is checked after every message, so the blocks it asked for never carry the tip past the target. It is deliberately simple: one peer, one connection, blocking input and output. It is the reference behaviour the conformance suite's interop test exercises against Bitcoin Core; a production node adds multiple peers, peer discovery, retries elsewhere and persistence.
+The function below connects to one peer, performs the handshake, downloads headers and blocks until the active tip equals `stop_at` (in headers-only mode, until the header `stop_at` is known), and answers `ping` and `getheaders` along the way. Without `stop_at`, it stops when the peer has no more headers (headers-only mode) or when nothing has happened for `idle_limit` seconds. Synchronization starts only after the node has accepted the peer's `version`, answered it with `verack` and received the peer's `verack`. Until then it ignores every other message, including a `verack` that arrives before the peer's `version`, and it ignores a second `version` at any time. It fails with an error if the handshake has not completed 60 seconds after the connection opened. Nothing the peer sends can move that deadline. It also fails with an error when it makes no progress for `idle_limit` seconds with a target still unreached or a `getheaders` request still unanswered, when the peer stops reading for `idle_limit` seconds, when a requested block does not arrive within `BLOCK_REQUEST_TIMEOUT_SECS`, when the peer sends a block that cannot be decoded or that fails validation, and when the peer breaks the framing rules. The idle limit counts from the handshake, whether or not the peer has sent its last headers, so no peer can keep the node waiting forever. After a full batch of headers the node asks for more, unless the batch added no header: asking again would only bring the same batch back. While a target is unknown it asks for headers again every 10 seconds, because a peer that is itself still synchronizing does not announce new blocks. The target may be below the peer's tip. Once its header is known, only it and its ancestors are requested, and the target is checked after every message, so the blocks it asked for never carry the tip past the target. It is deliberately simple: one peer, one connection, blocking input and output. It is the reference behaviour the conformance suite's interop test exercises against Bitcoin Core; a production node adds multiple peers, peer discovery, retries elsewhere and persistence.
 
 ```rust
 /// Outcome of a successful synchronization run.
@@ -485,6 +486,8 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
     send_by_deadline(&mut stream, "version", &encode_version(&version))?;
 
     let mut buffer: Vec<u8> = Vec::new();
+    // The peer's `version` passed its check and the node answered it with `verack`.
+    let mut version_accepted = false;
     let mut handshake_done = false;
     // A getheaders request is outstanding.
     let mut requested_headers = false;
@@ -536,21 +539,19 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
                 bound_by_deadline(&stream)?;
             }
             match message.command.as_str() {
-                "version" => {
+                // A repeated `version` is ignored (14.2).
+                "version" if !version_accepted => {
                     let theirs = decode_version(&message.payload).map_err(|e| Error::new(ErrorKind::InvalidData, e.0))?;
                     if theirs.version < MIN_PEER_PROTO_VERSION {
                         return Err(Error::new(ErrorKind::InvalidData, "peer version too old"));
                     }
-                    if handshake_done {
-                        send(&mut stream, "sendheaders", &[])?;
-                        send(&mut stream, "verack", &[])?;
-                    } else {
-                        send_by_deadline(&mut stream, "sendheaders", &[])?;
-                        send_by_deadline(&mut stream, "verack", &[])?;
-                    }
+                    send_by_deadline(&mut stream, "sendheaders", &[])?;
+                    send_by_deadline(&mut stream, "verack", &[])?;
+                    version_accepted = true;
                 }
-                // A repeated `verack` is ignored, so it cannot restart the idle clock.
-                "verack" if !handshake_done => {
+                // A `verack` before the peer's `version` is ignored (14.2). So is a repeated one, so it
+                // cannot restart the idle clock.
+                "verack" if version_accepted && !handshake_done => {
                     handshake_done = true;
                     stream.set_write_timeout(Some(Duration::from_secs(idle_limit)))?;
                     // The idle limit counts from here.
@@ -709,7 +710,7 @@ Default ports are in chapter 12. Peer discovery is not part of consensus; any so
 
 ## 14.7 Tests
 
-Each test plays a peer that never lets the synchronization finish on its own: one that never answers `getheaders`, one that answers every `getheaders` with the same 2,000 headers, and one that stops reading. `sync_from_peer` must return once its idle limit has passed. One more test plays a peer that sends a header before its `verack`; the node must not take it.
+Each test plays a peer that never lets the synchronization finish on its own: one that never answers `getheaders`, one that answers every `getheaders` with the same 2,000 headers, and one that stops reading. `sync_from_peer` must return once its idle limit has passed. Two more play a peer that sends a header before the handshake completes: one sends it before its `verack`, the other sends `verack` and the header before its `version`. The node must take neither header.
 
 ```rust
 #[cfg(test)]
@@ -725,10 +726,35 @@ mod sync_tests {
         ChainState::new(network_params(Network::Regtest, &NetworkOptions::default()))
     }
 
-    /// Plays the peer on a free local port: completes the handshake, writing `before_verack` between
-    /// its `version` and its `verack`, then hands every later message to `script`. Returns the
-    /// address to connect to.
-    fn scripted_peer(before_verack: Vec<u8>, mut script: impl FnMut(&mut TcpStream, &Message) + Send + 'static) -> String {
+    /// The peer's `version`, then `before_verack`, then its `verack`.
+    fn handshake(before_verack: &[u8]) -> Vec<u8> {
+        let magic = regtest().params.magic;
+        let version = VersionMessage {
+            version: PROTOCOL_VERSION,
+            services: NODE_NETWORK | NODE_WITNESS,
+            timestamp: 0,
+            nonce: 1,
+            user_agent: Vec::new(),
+            start_height: 0,
+            relay: false,
+        };
+        [encode_message(magic, "version", &encode_version(&version)), before_verack.to_vec(), encode_message(magic, "verack", &[])].concat()
+    }
+
+    /// A regtest header extending genesis.
+    fn header_on_genesis() -> BlockHeader {
+        let params = regtest().params;
+        let genesis = params.genesis.header;
+        let mut header = BlockHeader { version: 0x2000_0000, prev_block: genesis.hash(), merkle_root: [0; 32], time: genesis.time + 600, bits: genesis.bits, nonce: 0 };
+        while !check_proof_of_work(&header.hash(), header.bits, params.consensus.pow_limit) {
+            header.nonce += 1;
+        }
+        header
+    }
+
+    /// Plays the peer on a free local port: answers the node's `version` with `reply`, then hands
+    /// every later message to `script`. Returns the address to connect to.
+    fn scripted_peer(reply: Vec<u8>, mut script: impl FnMut(&mut TcpStream, &Message) + Send + 'static) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap().to_string();
         let magic = regtest().params.magic;
@@ -746,18 +772,7 @@ mod sync_tests {
                 }
                 let message = decode_frame(&frame, magic).unwrap().unwrap();
                 if message.command == "version" {
-                    let version = VersionMessage {
-                        version: PROTOCOL_VERSION,
-                        services: NODE_NETWORK | NODE_WITNESS,
-                        timestamp: 0,
-                        nonce: 1,
-                        user_agent: Vec::new(),
-                        start_height: 0,
-                        relay: false,
-                    };
-                    let _ = stream.write_all(&encode_message(magic, "version", &encode_version(&version)));
-                    let _ = stream.write_all(&before_verack);
-                    let _ = stream.write_all(&encode_message(magic, "verack", &[]));
+                    let _ = stream.write_all(&reply);
                 } else {
                     script(&mut stream, &message);
                 }
@@ -780,7 +795,7 @@ mod sync_tests {
     #[test]
     fn unanswered_getheaders_ends_at_the_idle_limit() {
         for stop_at in [None, Some([1u8; 32])] {
-            let (end, _) = sync(scripted_peer(Vec::new(), |_, _| {}), stop_at, 1, true);
+            let (end, _) = sync(scripted_peer(handshake(&[]), |_, _| {}), stop_at, 1, true);
             assert_eq!(end.unwrap_err().kind(), ErrorKind::TimedOut);
         }
     }
@@ -803,7 +818,7 @@ mod sync_tests {
             let requests = Arc::new(AtomicUsize::new(0));
             let counter = requests.clone();
             let reply = reply.clone();
-            let address = scripted_peer(Vec::new(), move |stream, message| {
+            let address = scripted_peer(handshake(&[]), move |stream, message| {
                 if message.command == "getheaders" {
                     counter.fetch_add(1, Ordering::SeqCst);
                     let _ = stream.write_all(&reply);
@@ -821,22 +836,32 @@ mod sync_tests {
 
     #[test]
     fn headers_before_verack_are_ignored() {
-        let params = regtest().params;
-        let genesis = params.genesis.header;
-        let mut header = BlockHeader { version: 0x2000_0000, prev_block: genesis.hash(), merkle_root: [0; 32], time: genesis.time + 600, bits: genesis.bits, nonce: 0 };
-        while !check_proof_of_work(&header.hash(), header.bits, params.consensus.pow_limit) {
-            header.nonce += 1;
-        }
-        let early = encode_message(params.magic, "headers", &encode_headers(&[header]));
-        let empty = encode_message(params.magic, "headers", &encode_headers(&[]));
-        let address = scripted_peer(early, move |stream, message| {
+        let magic = regtest().params.magic;
+        let early = encode_message(magic, "headers", &encode_headers(&[header_on_genesis()]));
+        let empty = encode_message(magic, "headers", &encode_headers(&[]));
+        let address = scripted_peer(handshake(&early), move |stream, message| {
             if message.command == "getheaders" {
                 let _ = stream.write_all(&empty);
             }
         });
         let (end, state) = sync(address, None, 1, false);
         assert_eq!(end.unwrap(), SyncEnd::Idle);
-        assert_eq!(state.best_header().hash, genesis.hash());
+        assert_eq!(state.best_header().hash, regtest().params.genesis.header.hash());
+    }
+
+    #[test]
+    fn a_verack_before_version_does_not_start_synchronization() {
+        let magic = regtest().params.magic;
+        let early = [encode_message(magic, "verack", &[]), encode_message(magic, "headers", &encode_headers(&[header_on_genesis()]))].concat();
+        let empty = encode_message(magic, "headers", &encode_headers(&[]));
+        let address = scripted_peer([early, handshake(&[])].concat(), move |stream, message| {
+            if message.command == "getheaders" {
+                let _ = stream.write_all(&empty);
+            }
+        });
+        let (end, state) = sync(address, None, 1, false);
+        assert_eq!(end.unwrap(), SyncEnd::Idle);
+        assert_eq!(state.best_header().hash, regtest().params.genesis.header.hash());
     }
 
     #[test]
@@ -844,7 +869,7 @@ mod sync_tests {
         let magic = regtest().params.magic;
         let pings: Vec<u8> = (0..4096u64).flat_map(|nonce| encode_message(magic, "ping", &nonce.to_le_bytes())).collect();
         // From the first getheaders on, the peer only sends pings, so the node's pongs pile up.
-        let address = scripted_peer(Vec::new(), move |stream, message| {
+        let address = scripted_peer(handshake(&[]), move |stream, message| {
             if message.command == "getheaders" {
                 while stream.write_all(&pings).is_ok() {}
             }
