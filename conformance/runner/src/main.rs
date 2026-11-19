@@ -551,6 +551,7 @@ fn cmd_run(opts: &Options) -> ExitCode {
         results.push((suite, stats, started.elapsed()));
     }
     let restarts = harness.as_ref().map_or(0, |h| h.restarts());
+    let skipped = harness.as_ref().map_or(0, |h| h.skipped_lines());
     drop(harness);
     let failed = print_report(
         &results,
@@ -560,6 +561,9 @@ fn cmd_run(opts: &Options) -> ExitCode {
     );
     if restarts > 0 {
         println!("note: the harness died and was restarted {restarts} time(s)");
+    }
+    if skipped > 0 {
+        println!("note: {skipped} line(s) of harness output were not responses and were skipped");
     }
     if failed {
         if !opts.verbose {
