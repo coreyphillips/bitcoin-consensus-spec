@@ -88,6 +88,9 @@ pub const SETTLE: Duration = Duration::from_secs(1);
 /// the block is on its best header chain; answering at once would keep it busy, and not answering
 /// would use up its blocks-in-flight slots.
 pub const CASE_RESEND: Duration = Duration::from_secs(1);
+/// How long the runner reads the node's standard output after the node exits, when a process it
+/// left behind keeps that output open.
+const EXIT_READ: Duration = Duration::from_secs(2);
 /// Consecutive node failures (no connection, no answer, crash) after which a scenario is abandoned.
 const MAX_NODE_ERRORS: u32 = 3;
 
@@ -400,6 +403,10 @@ struct Session<'a> {
     answers: HashMap<u64, Value>,
     next_query: u64,
     stopped: Option<Value>,
+    /// The node's exit status, seen before any stopped line, and when it was seen.
+    exited: Option<(std::process::ExitStatus, Instant)>,
+    /// The node closed its standard output, and every line of it has been handled.
+    stdout_closed: bool,
     /// Set by [`Session::finish`] once the stopped line names the final tip: whether it carried
     /// `hash_serialized_3`.
     utxo_reported: Option<bool>,
@@ -470,52 +477,18 @@ impl<'a> Session<'a> {
             }
             let _ = tx.send(Event::NodeEof);
         });
-        let chain_pos = sc
-            .chain
-            .iter()
-            .enumerate()
-            .map(|(i, b)| (b.hash, i))
-            .collect();
-        let mut s = Session {
+        let mut s = Session::new(
             sc,
-            timeout: cfg.node_timeout,
+            cfg.node_timeout,
             rx,
             stop_accept,
             child,
             stdin,
-            conn: None,
-            ready: false,
-            connections: 0,
-            transports: BTreeSet::new(),
-            chain_pos,
-            upto: 0,
-            requests: 0,
-            confirm: initial.is_some(),
-            current: None,
-            x_pushed: None,
-            announced: HashMap::new(),
-            delivered: Default::default(),
-            delivered_prefix: 0,
-            queue: Vec::new(),
-            last_getdata: Instant::now(),
-            hold: None,
-            outstanding: Default::default(),
-            window: 1,
-            last_activity: Instant::now(),
-            stop_check: Instant::now(),
-            pong: None,
-            answers: HashMap::new(),
-            next_query: 0,
-            stopped: None,
-            utxo_reported: None,
-            node_error: None,
-            problems: Vec::new(),
             stderr_path,
-            case_sent: HashMap::new(),
-            deferred: Vec::new(),
-        };
+        );
         if let Some(c) = initial {
             let parent = sc.cases[c].parent;
+            s.confirm = true;
             s.upto = parent;
             s.current = Some(c);
             s.announced.insert(sc.cases[c].block.hash, c);
@@ -534,6 +507,64 @@ impl<'a> Session<'a> {
             s.pump(Duration::from_millis(200))?;
         }
         Ok(s)
+    }
+
+    /// A session with nothing announced yet, for a node already started.
+    fn new(
+        sc: &'a Scenario,
+        timeout: Duration,
+        rx: Receiver<Event>,
+        stop_accept: Arc<AtomicBool>,
+        child: process::Group,
+        stdin: Option<ChildStdin>,
+        stderr_path: PathBuf,
+    ) -> Session<'a> {
+        let chain_pos = sc
+            .chain
+            .iter()
+            .enumerate()
+            .map(|(i, b)| (b.hash, i))
+            .collect();
+        Session {
+            sc,
+            timeout,
+            rx,
+            stop_accept,
+            child,
+            stdin,
+            conn: None,
+            ready: false,
+            connections: 0,
+            transports: BTreeSet::new(),
+            chain_pos,
+            upto: 0,
+            requests: 0,
+            confirm: false,
+            current: None,
+            x_pushed: None,
+            announced: HashMap::new(),
+            delivered: Default::default(),
+            delivered_prefix: 0,
+            queue: Vec::new(),
+            last_getdata: Instant::now(),
+            hold: None,
+            outstanding: Default::default(),
+            window: 1,
+            last_activity: Instant::now(),
+            stop_check: Instant::now(),
+            pong: None,
+            answers: HashMap::new(),
+            next_query: 0,
+            stopped: None,
+            exited: None,
+            stdout_closed: false,
+            utxo_reported: None,
+            node_error: None,
+            problems: Vec::new(),
+            stderr_path,
+            case_sent: HashMap::new(),
+            deferred: Vec::new(),
+        }
     }
 
     fn with_stderr(&self, message: String) -> String {
@@ -641,7 +672,7 @@ impl<'a> Session<'a> {
                 }
             }
             Ok(Event::NodeLine(line)) => self.on_line(line),
-            Ok(Event::NodeEof) => {}
+            Ok(Event::NodeEof) => self.stdout_closed = true,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
                 return Err("internal: event channel closed".into())
@@ -651,8 +682,17 @@ impl<'a> Session<'a> {
             return Err(format!("the node reported an error: {e}"));
         }
         if self.stopped.is_none() {
-            if let Ok(Some(status)) = self.child.try_wait() {
-                return Err(self.with_stderr(format!("the node exited ({status})")));
+            if self.exited.is_none() {
+                if let Ok(Some(status)) = self.child.try_wait() {
+                    self.exited = Some((status, Instant::now()));
+                }
+            }
+            // Lines the node wrote before exiting, its stopped line among them, can still be
+            // queued behind other events, so the exit is an error only once they are all read.
+            if let Some((status, at)) = self.exited {
+                if self.stdout_closed || at.elapsed() >= EXIT_READ {
+                    return Err(self.with_stderr(format!("the node exited ({status})")));
+                }
             }
         }
         if self.stop_check.elapsed() >= process::STOP_CHECK {
@@ -1976,6 +2016,105 @@ for line in sys.stdin:
             assert_eq!(verdict, None);
             assert!(!delivered);
         }
+    }
+
+    fn genesis_only() -> Scenario {
+        Scenario {
+            name: "test".into(),
+            options: json!({}),
+            chain: vec![Block {
+                hash: raw_hash(REGTEST_GENESIS).unwrap(),
+                bytes: Vec::new(),
+            }],
+            utxo_hash: String::new(),
+            cases: Vec::new(),
+            valid_siblings: 0,
+            unclassified: Vec::new(),
+        }
+    }
+
+    /// A session whose node has already exited with `code`, with `events` queued in order. The
+    /// node's output stays open until the returned sender is dropped.
+    fn exited_session(
+        sc: &Scenario,
+        code: i32,
+        events: Vec<Event>,
+    ) -> (Session<'_>, Sender<Event>) {
+        let mut child =
+            process::spawn(process::shell(&format!("exit {code}")).stdin(Stdio::null())).unwrap();
+        child.wait().unwrap();
+        let (tx, rx) = mpsc::channel();
+        for e in events {
+            tx.send(e).unwrap();
+        }
+        let stop_accept = Arc::new(AtomicBool::new(false));
+        let s = Session::new(
+            sc,
+            Duration::from_secs(30),
+            rx,
+            stop_accept,
+            child,
+            None,
+            PathBuf::new(),
+        );
+        (s, tx)
+    }
+
+    fn closed() -> Event {
+        Event::Closed(1, "closed by the peer".into())
+    }
+
+    #[test]
+    fn stopped_line_queued_after_exit_is_read() {
+        let sc = genesis_only();
+        let stopped = json!({"event": "stopped", "tip": REGTEST_GENESIS, "height": 0});
+        let (mut s, _tx) = exited_session(
+            &sc,
+            0,
+            vec![
+                closed(),
+                Event::NodeLine(stopped.to_string()),
+                Event::NodeEof,
+            ],
+        );
+        while s.stopped.is_none() {
+            s.pump(Duration::from_millis(50)).unwrap();
+        }
+        assert_eq!(s.stopped, Some(stopped));
+    }
+
+    #[test]
+    fn exit_without_stopped_line_fails_once_output_is_read() {
+        let sc = genesis_only();
+        let tip = json!({"event": "tip", "id": 1, "tip": REGTEST_GENESIS, "height": 0});
+        let (mut s, _tx) = exited_session(
+            &sc,
+            0,
+            vec![closed(), Event::NodeLine(tip.to_string()), Event::NodeEof],
+        );
+        s.pump(Duration::from_millis(50)).unwrap();
+        s.pump(Duration::from_millis(50)).unwrap();
+        assert!(s.answers.contains_key(&1));
+        let e = s.pump(Duration::from_millis(50)).unwrap_err();
+        assert!(e.contains("the node exited (exit status: 0)"), "{e}");
+    }
+
+    #[test]
+    fn exit_with_output_held_open_fails_after_exit_read() {
+        let sc = genesis_only();
+        let (mut s, _tx) = exited_session(&sc, 3, vec![closed()]);
+        let start = Instant::now();
+        let e = loop {
+            if let Err(e) = s.pump(Duration::from_millis(50)) {
+                break e;
+            }
+            assert!(
+                start.elapsed() < EXIT_READ * 3,
+                "the exit was never reported"
+            );
+        };
+        assert!(start.elapsed() >= EXIT_READ);
+        assert!(e.contains("the node exited (exit status: 3)"), "{e}");
     }
 
     #[test]
