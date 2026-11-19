@@ -168,29 +168,14 @@ impl Peer {
             let m = peer.recv(deadline)?;
             match m.command.as_str() {
                 "version" => {
-                    let p = &m.payload;
-                    if p.len() < 20 {
-                        return Err(invalid("short version message"));
-                    }
-                    peer.version = i32::from_le_bytes(p[0..4].try_into().unwrap());
+                    let v = decode_version(&m.payload)?;
+                    (peer.version, peer.user_agent, peer.start_height) =
+                        (v.version, v.user_agent, v.start_height);
                     if peer.version < MIN_PEER_PROTO_VERSION {
                         return Err(invalid(format!(
                             "peer protocol version {} is too old",
                             peer.version
                         )));
-                    }
-                    // services 8, time 8, receiver 26, sender 26, nonce 8, then the user agent.
-                    let mut pos = 4 + 8 + 8 + 26 + 26 + 8;
-                    if p.len() > pos {
-                        if let Ok(n) = read_compact_size(p, &mut pos) {
-                            let end = (pos + n as usize).min(p.len());
-                            peer.user_agent = String::from_utf8_lossy(&p[pos..end]).to_string();
-                            pos = end;
-                            if p.len() >= pos + 4 {
-                                peer.start_height =
-                                    i32::from_le_bytes(p[pos..pos + 4].try_into().unwrap());
-                            }
-                        }
                     }
                     peer.send("verack", &[])?;
                     got_version = true;
@@ -303,6 +288,43 @@ impl Peer {
     }
 }
 
+/// What the runner reads from a peer's `version` message.
+struct VersionInfo {
+    version: i32,
+    user_agent: String,
+    /// -1 when the message ends before it.
+    start_height: i32,
+}
+
+/// Decodes a `version` payload. Only the protocol version is required: a user agent cut short is
+/// kept as far as it goes, and a missing start height is -1.
+fn decode_version(p: &[u8]) -> io::Result<VersionInfo> {
+    if p.len() < 20 {
+        return Err(invalid("short version message"));
+    }
+    let mut v = VersionInfo {
+        version: i32::from_le_bytes(p[0..4].try_into().unwrap()),
+        user_agent: String::new(),
+        start_height: -1,
+    };
+    // services 8, time 8, receiver 26, sender 26, nonce 8, then the user agent.
+    let mut pos = 4 + 8 + 8 + 26 + 26 + 8;
+    if p.len() > pos {
+        if let Ok(n) = read_compact_size(p, &mut pos) {
+            // The length is the peer's and may be anything up to 2^64 - 1.
+            let end = usize::try_from(n)
+                .ok()
+                .and_then(|n| pos.checked_add(n))
+                .map_or(p.len(), |end| end.min(p.len()));
+            v.user_agent = String::from_utf8_lossy(&p[pos..end]).to_string();
+            if let Some(height) = p.get(end..end + 4) {
+                v.start_height = i32::from_le_bytes(height.try_into().unwrap());
+            }
+        }
+    }
+    Ok(v)
+}
+
 /// Decodes a `headers` payload: 80-byte headers each followed by a transaction count.
 pub fn decode_headers(payload: &[u8]) -> io::Result<Vec<[u8; 80]>> {
     let mut pos = 0;
@@ -365,6 +387,62 @@ mod tests {
     #[test]
     fn default_signet_magic() {
         assert_eq!(network("signet").unwrap().magic, [0x0a, 0x03, 0xcf, 0x40]);
+    }
+
+    #[test]
+    fn version_fields() {
+        let v = decode_version(&version_payload(NODE_WITNESS, 123)).unwrap();
+        assert_eq!(v.version, PROTOCOL_VERSION);
+        assert_eq!(
+            v.user_agent,
+            format!("/bcs-conformance:{}/", env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(v.start_height, 123);
+    }
+
+    #[test]
+    fn version_with_a_user_agent_longer_than_the_message() {
+        let mut p = version_payload(NODE_WITNESS, 0)[..80].to_vec();
+        p.push(0xff);
+        p.extend_from_slice(&u64::MAX.to_le_bytes());
+        p.extend_from_slice(b"agent");
+        let v = decode_version(&p).unwrap();
+        assert_eq!((v.user_agent.as_str(), v.start_height), ("agent", -1));
+    }
+
+    /// Every prefix of a `version` and a `headers` payload, each with every compact size put at
+    /// offset 0 or 80 (where the user agent length goes), decodes or fails without a panic.
+    #[test]
+    fn decoders_never_panic() {
+        let header = [7u8; 80];
+        let mut headers = vec![2];
+        for _ in 0..2 {
+            headers.extend_from_slice(&header);
+            headers.push(0);
+        }
+        let payloads = [version_payload(NODE_WITNESS, 5), headers];
+        let sizes: [&[u8]; 6] = [
+            &[0xfc],
+            &[0xfd, 0xff, 0xff],
+            &[0xfe, 0xff, 0xff, 0xff, 0xff],
+            &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+            &[0xff, 0, 0, 0, 0, 0, 0, 0, 0x80],
+            &[0xfd],
+        ];
+        for p in &payloads {
+            for at in [0, 80] {
+                for size in sizes {
+                    let mut q = p[..at.min(p.len())].to_vec();
+                    q.extend_from_slice(size);
+                    q.extend_from_slice(&p[at.min(p.len())..]);
+                    for end in 0..=q.len() {
+                        let _ = decode_version(&q[..end]);
+                        let _ = decode_headers(&q[..end]);
+                        let _ = read_compact_size(&q[..end], &mut at.min(end));
+                    }
+                }
+            }
+        }
     }
 
     #[test]
