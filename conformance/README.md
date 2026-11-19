@@ -106,9 +106,10 @@ target/release/bcs-conformance suites                         # list suites
 ```
 
 `--impl` is run with `sh -c`. The runner asks for `info` and runs every selected suite for which
-the harness lists at least one needed operation; checks needing an unlisted operation are counted
-as unsupported, and unsupported checks (or a suite with no supported operation) fail the run unless
-the suite is left out with `--suite` or `--exclude` (`PROTOCOL.md` section 6). A plain run selects
+the harness lists at least one needed operation (every one for `corpus` and `headers-live`); checks
+needing an unlisted operation are counted as unsupported, and unsupported checks (or a suite that
+cannot run) fail the run unless the suite is left out with `--suite` or `--exclude` (`PROTOCOL.md`
+section 6). A plain run selects
 every suite marked `default` by `bcs-conformance suites`: the vector suites, `custom`, `pow`, `signet`, `params`, `block-connect` and `corpus`.
 `headers-live`, `interop` and `peer-sync` need extra arguments and run only when named. Options: `--vectors DIR`
 (default `conformance/vectors`), `--derived DIR` (default `<vectors>/derived`), `--timeout SECS` per
