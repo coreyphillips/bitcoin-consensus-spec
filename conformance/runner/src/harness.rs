@@ -4,7 +4,9 @@ use serde_json::{Map, Value};
 use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
 use std::os::fd::AsRawFd;
 use std::process::{ChildStdin, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// How many times the runner restarts a harness that died before giving up.
@@ -73,6 +75,13 @@ struct Line {
 }
 
 impl Line {
+    /// Whether the line can be a response at all. One that cannot is skipped as it is read, so
+    /// output before the harness reads a large request cannot fill [`QUEUED_LINES`] and keep the
+    /// harness from reading it.
+    fn starts_object(&self) -> bool {
+        self.bytes.trim_ascii().first() == Some(&b'{')
+    }
+
     /// The line for an error or a warning.
     fn shown(&self) -> String {
         let text = crate::check::shorten(&String::from_utf8_lossy(&self.bytes), SHOWN);
@@ -119,10 +128,10 @@ fn read_line(reader: &mut impl BufRead) -> io::Result<Option<Line>> {
 /// putting every later response a line behind. Any other line is taken as this request's
 /// response, so a wrong one fails the call at once instead of at the timeout.
 fn response(line: &Line, id: u64) -> Option<Result<Map<String, Value>, CallError>> {
-    let text = line.bytes.trim_ascii();
-    if text.first() != Some(&b'{') {
+    if !line.starts_object() {
         return None;
     }
+    let text = line.bytes.trim_ascii();
     if line.cut {
         return Some(Err(CallError::Protocol(format!(
             "response is too long: {}",
@@ -186,13 +195,24 @@ pub struct Harness {
     timeout: Duration,
     restarts: u32,
     /// Lines of output that were not responses ([`response`]), over every restart.
-    skipped: u64,
+    skipped: Arc<AtomicU64>,
     /// Set once a call found the harness stopped: every later call fails the same way.
     stopped: Option<String>,
     pub info: Info,
 }
 
-fn spawn(command: &str) -> Result<Process, String> {
+/// Counts a line that is not a response, and shows the first.
+fn skip(skipped: &AtomicU64, line: &Line) {
+    if skipped.fetch_add(1, Ordering::Relaxed) == 0 {
+        eprintln!(
+            "bcs-conformance: the harness printed a line that is not a response, skipped \
+             (later ones are skipped without a message): {}",
+            line.shown()
+        );
+    }
+}
+
+fn spawn(command: &str, skipped: Arc<AtomicU64>) -> Result<Process, String> {
     let mut child = crate::process::spawn(
         crate::process::shell(command)
             .stdin(Stdio::piped())
@@ -212,6 +232,7 @@ fn spawn(command: &str) -> Result<Process, String> {
         loop {
             match read_line(&mut reader) {
                 Ok(None) => break,
+                Ok(Some(line)) if !line.starts_object() => skip(&skipped, &line),
                 Ok(Some(line)) => {
                     if tx.send(Ok(line)).is_err() {
                         break;
@@ -295,13 +316,14 @@ fn send(
 impl Harness {
     /// Starts the harness and performs `info`.
     pub fn start(command: &str, timeout: Duration) -> Result<Harness, String> {
+        let skipped = Arc::new(AtomicU64::new(0));
         let mut h = Harness {
             command: command.to_string(),
-            process: Some(spawn(command)?),
+            process: Some(spawn(command, skipped.clone())?),
             next_id: 1,
             timeout,
             restarts: 0,
-            skipped: 0,
+            skipped,
             stopped: None,
             info: Info {
                 name: String::new(),
@@ -353,7 +375,7 @@ impl Harness {
 
     /// How many lines of the harness's output were skipped as not responses.
     pub fn skipped_lines(&self) -> u64 {
-        self.skipped
+        self.skipped.load(Ordering::Relaxed)
     }
 
     /// Sends one request and returns the result fields of a successful response. `body` is the
@@ -374,7 +396,7 @@ impl Harness {
                         "bcs-conformance: restarting harness (restart {} of at most {MAX_RESTARTS})",
                         self.restarts
                     );
-                    if let Ok(p) = spawn(&self.command) {
+                    if let Ok(p) = spawn(&self.command, self.skipped.clone()) {
                         self.process = Some(p);
                         match self.fetch_info() {
                             Ok(info) => self.info = info,
@@ -413,34 +435,27 @@ impl Harness {
         let deadline = Instant::now() + timeout;
         send(process, line.as_bytes(), deadline, timeout)?;
         loop {
+            // Checked before every receive, as `recv_timeout` returns a queued line even with no
+            // time left.
             let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(CallError::Died(format!(
+                    "no response within {} s",
+                    timeout.as_secs()
+                )));
+            }
             match process
                 .lines
                 .recv_timeout(left.min(crate::process::STOP_CHECK))
             {
-                Ok(Ok(line)) => {
-                    if let Some(r) = response(&line, id) {
-                        return r;
-                    }
-                    self.skipped += 1;
-                    if self.skipped == 1 {
-                        eprintln!(
-                            "bcs-conformance: the harness printed a line that is not a response \
-                             to request {id}, skipped (later ones are skipped without a message): {}",
-                            line.shown()
-                        );
-                    }
-                }
+                Ok(Ok(line)) => match response(&line, id) {
+                    Some(r) => return r,
+                    None => skip(&self.skipped, &line),
+                },
                 Ok(Err(e)) => return Err(CallError::Died(format!("cannot read response: {e}"))),
                 Err(RecvTimeoutError::Timeout) => {
                     if let Some(stop) = crate::process::stopped(&process.child) {
                         return Err(CallError::Stopped(stop.to_string()));
-                    }
-                    if Instant::now() >= deadline {
-                        return Err(CallError::Died(format!(
-                            "no response within {} s",
-                            timeout.as_secs()
-                        )));
                     }
                 }
                 Err(RecvTimeoutError::Disconnected) => {
@@ -673,5 +688,37 @@ mod tests {
         );
         assert!(started.elapsed() < Duration::from_secs(10));
         assert!(h.skipped_lines() > 0);
+    }
+
+    /// Output the harness writes before it reads a large request does not keep it from reading it.
+    #[test]
+    fn output_before_a_large_request() {
+        let mut h = Harness::start(
+            r#"read -r l; echo '{"id":1,"ok":true,"ops":["x"]}'; yes debug | head -n 100000; head -n 1 >/dev/null; echo '{"id":2,"ok":true}'"#,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        let body = format!("\"tx\":\"{}\"", "00".repeat(1 << 20));
+        assert!(h.call("x", &body).is_ok());
+        assert_eq!(h.skipped_lines(), 100000);
+    }
+
+    /// Answers to earlier requests without end fail the call at the timeout, though a line is
+    /// always waiting.
+    #[test]
+    fn queued_output_does_not_outlast_the_timeout() {
+        let mut h = Harness::start(
+            r#"read -r l; echo '{"id":1,"ok":true,"ops":["x"]}'; read -r l; exec yes '{"id":1}'"#,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(h.call("x", ""));
+        });
+        let r = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the call outlasted its timeout");
+        assert!(matches!(r, Err(CallError::Died(m)) if m == "no response within 1 s"));
     }
 }
