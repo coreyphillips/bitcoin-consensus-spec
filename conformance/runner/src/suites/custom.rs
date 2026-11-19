@@ -1,5 +1,6 @@
 //! The `custom` suite: targeted cases in `conformance/vectors/custom/*.jsonl`. The `pow`, `signet`
-//! and `params` suites run `conformance/vectors/<suite>/*.jsonl` the same way.
+//! and `params` suites run `conformance/vectors/<suite>/*.jsonl` the same way, and `block-connect`
+//! runs `conformance/vectors/block-connect/*.jsonl.gz` (whole blocks, so compressed).
 //!
 //! Each line is `{"name": ..., "request": <a PROTOCOL.md request without id>, "expect": <response
 //! fields>}`. The request is sent as it is. Every expected field must match the response:
@@ -10,14 +11,17 @@ use crate::check::{shorten, Ctx};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
-pub fn files(dir: &Path) -> Result<Vec<PathBuf>, String> {
+/// The files of `dir` whose name ends in `.<ext>`. `vectors/signet` holds `*.jsonl` cases and a
+/// `*.jsonl.gz` corpus scenario, so one extension never matches the other.
+pub fn files(dir: &Path, ext: &str) -> Result<Vec<PathBuf>, String> {
     if !dir.is_dir() {
         return Ok(Vec::new());
     }
+    let suffix = format!(".{ext}");
     let mut out: Vec<PathBuf> = std::fs::read_dir(dir)
         .map_err(|e| format!("cannot read {}: {e}", dir.display()))?
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().ends_with(&suffix)))
         .collect();
     out.sort();
     Ok(out)
@@ -33,8 +37,16 @@ struct Case {
 }
 
 fn load(path: &Path) -> Result<Vec<Case>, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let cannot = |e: std::io::Error| format!("cannot read {}: {e}", path.display());
+    let text = if path.extension().is_some_and(|x| x == "gz") {
+        let mut text = String::new();
+        let file = std::fs::File::open(path).map_err(cannot)?;
+        std::io::Read::read_to_string(&mut flate2::read::MultiGzDecoder::new(file), &mut text)
+            .map_err(cannot)?;
+        text
+    } else {
+        std::fs::read_to_string(path).map_err(cannot)?
+    };
     let file = path
         .file_name()
         .unwrap_or_default()
@@ -77,10 +89,11 @@ fn load(path: &Path) -> Result<Vec<Case>, String> {
 }
 
 pub fn run(ctx: &mut Ctx, vectors: &Path, subdir: &str) -> Result<(), String> {
+    let ext = if subdir == "block-connect" { "jsonl.gz" } else { "jsonl" };
     let dir = vectors.join(subdir);
-    let paths = files(&dir)?;
+    let paths = files(&dir, ext)?;
     if paths.is_empty() {
-        return Err(format!("no *.jsonl files in {}", dir.display()));
+        return Err(format!("no *.{ext} files in {}", dir.display()));
     }
     let mut cases = Vec::new();
     for p in &paths {

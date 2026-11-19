@@ -56,6 +56,7 @@ pub const SUITES: &[SuiteInfo] = &[
     SuiteInfo { name: "pow", what: "vectors/pow/*.jsonl: compact targets, proof of work and difficulty adjustment on every network", default: true, needs_harness: true },
     SuiteInfo { name: "signet", what: "vectors/signet/*.jsonl: signet block solutions under chosen challenges", default: true, needs_harness: true },
     SuiteInfo { name: "params", what: "vectors/params/*.jsonl: the consensus parameters of every network", default: true, needs_harness: true },
+    SuiteInfo { name: "block-connect", what: "vectors/block-connect/*.jsonl.gz: mainnet and testnet3 blocks connected with the coins they spend", default: true, needs_harness: true },
     SuiteInfo { name: "corpus", what: "vectors/blocks/*.jsonl.gz: block scenarios recorded from Core's functional tests (CORPUS.md)", default: true, needs_harness: true },
     SuiteInfo { name: "headers-live", what: "the full header chain of a live peer (--peer, --network), fed to the harness", default: false, needs_harness: true },
     SuiteInfo { name: "interop", what: "the implementation as a live node next to a regtest bitcoind (--bitcoind, --node)", default: false, needs_harness: false },

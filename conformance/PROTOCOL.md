@@ -339,6 +339,22 @@ The consensus parameters of a network without test overrides (specification chap
 
 The suite `params` (`vectors/params`) sends this operation and compares one field per case; a harness that does not list it must leave that suite out (section 6). An implementation that keeps its parameters in another form can still answer it from them.
 
+### 4.19 `block_connect`
+
+Connects one block to a chain the request describes, as specification chapter 10 section 10.8 defines `connect_block`: BIP30 (section 10.7), the inputs, sequence locks and signature operations of every transaction, the coinbase amount, and the scripts under the block's flags (section 10.6). Nothing else is checked: not the header, not the body checks of section 10.5. The suite needs no chain state, so it can connect historic mainnet and testnet3 blocks, which no corpus scenario has.
+
+| Request field | Type | Meaning |
+|---|---|---|
+| `network` | string | As in 4.8 |
+| `height` | integer | Height of the block, at least 1 |
+| `block` | hex | Serialized block with witness data |
+| `ancestors` | array | `{"height": integer, "hash": hash, "median_time_past": integer}` for each ancestor the connection reads, hashes in display order: the parent (height `height - 1`, the hash the header names), the block at the network's BIP34 height when `height` is above it, and the block before each coin whose sequence lock the connection evaluates |
+| `coins` | array | The UTXO set the block is connected to: `{"txid": hash, "vout": integer, "amount": integer, "script_pubkey": hex, "height": integer, "coinbase": bool}`, txid in display order. Every coin the block spends that it does not create, and any unspent output whose txid a transaction of the block repeats |
+
+Response: `{"valid": bool, "reason": string}`, with `reason` the reject reason when `valid` is false.
+
+The suite `block-connect` (`vectors/block-connect`) sends this operation, scoring `valid` at level 1 and `reason` at level 2; a harness that does not list it must leave that suite out (section 6).
+
 ## 5. Live node contract
 
 The interop suite runs the implementation as a real node next to Bitcoin Core (the peer-sync suite has its own contract, section 5.1). For that suite the user supplies a node command template. The runner substitutes these placeholders:

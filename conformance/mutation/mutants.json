@@ -1336,8 +1336,8 @@
   "item": 49,
   "old": "        flags = *exception;",
   "new": "        let _ = exception;",
-  "expect": "survived",
-  "note": "The exceptions are three mainnet and testnet3 blocks, and no suite connects a block from those networks. The `params` suite checks the list, not that `block_script_flags` applies it. Catching it needs the block-connect vectors of #41."
+  "expect": "caught",
+  "note": "Caught by the block-connect vectors (#115): blocks 170060 on mainnet and 394 on testnet3 fail under `P2SH`."
  },
  {
   "name": "bip30-repeat-blocks-not-exempt",
@@ -1346,8 +1346,8 @@
   "item": 53,
   "old": "    (height == 91842 && hash_to_display(hash)",
   "new": "    (height == 91843 && hash_to_display(hash)",
-  "expect": "survived",
-  "note": "Mainnet only, and no suite connects a mainnet block. Catching it needs the block-connect vectors of #41."
+  "expect": "caught",
+  "note": "Caught by the block-connect vectors (#115): block 91842 is connected while the coinbase it repeats is unspent."
  },
  {
   "name": "bip30-limit-never",
@@ -1356,8 +1356,8 @@
   "item": 53,
   "old": "    if enforce_bip30 || height >= BIP34_IMPLIES_BIP30_LIMIT {",
   "new": "    if enforce_bip30 {",
-  "expect": "survived",
-  "note": "No corpus chain reaches height 1,983,702. Catching it needs the block-connect vectors of #41."
+  "expect": "caught",
+  "note": "Caught by the block-connect vectors (#115): a constructed block at height 1,983,702 repeats an unspent coinbase txid."
  },
  {
   "name": "mainnet-bip66-height-plus-one",

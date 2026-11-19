@@ -17,6 +17,7 @@ Tooling that checks an implementation of the specification against Bitcoin Core 
 | `vectors/pow/` | Proof-of-work and difficulty adjustment cases on every network, in the same format |
 | `vectors/signet/` | Signet block solution cases under chosen challenges, in the same format, and one signet scenario in the corpus format where blocks without a valid solution are rejected |
 | `vectors/params/` | The consensus parameters of every network, in the same format |
+| `vectors/block-connect/` | Mainnet and testnet3 blocks with the coins they spend, connected without chain state, in the same format (compressed) |
 | `vectors/blocks/` | The block corpus: scenarios recorded from Core's functional tests (`CORPUS.md`) |
 | `vectors/chainwork/` | One signet scenario in the corpus format where the chain with most work is not the longest |
 
@@ -68,7 +69,7 @@ What each operation calls:
 | `network_params` | the fields of `CChainParams::Main()`, `TestNet()`, `TestNet4()`, `SigNet()` or `RegTest()` and their `Consensus::Params`; a script flag exception with a flag the protocol does not name is `internal` |
 | `signet_check` | deserialization of the block with witnesses (trailing bytes or any decoding error: `bad_request`), then `CheckSignetBlockSolution` with the consensus parameters of `CChainParams::SigNet` given the request's challenge |
 
-Chain operations answer `unsupported_op` (the `pow_*`, `signet_check` and `network_params` operations
+Chain operations and `block_connect` answer `unsupported_op` (the `pow_*`, `signet_check` and `network_params` operations
 need no chain state: the request carries the headers or the block they read). `info` reports `spec_version` `v32.1`, plus `core_commit`
 and a `build` string (compiler, target, profile) that `derive` records as provenance.
 
@@ -96,8 +97,8 @@ H=conformance/oracle-core/target/release/oracle-core-harness
 R=target/release/reference-harness
 
 target/release/bcs-conformance --impl "$R"                    # every default suite
-target/release/bcs-conformance --impl "$H" --exclude corpus   # the oracle has no chain operations
-target/release/bcs-conformance --impl "$H" --exclude corpus --raw   # original vector expectations only
+target/release/bcs-conformance --impl "$H" --exclude corpus,block-connect   # the oracle has no chain operations
+target/release/bcs-conformance --impl "$H" --exclude corpus,block-connect --raw   # original vector expectations only
 target/release/bcs-conformance --impl "$R" --suite bip340,sighash --verbose
 target/release/bcs-conformance corpus --impl "$R"             # same as --suite corpus
 target/release/bcs-conformance suites                         # list suites
@@ -107,7 +108,7 @@ target/release/bcs-conformance suites                         # list suites
 the harness lists at least one needed operation; checks needing an unlisted operation are counted
 as unsupported, and unsupported checks (or a suite with no supported operation) fail the run unless
 the suite is left out with `--suite` or `--exclude` (`PROTOCOL.md` section 6). A plain run selects
-every suite marked `default` by `bcs-conformance suites`: the vector suites, `custom`, `pow`, `signet`, `params` and `corpus`.
+every suite marked `default` by `bcs-conformance suites`: the vector suites, `custom`, `pow`, `signet`, `params`, `block-connect` and `corpus`.
 `headers-live`, `interop` and `peer-sync` need extra arguments and run only when named. Options: `--vectors DIR`
 (default `conformance/vectors`), `--derived DIR` (default `<vectors>/derived`), `--timeout SECS` per
 response (default 120; a harness that dies or stalls is restarted, at most 5 times),
