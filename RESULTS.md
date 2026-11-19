@@ -18,9 +18,9 @@ The reference is the specification's own code (every ```rust block in `spec/`, b
 | `signet`: signet block solutions under chosen challenges, expectations computed by Bitcoin Core's own `signet.cpp` | 46 | pass |
 | `params`: the consensus parameters of the five networks, expectations read from Bitcoin Core's own `kernel/chainparams.cpp` | 90 | pass |
 | `block-connect`: mainnet and testnet3 blocks connected with the coins they spend (the BIP30 exempt blocks, the three script flag exceptions, the first halving, each side of the BIP34, BIP66, BIP65, CSV and segwit heights), and constructed blocks on each side of the BIP34-implies-BIP30 limit | 22 | pass, identical reasons |
-| `corpus`: 20 block scenarios recorded from Bitcoin Core (17,170 events), one signet scenario where the chain with most work is shorter (2,028 events), one where blocks without a valid signet solution are rejected (12 events), and one regtest scenario where blocks near genesis are decided by the upper median of an even number of timestamps (32 events) | 5,309 normative tips (5 with chain work); 1,259 chain tip sets; 2,292 UTXO set hashes | all identical |
+| `corpus`: 22 per-node block files from 14 recorded runs of Bitcoin Core functional tests (17,249 events), one signet scenario where the chain with most work is shorter (2,028 events), one where blocks without a valid signet solution are rejected (12 events), and one regtest scenario where blocks near genesis are decided by the upper median of an even number of timestamps (32 events) | 5,342 normative tips (5 with chain work); 1,293 chain tip sets; 2,306 UTXO set hashes | all identical |
 | `headers-live`: mainnet and testnet4 header chains from public peers, every header validated | 975,114 / 159,961 headers (2026-11-09) | every header accepted; the best header is the peer's last header |
-| `interop`: the reference node synchronizes each scenario's chain from a fresh bitcoind v32.1 over P2P | 21 chains: 300 generated blocks and all 20 scenarios (2026-11-12) | identical tip, height and `hash_serialized_3` for all 21; bitcoind ran without a whitelist and logged no misbehaviour |
+| `interop`: the reference node synchronizes each scenario's chain from a fresh bitcoind v32.1 over P2P | 21 chains: 300 generated blocks and all 20 corpus files of that date (2026-11-12) | identical tip, height and `hash_serialized_3` for all 21; bitcoind ran without a whitelist and logged no misbehaviour |
 
 The `peer-sync` suite (`conformance/PROTOCOL.md` section 5.1) needs a node that keeps synchronizing after its peer sends it an invalid block. The reference's synchronization loop (chapter 14 section 14.5) stops there by design, so the suite was checked with Bitcoin Core v32.1 itself as the node (`conformance/recorder/core_sync_node.py`, `-connect` to the runner, BIP324 version 2). Of the 2,922 corpus blocks whose parent is on a scenario's final chain, Core rejects 2,882 in proposal mode (the other 40 are valid side branches). Core passed all 3,111 checks: 2,902 in the follow mode (every rejected block, and each scenario's final tip) and 209 in the ibd mode (a fresh node per rejected block, at most 32 per scenario), in about 25 minutes on an Apple M5 Pro.
 
@@ -70,10 +70,10 @@ First runs, before any fix:
 | Milestone | Suites | First run |
 |---|---|---|
 | M1: consensus library and harness | all vector suites, 337,963 checks; 21 custom cases | all pass, identical error identifiers |
-| M2: chain state | 16 corpus scenarios: 4,951 normative tips, 935 chain tip sets, 2,078 UTXO set hashes | all pass |
-| After the specification errata from the reviews (old build, no code changed yet) | the re-recorded corpus, 18 scenarios: 5,114 normative tips | all pass |
+| M2: chain state | 16 corpus files: 4,951 normative tips, 935 chain tip sets, 2,078 UTXO set hashes | all pass |
+| After the specification errata from the reviews (old build, no code changed yet) | the re-recorded corpus, 18 files: 5,114 normative tips | all pass |
 | M3: the node (RocksDB, block and undo files, P2P) | `interop` against bitcoind v32.1 without a whitelist, 18 chains | 18 of 18 identical (tip, height, `hash_serialized_3`) |
-| Corpus with the version floor and timewarp nodes | 20 scenarios: 5,275 normative tips, 1,230 chain tip sets, 2,288 UTXO set hashes | all pass |
+| Corpus with the version floor and timewarp nodes | 20 corpus files: 5,275 normative tips, 1,230 chain tip sets, 2,288 UTXO set hashes | all pass |
 
 Its own regtest scenarios against bitcoind (about 90,000 signed transactions of every standard output type, reorganizations while connected, and ten kills with SIGKILL during synchronization followed by restarts) also matched Bitcoin Core's tip and UTXO set hash.
 

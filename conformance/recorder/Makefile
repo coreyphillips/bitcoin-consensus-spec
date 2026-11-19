@@ -23,7 +23,8 @@ EXTRA_DOCKER_ARGS ?=
 # BLOB_ (raw size above which blocks go to sidecar blobs, default 1,000,000).
 SCENARIOS := feature_block feature_block_reorg feature_taproot p2p_segwit feature_segwit \
              p2p_invalid_block feature_cltv feature_dersig feature_nulldummy \
-             feature_csv_activation feature_bip68_sequence mining_basic feature_spec_pitfalls
+             feature_csv_activation feature_bip68_sequence mining_basic feature_chain_tiebreaks \
+             feature_spec_pitfalls
 
 ARGS_feature_block := --skipreorg
 TESTFILE_feature_block_reorg := feature_block.py
@@ -34,6 +35,7 @@ NODES_feature_segwit := 0,1,2
 NODES_p2p_segwit := 0,1
 NODES_feature_bip68_sequence := 0,1
 NODES_mining_basic := 0,1
+NODES_feature_chain_tiebreaks := 0,1
 NODES_feature_spec_pitfalls := 0,1,2
 
 COMMON_ARGS := --randomseed=$(SEED) --portseed=$(SEED) --v1transport --timeout-factor=$(TIMEOUT_FACTOR)
