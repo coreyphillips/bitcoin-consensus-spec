@@ -253,6 +253,8 @@ Response: `{"tip": hash, "height": integer, "chainwork": hex}`. `tip` is in disp
 
 Response: `{"tips": [{"hash": hash, "height": integer, "status": string}, ...]}` using the status names of Bitcoin Core's `getchaintips`: `active`, `valid-fork`, `valid-headers`, `headers-only`, `invalid`. Compared at level 1 of the corpus (CORPUS.md section 4), which fails the run only with `--fail-on-tips`.
 
+This operation is optional. A harness that leaves it out of `ops` is not sent it, and the runner counts each tip set of the corpus at level 1 as not compared.
+
 ### 4.13 `utxo_hash`
 
 Response: `{"hash_serialized_3": hash, "txouts": integer}` for the active chain tip, computed as in specification chapter 15. `hash_serialized_3` is in display order, matching Bitcoin Core's `gettxoutsetinfo`.
