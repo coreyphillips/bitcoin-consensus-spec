@@ -519,14 +519,8 @@ fn final_chain_checked(file: &Path) -> Result<FinalChain, String> {
     final_chain(file).map_err(|e| format!("{}: {e}", file.display()))
 }
 
-pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String> {
-    const SUITE: &str = "interop";
-    if !cfg.bitcoind.is_file() {
-        return Err(format!(
-            "--bitcoind {} is not a file",
-            cfg.bitcoind.display()
-        ));
-    }
+/// The generated chains, then one chain per corpus file.
+fn chains(corpus: &[PathBuf]) -> Result<Vec<Chain>, String> {
     let mut chains = vec![
         Chain {
             name: "generate-300".into(),
@@ -545,21 +539,45 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
             },
         },
     ];
-    let files = corpus::corpus_files(&cfg.corpus)?;
-    for file in &files {
-        let (_meta, events) = corpus::read_events(file)?;
+    // `corpus_files` refuses two files with one name; a file must not take a generated chain's
+    // name either.
+    for file in corpus::corpus_files(corpus)? {
+        let name = corpus::file_name(&file);
+        if chains.iter().any(|c| c.name == name) {
+            return Err(format!(
+                "{} is named {name} like a generated chain: failures and --known-failures \
+                 entries name an interop chain by its name alone",
+                file.display()
+            ));
+        }
+        let (_meta, events) = corpus::read_events(&file)?;
         let options = events
             .iter()
             .find(|e| e["type"] == "reset")
             .and_then(|e| e.get("options").cloned())
             .unwrap_or_else(|| json!({}));
         chains.push(Chain {
-            name: corpus::file_name(file),
+            name,
             options,
-            load: Load::Corpus { file: file.clone() },
+            load: Load::Corpus { file },
         });
     }
-    if files.is_empty() {
+    Ok(chains)
+}
+
+pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String> {
+    const SUITE: &str = "interop";
+    if !cfg.bitcoind.is_file() {
+        return Err(format!(
+            "--bitcoind {} is not a file",
+            cfg.bitcoind.display()
+        ));
+    }
+    let chains = chains(&cfg.corpus)?;
+    if chains
+        .iter()
+        .all(|c| matches!(c.load, Load::Generate { .. }))
+    {
         stats
             .details
             .push("interop: no corpus files, only the generated chains are used".into());
@@ -667,6 +685,47 @@ mod tests {
         );
         assert!(bitcoind_args(&json!({})).unwrap().is_empty());
         assert!(bitcoind_args(&json!({"signetchallenge": "51"})).is_err());
+    }
+
+    #[test]
+    fn a_corpus_file_cannot_take_a_generated_chain_name() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("bcs-interop-names-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |name: &str| {
+            let path = dir.join(format!("{name}.jsonl.gz"));
+            let mut gz = flate2::write::GzEncoder::new(
+                std::fs::File::create(&path).unwrap(),
+                flate2::Compression::fast(),
+            );
+            let meta = json!({"type": "meta", "format": corpus::FORMAT,
+                              "format_version": corpus::FORMAT_VERSION});
+            writeln!(gz, "{meta}").unwrap();
+            gz.finish().unwrap();
+            path
+        };
+        // `interop chain generate-300` would waive whichever of the two failed.
+        for name in ["generate-300", "generate-300-stop-at-100"] {
+            let e = chains(&[file(name)]).err().unwrap();
+            assert!(
+                e.contains(&format!("is named {name} like a generated chain")),
+                "{e}"
+            );
+        }
+        let names: Vec<String> = chains(&[file("generate-300-mutated")])
+            .unwrap()
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "generate-300",
+                "generate-300-stop-at-100",
+                "generate-300-mutated"
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
