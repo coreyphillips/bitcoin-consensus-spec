@@ -53,6 +53,7 @@ pub const SUITES: &[SuiteInfo] = &[
     SuiteInfo { name: "bip340", what: "BIP340 test-vectors.csv: the verification column", default: true, needs_harness: true },
     SuiteInfo { name: "script-assets", what: "qa-assets script_assets_test.json: success and failure witnesses", default: true, needs_harness: true },
     SuiteInfo { name: "custom", what: "vectors/custom/*.jsonl: targeted request and expected response pairs", default: true, needs_harness: true },
+    SuiteInfo { name: "pow", what: "vectors/pow/*.jsonl: compact targets, proof of work and difficulty adjustment on every network", default: true, needs_harness: true },
     SuiteInfo { name: "corpus", what: "vectors/blocks/*.jsonl.gz: block scenarios recorded from Core's functional tests (CORPUS.md)", default: true, needs_harness: true },
     SuiteInfo { name: "headers-live", what: "the full header chain of a live peer (--peer, --network), fed to the harness", default: false, needs_harness: true },
     SuiteInfo { name: "interop", what: "the implementation as a live node next to a regtest bitcoind (--bitcoind, --node)", default: false, needs_harness: false },

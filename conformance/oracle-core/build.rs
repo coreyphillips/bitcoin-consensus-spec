@@ -31,6 +31,13 @@ const CORE_SOURCES: &[&str] = &[
     "crypto/hex_base.cpp",
     "util/strencodings.cpp",
     "support/cleanse.cpp",
+    "pow.cpp",
+    "chain.cpp",
+    "arith_uint256.cpp",
+    "primitives/block.cpp",
+    "consensus/merkle.cpp",
+    "kernel/chainparams.cpp",
+    "util/time.cpp",
 ];
 
 fn fail(msg: &str) -> ! {
@@ -216,7 +223,9 @@ fn main() {
         .define("DISABLE_OPTIMIZED_SHA256", None)
         .warnings(false)
         .file(manifest.join("cpp/oracle.cpp"))
-        .file(manifest.join("cpp/check.cpp"));
+        .file(manifest.join("cpp/check.cpp"))
+        .file(manifest.join("cpp/pow.cpp"))
+        .file(manifest.join("cpp/log.cpp"));
     for file in CORE_SOURCES {
         cpp.file(src.join(file));
     }

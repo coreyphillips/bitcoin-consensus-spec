@@ -40,7 +40,9 @@ ITEM_ROW = re.compile(r"^\| (\d+) \| (.*) \| [^|]* \|$")
 RUNNER = os.path.join(
     os.path.abspath(os.environ.get("CARGO_TARGET_DIR") or os.path.join(REPO, "target")),
     "release", "bcs-conformance")
-SCRIPT_SUITES = ["script-tests", "tx-valid", "tx-invalid", "sighash", "bip341", "bip340", "script-assets", "custom"]
+SCRIPT_SUITES = [
+    "script-tests", "tx-valid", "tx-invalid", "sighash", "bip341", "bip340", "script-assets", "custom", "pow",
+]
 VERDICTS = ["caught", "caught-level2", "survived"]
 # A check whose call got no answer, worded as the runner's CallError (harness.rs), or whose answer
 # lacks the field it checks (`custom` prints a missing field as null). Any other failed check got
@@ -65,7 +67,7 @@ LEVELS = ["level 0", "level 0 non-normative", "level 1", "level 2"]
 # What the unmodified reference runs for each kind. A missing vector or corpus file lowers these
 # and still passes, so update them with the vectors.
 TOTALS = {
-    "script": "338387 checks in 8 suites",
+    "script": "339801 checks in 9 suites",
     "block": "level 0 5282/5282, level 0 non-normative 1/1, level 1 1237/1237, level 2 2292/2292",
 }
 

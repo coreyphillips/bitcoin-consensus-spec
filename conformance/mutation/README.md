@@ -2,7 +2,7 @@
 
 A test suite is only as good as the bugs it catches. Each mutant in `mutants.json` breaks one rule in a copy of the reference, usually a quirk from Appendix A of the specification (for example "compare the transaction version as signed in BIP68" or "check the block weight before the witness commitment"). Its `item` is the number of that quirk in Appendix A, or null for a rule Appendix A does not list. Which item a mutant breaks is a judgment made when it is added. `run.py` builds each broken copy's harness and runs the suites that should notice:
 
-- `script` mutants: the vector suites and `custom`;
+- `script` mutants: the vector suites, `custom` and `pow`;
 - `block` mutants: the `corpus` suite.
 
 Before any mutant, an unmodified copy goes through the same steps and must pass every check of those suites, at every level. Its totals must also equal `TOTALS` in `run.py`, which changes with the vectors and the corpus. Otherwise a run with no block corpus, or with a harness that does not start, would catch every mutant. The copies build into their own `target` directories, whatever `CARGO_TARGET_DIR` says.

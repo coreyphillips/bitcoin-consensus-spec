@@ -22,7 +22,10 @@
         "sighash_legacy",
         "sighash_taproot",
         "taproot_commitment_verify",
-        "schnorr_verify"
+        "schnorr_verify",
+        "pow_compact",
+        "pow_check",
+        "pow_next_work"
       ],
       "spec_version": "v32.1",
       "version": "0.1.0"

@@ -259,6 +259,49 @@ Response: `{"hash_serialized_3": hash, "txouts": integer}` for the active chain 
 
 This operation is optional. A harness for an implementation that keeps no UTXO set leaves it out of `ops`. The runner then does not send it, and counts each UTXO check of the corpus at level 2 as not compared, which fails the run only with `--fail-on-level2` (as for a live node that leaves `hash_serialized_3` out, section 5).
 
+### 4.14 `pow_compact`
+
+Decodes compact `bits` and computes the work of a block with those `bits` (specification chapter 09 sections 9.1 and 9.3).
+
+| Request field | Type | Meaning |
+|---|---|---|
+| `bits` | integer | 0 to 2^32 - 1 |
+
+| Response field | Type | Meaning |
+|---|---|---|
+| `target` | hex | The decoded value, 32 bytes big-endian |
+| `negative` | bool | The decoding's *negative* condition |
+| `overflow` | bool | The decoding's *overflow* condition |
+| `compact` | integer | The canonical encoding of `target` (`target_to_compact`) |
+| `work` | hex | `block_proof(bits)`, 32 bytes big-endian |
+
+### 4.15 `pow_check`
+
+The context-free proof-of-work check of a header (chapter 09 section 9.2): `bits` must decode to a target that is valid and within the network's proof-of-work limit, and the hash must not exceed it.
+
+| Request field | Type | Meaning |
+|---|---|---|
+| `network` | string | As in 4.8 |
+| `hash` | hash | Block hash, display order |
+| `bits` | integer | 0 to 2^32 - 1 |
+
+Response: `{"valid": bool}`.
+
+### 4.16 `pow_next_work`
+
+The `bits` a block must have, given its parent and the parent's ancestors (chapter 09 section 9.5, `next_work_required`).
+
+| Request field | Type | Meaning |
+|---|---|---|
+| `network` | string | As in 4.8 |
+| `parent_height` | integer | Height of the parent |
+| `chain` | array | Runs of headers `[count, time, step, bits]`, expanded in order: header `i` of a run (from 0) has timestamp `time + i * step` and the run's `bits`. The last header is the parent. The headers start at the first block of the parent's difficulty period, height `parent_height - parent_height % interval`, so there are `parent_height % interval + 1` of them; that is every header the computation can read. |
+| `time` | integer | Timestamp of the new block |
+
+Response: `{"bits": integer}`.
+
+The headers have only a timestamp and `bits`, and need not be a chain that could exist: the cases test the function, as the script cases do. The suite `pow` (`vectors/pow`) sends these three operations; a harness that lists none of them must leave that suite out (section 6).
+
 ## 5. Live node contract
 
 The interop suite runs the implementation as a real node next to Bitcoin Core (the peer-sync suite has its own contract, section 5.1). For that suite the user supplies a node command template. The runner substitutes these placeholders:

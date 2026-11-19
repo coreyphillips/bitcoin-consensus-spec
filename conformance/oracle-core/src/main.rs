@@ -2,7 +2,8 @@
 //! from Bitcoin Core v32.1's own consensus code, compiled from source by `build.rs`.
 //!
 //! It reads one JSON request per line on standard input and writes one JSON response per line on
-//! standard output. Chain operations are not provided (`unsupported_op`).
+//! standard output. Chain operations are not provided (`unsupported_op`); the proof-of-work
+//! operations take the chain they need in the request.
 
 mod ffi;
 
@@ -24,6 +25,9 @@ const OPS: &[&str] = &[
     "sighash_taproot",
     "taproot_commitment_verify",
     "schnorr_verify",
+    "pow_compact",
+    "pow_check",
+    "pow_next_work",
 ];
 
 /// Operations outside PROTOCOL.md, listed under `extensions` in `info` (not under `ops`).
@@ -111,8 +115,11 @@ fn handle_line(line: &str) -> String {
         "sighash_taproot" => sighash_taproot(obj),
         "taproot_commitment_verify" => taproot_commitment_verify(obj),
         "schnorr_verify" => schnorr_verify(obj),
+        "pow_compact" => pow_compact(obj),
+        "pow_check" => pow_check(obj),
+        "pow_next_work" => pow_next_work(obj),
         other => Err(Failure::Unsupported(format!(
-            "oracle-core only provides the context-free operations, not {other}"
+            "oracle-core only provides the operations that need no chain state, not {other}"
         ))),
     };
     match result {
@@ -359,4 +366,70 @@ fn schnorr_verify(req: &Fields) -> Result<Fields, Failure> {
     let sig: [u8; 64] = fixed_hex(req, "sig")?;
     let valid = ffi::schnorr_verify(&pubkey, &msg, &sig)?;
     Ok(fields(json!({"valid": valid})))
+}
+
+fn str_field<'a>(req: &'a Fields, field: &str) -> Result<&'a str, Failure> {
+    match req.get(field) {
+        Some(Value::String(s)) => Ok(s),
+        Some(_) => Err(bad(format!("{field} must be a string"))),
+        None => Err(bad(format!("missing field {field}"))),
+    }
+}
+
+fn pow_compact(req: &Fields) -> Result<Fields, Failure> {
+    let c = ffi::pow_compact(u32_field(req, "bits")?)?;
+    Ok(fields(json!({
+        "target": encode_hex(&c.target),
+        "negative": c.negative,
+        "overflow": c.overflow,
+        "compact": c.compact,
+        "work": encode_hex(&c.work),
+    })))
+}
+
+fn pow_check(req: &Fields) -> Result<Fields, Failure> {
+    let network = str_field(req, "network")?;
+    // Display order in the protocol, raw order for Core.
+    let mut hash: [u8; 32] = fixed_hex(req, "hash")?;
+    hash.reverse();
+    let valid = ffi::pow_check(network, &hash, u32_field(req, "bits")?)?;
+    Ok(fields(json!({"valid": valid})))
+}
+
+/// Upper bound on the headers of one request; the longest window a network needs is 2016.
+const MAX_CHAIN: u64 = 100_000;
+
+fn pow_next_work(req: &Fields) -> Result<Fields, Failure> {
+    let network = str_field(req, "network")?;
+    let parent_height = i32::try_from(int_field(req, "parent_height")?)
+        .map_err(|_| bad("parent_height out of range"))?;
+    let time = u32_field(req, "time")?;
+    let Some(Value::Array(runs)) = req.get("chain") else {
+        return Err(bad("chain must be an array of [count, time, step, bits] runs"));
+    };
+    let mut headers: Vec<(u32, u32)> = Vec::new();
+    for run in runs {
+        let shape = || bad("chain entries must be [count, time, step, bits] integer arrays");
+        let items = run.as_array().filter(|a| a.len() == 4).ok_or_else(shape)?;
+        let count = items[0].as_u64().ok_or_else(shape)?;
+        let first = items[1].as_i64().ok_or_else(shape)?;
+        let step = items[2].as_i64().ok_or_else(shape)?;
+        let bits = items[3]
+            .as_u64()
+            .and_then(|b| u32::try_from(b).ok())
+            .ok_or_else(shape)?;
+        if headers.len() as u64 + count > MAX_CHAIN {
+            return Err(bad(format!("chain holds more than {MAX_CHAIN} headers")));
+        }
+        for i in 0..count as i64 {
+            let t = step
+                .checked_mul(i)
+                .and_then(|d| d.checked_add(first))
+                .and_then(|t| u32::try_from(t).ok())
+                .ok_or_else(|| bad("chain: a header time is outside 0 to 2^32 - 1"))?;
+            headers.push((t, bits));
+        }
+    }
+    let bits = ffi::pow_next_work(network, parent_height, &headers, time)?;
+    Ok(fields(json!({"bits": bits})))
 }
