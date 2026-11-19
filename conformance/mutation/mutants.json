@@ -1326,8 +1326,8 @@
   "item": 63,
   "old": "    window[window.len() / 2]",
   "new": "    window[(window.len() - 1) / 2]",
-  "expect": "survived",
-  "note": "No corpus block is decided by the median of an even number of timestamps near genesis. #55 tracks a test."
+  "expect": "caught",
+  "note": "No recorded block is decided by the median of an even number of timestamps near genesis. Caught by vectors/mtp, where blocks at heights 2, 4, 6, 8 and 10 dated between the two middle timestamps must leave the tip where it was."
  },
  {
   "name": "flag-exceptions-ignored",

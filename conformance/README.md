@@ -20,6 +20,7 @@ Tooling that checks an implementation of the specification against Bitcoin Core 
 | `vectors/block-connect/` | Mainnet and testnet3 blocks with the coins they spend, connected without chain state, in the same format (compressed) |
 | `vectors/blocks/` | The block corpus: scenarios recorded from Core's functional tests (`CORPUS.md`) |
 | `vectors/chainwork/` | One signet scenario in the corpus format where the chain with most work is not the longest |
+| `vectors/mtp/` | One regtest scenario in the corpus format where blocks near genesis are decided by the upper median of an even number of timestamps |
 
 The runner does not depend on the reference crate: it must stay independent of what it tests.
 
@@ -279,7 +280,7 @@ combinations (plus the same `tx_check`s, with Core's reject reason at level 2).
 
 ## Corpus suite
 
-`corpus` replays every `*.jsonl.gz` file of `vectors/blocks`, `vectors/chainwork` and `vectors/signet` (or the
+`corpus` replays every `*.jsonl.gz` file of `vectors/blocks`, `vectors/chainwork`, `vectors/signet` and `vectors/mtp` (or the
 files and directories given with `--corpus`, repeatable) exactly as `CORPUS.md` section 4 says. A
 file is named by its file name without `.jsonl.gz`, so the corpus, interop and peer-sync suites
 refuse to run when two selected files have the same name. `reset` becomes `chain_reset` (the
