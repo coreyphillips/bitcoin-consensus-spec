@@ -324,9 +324,12 @@ it sends `version` (protocol 70016, no relay), answers `version` with `verack` a
 `LocatorEntries`) until a `headers` message has fewer than 2,000 entries. The harness gets
 `chain_reset` for the network (its genesis must be the network's) and one `chain_process_headers`
 per `headers` message, with `via: p2p` and the current time as `now`; the next `getheaders` is sent
-before the harness processes the current message. The suite passes when every message is accepted
-and the final `best_header` is the last header the peer sent. The details report the peer, the
-height, the chain work (computed by the runner from the headers' `nBits`) and the time.
+before the harness processes the current message. The suite passes when every message is accepted,
+the final `best_header` is the last header the peer sent, and the peer sent at least one header and
+a chain at least as high as the start height it announced in `version` (check `chain height`). A
+Bitcoin Core peer whose chain has less work than its `-minimumchainwork` answers `getheaders` with
+no header, which fails that check. The details report the peer, the height, the chain work
+(computed by the runner from the headers' `nBits`) and the time.
 
 `--peer HOST[:PORT]` (default port of the network); a name is resolved and its addresses are tried
 in turn. `--network` is `main` (default), `testnet3`, `testnet4`, `signet` (default challenge) or

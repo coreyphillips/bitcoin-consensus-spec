@@ -3,9 +3,10 @@
 //!
 //! The harness gets `chain_reset` for the network, then `chain_process_headers` (with `via: p2p`
 //! and the current time as `now`) for every `headers` message of at most 2,000 headers, in the
-//! order received. The suite passes when every message is accepted and the harness's final
-//! `best_header` is the last header the peer sent. It reports the height and the chain work of
-//! that header (computed by the runner from the headers' `nBits`).
+//! order received. The suite passes when every message is accepted, the harness's final
+//! `best_header` is the last header the peer sent, and the peer sent at least one header and a
+//! chain at least as high as the start height it announced in `version`. It reports the height and
+//! the chain work of that header (computed by the runner from the headers' `nBits`).
 
 use crate::check::Ctx;
 use crate::hex;
@@ -47,6 +48,24 @@ fn resolve(peer: &str, default_port: u16) -> Result<Vec<SocketAddr>, String> {
     Ok(addrs)
 }
 
+/// Why a download that ended at `height` is too short to pass, given the start height the peer
+/// announced in `version` (-1 when it sent none).
+fn short_download(height: usize, start_height: i32) -> Option<String> {
+    if height == 0 {
+        // Bitcoin Core answers `getheaders` with an empty `headers` message while its chain has
+        // less work than `-minimumchainwork`.
+        return Some(format!(
+            "the peer sent no header (it announced start height {start_height}), so no header was checked"
+        ));
+    }
+    if (height as i64) < i64::from(start_height) {
+        return Some(format!(
+            "the peer's header chain ends at height {height}, below the start height {start_height} it announced"
+        ));
+    }
+    None
+}
+
 pub fn run(ctx: &mut Ctx, cfg: &Config) -> Result<(), String> {
     let net =
         p2p::network(&cfg.network).ok_or_else(|| format!("unknown network {}", cfg.network))?;
@@ -86,6 +105,8 @@ pub fn run(ctx: &mut Ctx, cfg: &Config) -> Result<(), String> {
     let mut addr_index = 0usize;
     let mut last_error = String::new();
     let mut peer_text = String::new();
+    // Of the connection that ends the download.
+    let mut start_height = -1i32;
     let mut synced = false;
 
     'connections: while connections <= cfg.max_reconnects && !synced {
@@ -108,6 +129,7 @@ pub fn run(ctx: &mut Ctx, cfg: &Config) -> Result<(), String> {
             "{} ({}, protocol {}, start height {})",
             addr, peer.user_agent, peer.version, peer.start_height
         );
+        start_height = peer.start_height;
         eprintln!("headers-live: connected to {peer_text}");
         if let Err(e) = peer.request_headers(&p2p::locator(&hashes)) {
             last_error = format!("{addr}: {e}");
@@ -240,6 +262,10 @@ pub fn run(ctx: &mut Ctx, cfg: &Config) -> Result<(), String> {
 
     let height = hashes.len() - 1;
     let last = hex::encode_reversed(hashes.last().unwrap());
+    match short_download(height, start_height) {
+        None => ctx.pass(),
+        Some(why) => ctx.fail("chain height", &why),
+    }
     if best_header == last {
         ctx.pass();
     } else {
@@ -261,4 +287,28 @@ pub fn run(ctx: &mut Ctx, cfg: &Config) -> Result<(), String> {
         started.elapsed().as_secs_f64()
     ));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::short_download;
+
+    #[test]
+    fn a_download_with_no_header_fails() {
+        // A regtest Core node with 50 blocks below its minimum chain work.
+        assert!(short_download(0, 50).is_some());
+        // A peer whose chain is only the genesis block still leaves nothing checked.
+        assert!(short_download(0, 0).is_some());
+        assert!(short_download(0, -1).is_some());
+    }
+
+    #[test]
+    fn a_download_below_the_announced_start_height_fails() {
+        assert!(short_download(49, 50).is_some());
+        assert_eq!(short_download(50, 50), None);
+        // The peer's chain may have grown since it connected.
+        assert_eq!(short_download(51, 50), None);
+        // A peer that announced no start height.
+        assert_eq!(short_download(1, -1), None);
+    }
 }
