@@ -60,7 +60,7 @@ use crate::tx::{sha256d, write_compact_size};
 use crate::work::U256;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Stdio};
@@ -462,7 +462,7 @@ impl<'a> Session<'a> {
         let stdout = child.stdout.take().expect("piped stdout");
         let stdin = child.stdin.take();
         std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
+            for line in process::output_lines(stdout) {
                 match line {
                     Ok(l) => {
                         if tx.send(Event::NodeLine(l)).is_err() {
@@ -1887,6 +1887,7 @@ mod tests {
 
     /// A node that completes the handshake, answers `ping`, and reports regtest genesis as its
     /// tip. With `ask` it requests every header it is sent; with `never` it requests nothing.
+    /// `junk` is `ask` that also writes a line that is not UTF-8 before each answer.
     const FAKE_NODE: &str = r#"
 import hashlib, json, socket, struct, sys, threading
 host, port = sys.argv[1].rsplit(":", 1)
@@ -1913,7 +1914,7 @@ def reader():
             p = exact(struct.unpack("<I", h[16:20])[0])
             if cmd == "version": send("verack", b"")
             elif cmd == "ping": send("pong", p)
-            elif cmd == "headers" and mode == "ask" and p[0]:
+            elif cmd == "headers" and mode in ("ask", "junk") and p[0]:
                 send("getdata", bytes([p[0]]) + b"".join(
                     struct.pack("<I", 0x40000002) + dsha(p[1 + 81 * i:81 + 81 * i]) for i in range(p[0])))
     except (EOFError, OSError):
@@ -1922,6 +1923,8 @@ threading.Thread(target=reader, daemon=True).start()
 send("version", struct.pack("<iQq", 70016, 8, 0) + bytes(52) + struct.pack("<Q", 1) + b"\0" + struct.pack("<ib", 0, 0))
 for line in sys.stdin:
     if json.loads(line)["op"] == "tip":
+        if mode == "junk":
+            sys.stdout.buffer.write(b"\xff not UTF-8\n")
         print(json.dumps({"event": "tip", "id": json.loads(line)["id"], "tip": genesis, "height": 0}), flush=True)
 "#;
 
@@ -1990,6 +1993,15 @@ for line in sys.stdin:
     #[test]
     fn case_block_requested_and_delivered_passes() {
         if let Some((verdict, delivered)) = fake_node_case("ask", "bad-txns-nonfinal") {
+            assert_eq!(verdict, None);
+            assert!(delivered);
+        }
+    }
+
+    /// A line that is not UTF-8 does not stop the runner reading the answers after it.
+    #[test]
+    fn a_line_that_is_not_utf8_is_skipped() {
+        if let Some((verdict, delivered)) = fake_node_case("junk", "bad-txns-nonfinal") {
             assert_eq!(verdict, None);
             assert!(delivered);
         }

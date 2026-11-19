@@ -32,7 +32,6 @@ use crate::suites::corpus;
 use crate::tx::sha256d;
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::mpsc;
@@ -182,7 +181,7 @@ fn run_node(command: &str, stderr_path: &Path, timeout: Duration) -> Result<Node
     let stdout = child.stdout.take().expect("piped stdout");
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
+        for line in crate::process::output_lines(stdout) {
             if tx.send(line).is_err() {
                 break;
             }
@@ -255,6 +254,9 @@ fn run_node(command: &str, stderr_path: &Path, timeout: Duration) -> Result<Node
                 if let Ok(Some(status)) = child.try_wait() {
                     // Drain what is left, then stop waiting.
                     while let Ok(Ok(line)) = rx.recv_timeout(Duration::from_millis(200)) {
+                        if !line.starts_with('{') {
+                            continue;
+                        }
                         if let Ok(v) = serde_json::from_str::<Value>(&line) {
                             if v["event"] == "stopped" {
                                 out.stopped = Some(v);
@@ -759,6 +761,44 @@ mod tests {
         assert_eq!(out.problems.len(), 1, "{:?}", out.problems);
         assert!(
             out.problems[0].starts_with("the node command was stopped (process "),
+            "{}",
+            out.problems[0]
+        );
+    }
+
+    /// A line that is not UTF-8 does not end the node's output: the stopped line after it is read.
+    #[test]
+    fn a_line_that_is_not_utf8_is_skipped() {
+        let path = std::env::temp_dir().join(format!("bcs-interop-utf8-{}", std::process::id()));
+        let out = run_node(
+            r#"printf '\377 not UTF-8\n{"event":"stopped","tip":"00","height":0}\n'"#,
+            &path,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(out.problems.is_empty(), "{:?}", out.problems);
+        assert_eq!(out.stopped.unwrap()["tip"], "00");
+        assert!(out.exit.unwrap().success());
+    }
+
+    /// A stopped line that is not UTF-8 fails the chain instead of passing with its fields lost.
+    #[test]
+    fn a_stopped_line_that_is_not_utf8_fails() {
+        let path =
+            std::env::temp_dir().join(format!("bcs-interop-utf8-msg-{}", std::process::id()));
+        let out = run_node(
+            r#"printf '{"event":"stopped","tip":"00","height":0,"hash_serialized_3\377":"00"}\n'"#,
+            &path,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(out.stopped.is_none());
+        assert_eq!(out.problems.len(), 1, "{:?}", out.problems);
+        assert!(
+            out.problems[0]
+                .starts_with("cannot read the node's output: a line starting with { is not UTF-8"),
             "{}",
             out.problems[0]
         );
