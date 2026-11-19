@@ -1,6 +1,6 @@
 # Tools
 
-`differential.py` sends the same random requests to two harnesses and prints every answer that differs. It stands in for the differential tools of the independent reviews in `RESULTS.md` section 2, which were written for those reviews and not kept. It reproduces their method for requests, not their figures.
+`differential.py` sends the same random requests to two harnesses, counts every answer that differs and prints the first ten in each domain (`--show N` prints more). It stands in for the differential tools of the independent reviews in `RESULTS.md` section 2, which were written for those reviews and not kept. It reproduces their method for requests, not their figures.
 
 | Domain | Requests | Chapters |
 |---|---|---|
@@ -16,7 +16,7 @@ python3 conformance/tools/differential.py --cases 20000 --seed 1 \
   --a target/release/reference-harness --b conformance/oracle-core/target/release/oracle-core-harness
 ```
 
-The same seed gives the same requests. A request both harnesses answer with `bad_request` (a changed transaction whose input count no longer matches `spent_outputs`, a block that no longer decodes) is counted as malformed and not compared. The exit status is 1 if any answer differs. Any harness can be the `--a` side, so a candidate implementation can be checked against the oracle the same way.
+The same seed gives the same requests. A request both harnesses answer with `bad_request` (a changed transaction whose input count no longer matches `spent_outputs`, a block that no longer decodes) is counted as malformed and not compared. The exit status is 1 if any answer differs or a harness fails (`unsupported_op`, `internal`). Any harness can be the `--a` side, so a candidate implementation can be checked against the oracle the same way.
 
 The weekly `core` workflow runs 20,000 requests per domain with a new seed each time, printed in its log.
 

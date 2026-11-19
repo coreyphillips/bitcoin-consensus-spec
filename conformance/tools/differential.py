@@ -7,8 +7,8 @@ Usage:
 The usual pair is the reference (`target/release/reference-harness`) and Bitcoin Core's own code
 (`conformance/oracle-core/target/release/oracle-core-harness`). Each domain generates `--cases`
 requests: fresh random ones and random mutations of the committed vectors. The same seed gives the
-same requests. Exit status: 0 if every comparable answer is identical, 1 if any differs, 2 if a
-harness fails.
+same requests. Exit status: 0 if every comparable answer is identical, 1 if any differs or a
+harness fails (`unsupported_op`, `internal`, no answer).
 """
 
 import argparse
@@ -52,10 +52,13 @@ class Harness:
         self.proc.wait()
 
 
-def comparable(answer):
+def comparable(answer, harness, request):
     """The fields a conforming harness must agree on, or None if the request was not well formed."""
     if answer.get("ok") is not True:
-        return None if answer.get("error") == "bad_request" else {"ok": False, "error": answer.get("error")}
+        # Two harnesses that both fail would otherwise compare equal.
+        if answer.get("error") != "bad_request":
+            sys.exit(f"harness failed: {harness.command}\nanswer: {json.dumps(answer)}\nrequest: {json.dumps(request)}")
+        return None
     answer = {k: v for k, v in answer.items() if k != "message"}
     if answer.get("script_error") == "OK":
         del answer["script_error"]
@@ -341,10 +344,14 @@ def main():
         rng = random.Random(f"{args.seed}/{domain}")
         compared = skipped = diffs = 0
         for request in DOMAINS[domain](rng, args.cases):
-            x, y = comparable(a.ask(request)), comparable(b.ask(request))
+            x, y = comparable(a.ask(request), a, request), comparable(b.ask(request), b, request)
             if x is None and y is None:
                 skipped += 1
                 continue
+            # These diagnostics are optional in PROTOCOL.md, so only compare them when both sides give one.
+            for key in ("script_error", "reason"):
+                if x and y and (key in x) != (key in y):
+                    x.pop(key, None), y.pop(key, None)
             compared += 1
             if x != y:
                 diffs += 1
