@@ -1572,12 +1572,7 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
     let mut totals = (ModeResult::default(), ModeResult::default());
     for (i, file) in files.iter().enumerate() {
         let started = Instant::now();
-        let name = file
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .trim_end_matches(".jsonl.gz")
-            .to_string();
+        let name = corpus::file_name(file);
         let root = base.join(format!("{i:03}-{name}"));
         let _ = std::fs::remove_dir_all(&root);
         eprintln!("peer-sync: {name} ({} of {})", i + 1, files.len());

@@ -42,7 +42,8 @@ const DIAGNOSTIC_EVENTS: usize = 40;
 const MAX_MISMATCH_LINES: usize = 20;
 
 /// Every `*.jsonl.gz` file in the given directories (sorted by name) and every file given
-/// directly.
+/// directly. Two files with the same name (`file_name`) are refused, the same file selected twice
+/// too: failures and `--known-failures` entries name a file by that name alone.
 pub fn corpus_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
     let mut files = Vec::new();
     for p in paths {
@@ -60,7 +61,29 @@ pub fn corpus_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
             return Err(format!("{} does not exist", p.display()));
         }
     }
+    let mut seen: BTreeMap<String, &PathBuf> = BTreeMap::new();
+    for f in &files {
+        let name = file_name(f);
+        if let Some(first) = seen.insert(name.clone(), f) {
+            return Err(format!(
+                "{} and {} are both named {name}: failures and --known-failures entries \
+                 name a corpus file by its name alone",
+                first.display(),
+                f.display()
+            ));
+        }
+    }
     Ok(files)
+}
+
+/// The name a corpus file's failures and `--known-failures` entries use: its file name without
+/// `.jsonl.gz`.
+pub fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_default()
+        .trim_end_matches(".jsonl.gz")
+        .to_string()
 }
 
 /// Reads one corpus file: the `meta` event and every following event.
@@ -384,11 +407,7 @@ pub fn replay_file(
     fail_on_tips: bool,
 ) -> FileResult {
     let started = Instant::now();
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let name = name.trim_end_matches(".jsonl.gz").to_string();
+    let name = file_name(path);
     let mut r = FileResult {
         name: name.clone(),
         ..Default::default()
@@ -947,6 +966,40 @@ done"#;
             .details
             .iter()
             .any(|d| d.contains("--fail-on-tips")));
+    }
+
+    #[test]
+    fn files_that_share_a_name_are_refused() {
+        let dir =
+            std::env::temp_dir().join(format!("bcs-corpus-test-{}-names", std::process::id()));
+        for sub in ["one", "two", "three"] {
+            std::fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        for f in [
+            "one/shared.jsonl.gz",
+            "two/shared.jsonl.gz",
+            "three/other.jsonl.gz",
+        ] {
+            std::fs::write(dir.join(f), b"").unwrap();
+        }
+        let files =
+            |paths: &[&str]| corpus_files(&paths.iter().map(|p| dir.join(p)).collect::<Vec<_>>());
+        // An entry `corpus shared check 1` would waive check 1 of whichever file failed it.
+        let e = files(&["one", "two"]).unwrap_err();
+        assert!(e.contains("are both named shared"), "{e}");
+        assert!(
+            e.contains(&dir.join("one/shared.jsonl.gz").display().to_string()),
+            "{e}"
+        );
+        assert!(
+            e.contains(&dir.join("two/shared.jsonl.gz").display().to_string()),
+            "{e}"
+        );
+        assert!(files(&["one/shared.jsonl.gz", "two"]).is_err());
+        // The same file selected twice would leave its second replay unwaived.
+        assert!(files(&["one", "one/shared.jsonl.gz"]).is_err());
+        assert_eq!(files(&["one", "three"]).unwrap().len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

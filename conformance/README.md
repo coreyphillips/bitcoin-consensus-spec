@@ -277,7 +277,9 @@ combinations (plus the same `tx_check`s, with Core's reject reason at level 2).
 ## Corpus suite
 
 `corpus` replays every `vectors/blocks/*.jsonl.gz` and `vectors/chainwork/*.jsonl.gz` file (or the
-files and directories given with `--corpus`, repeatable) exactly as `CORPUS.md` section 4 says: `reset` becomes `chain_reset` (the
+files and directories given with `--corpus`, repeatable) exactly as `CORPUS.md` section 4 says. A
+file is named by its file name without `.jsonl.gz`, so the corpus, interop and peer-sync suites
+refuse to run when two selected files have the same name. `reset` becomes `chain_reset` (the
 returned genesis must equal the event's), `block`, `headers` and `invalidate` become
 `chain_process_block` (with `now`, `via`, and `requested` when present; blobs are read, and the
 block hash, blob size and blob SHA-256 are checked), `chain_process_headers` (with `now` and

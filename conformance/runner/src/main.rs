@@ -59,7 +59,7 @@ RUN OPTIONS:
 
 CORPUS OPTIONS:
   --corpus PATH       Corpus file or directory, repeatable (default: <vectors>/blocks, and for
-                      the corpus suite also <vectors>/chainwork)
+                      the corpus suite also <vectors>/chainwork); no two files may share a name
   --restart-shortcut  Skip restart events whose options equal the ones in force (CORPUS.md 4)
   --fail-on-tips      Count each chain tip set (level 1) as a check, so one that differs fails
                       the run; --known-failures names it \"<file> check <n> tips\"
