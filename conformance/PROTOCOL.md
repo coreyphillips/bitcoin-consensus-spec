@@ -367,7 +367,7 @@ The interop suite runs the implementation as a real node next to Bitcoin Core (t
 | `{stop_at}` | Block hash (display order) at which to stop. It may be below the peer's tip. |
 | `{options}` | The network options object of section 4.8 as one shell-quoted JSON argument, `'{}'` when there are none |
 
-The runner fills the template in one pass, so text it inserts is never read for placeholders. `{datadir}` and `{options}` arrive already quoted, so the template must not quote them again. The directory's path may hold spaces or shell syntax.
+The runner fills the template in one pass, so text it inserts is never read for placeholders. `{datadir}` and `{options}` arrive already quoted, so the template must not quote them again. The runner refuses a template that writes `{datadir}` inside quotes. The directory's path may hold spaces or shell syntax.
 
 The runner skips, as a stated rule, every scenario that needs network options when the template has no `{options}`.
 

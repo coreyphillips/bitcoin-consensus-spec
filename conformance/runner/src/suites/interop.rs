@@ -181,6 +181,32 @@ pub fn node_command(
     crate::process::expand(template, &values)
 }
 
+/// Refuses a node command that writes `{datadir}` inside quotes. [`node_command`] quotes the path
+/// itself, so a quoted placeholder would give the node added quote characters or a path split at
+/// each space.
+pub fn check_datadir_unquoted(template: &str) -> Result<(), String> {
+    let mut quote = None;
+    let mut chars = template.char_indices();
+    while let Some((i, c)) = chars.next() {
+        match (quote, c) {
+            (Some('\''), '\'') | (Some('"'), '"') => quote = None,
+            (None, '\'' | '"') => quote = Some(c),
+            (None | Some('"'), '\\') => {
+                chars.next();
+            }
+            (Some(_), '{') if template[i..].starts_with("{datadir}") => {
+                return Err(
+                    "the node command quotes {datadir}, which the runner already passes \
+                     as one shell-quoted argument: write it bare (PROTOCOL.md section 5)"
+                        .into(),
+                );
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// What the node reported.
 struct NodeOutcome {
     stopped: Option<Value>,
@@ -593,6 +619,7 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
             cfg.bitcoind.display()
         ));
     }
+    check_datadir_unquoted(&cfg.node)?;
     let chains = chains(&cfg.corpus)?;
     if chains
         .iter()
@@ -775,6 +802,26 @@ mod tests {
             node_command("{stop_at}", dir, "127.0.0.1:1", None, &options),
             "{stop_at}"
         );
+    }
+
+    #[test]
+    fn quoted_datadir_is_refused() {
+        for ok in [
+            "node --datadir {datadir}",
+            r#"node '--x' "it's" {datadir}/x "y""#,
+            r#"node \' \" {datadir} "a\"b" '\'"#,
+        ] {
+            assert_eq!(check_datadir_unquoted(ok), Ok(()), "{ok}");
+        }
+        for quoted in [
+            "node --datadir '{datadir}'",
+            r#"node --datadir "{datadir}""#,
+            r#"node "--datadir={datadir}""#,
+            "node '--datadir={datadir}/x'",
+            r#"node "a\"b {datadir}""#,
+        ] {
+            assert!(check_datadir_unquoted(quoted).is_err(), "{quoted}");
+        }
     }
 
     /// A node command that is stopped fails at once, not after the node timeout.

@@ -1587,6 +1587,7 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
     if cfg.node.contains("{stop_at}") {
         return Err(RULE_STOP_AT.into());
     }
+    interop::check_datadir_unquoted(&cfg.node)?;
     let files = corpus::corpus_files(&cfg.corpus)?;
     if files.is_empty() {
         let where_: Vec<String> = cfg.corpus.iter().map(|p| p.display().to_string()).collect();
