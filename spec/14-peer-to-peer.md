@@ -447,6 +447,14 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
             _ => e,
         })
     };
+    // A write timeout is relative, so it is set again before each write that precedes `verack`.
+    let bound_by_deadline = |stream: &std::net::TcpStream| -> std::io::Result<()> {
+        let remaining = handshake_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(Error::new(ErrorKind::TimedOut, "handshake did not complete"));
+        }
+        stream.set_write_timeout(Some(remaining))
+    };
 
     let nonce = sha256(&unix_now().to_le_bytes());
     let version = VersionMessage {
@@ -509,11 +517,7 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
         for message in messages {
             // A read or an earlier reply can end past the deadline, so check it before each message.
             if !handshake_done {
-                let remaining = handshake_deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
-                    return Err(Error::new(ErrorKind::TimedOut, "handshake did not complete"));
-                }
-                stream.set_write_timeout(Some(remaining))?;
+                bound_by_deadline(&stream)?;
             }
             match message.command.as_str() {
                 "version" => {
@@ -522,6 +526,9 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
                         return Err(Error::new(ErrorKind::InvalidData, "peer version too old"));
                     }
                     send(&mut stream, "sendheaders", &[])?;
+                    if !handshake_done {
+                        bound_by_deadline(&stream)?;
+                    }
                     send(&mut stream, "verack", &[])?;
                 }
                 // A repeated `verack` is ignored, so it cannot restart the idle clock.
