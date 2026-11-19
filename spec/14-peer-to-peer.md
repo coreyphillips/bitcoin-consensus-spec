@@ -730,7 +730,7 @@ mod sync_tests {
     use std::time::Duration;
 
     fn regtest() -> ChainState {
-        ChainState::new(network_params(Network::Regtest, &NetworkOptions::default()))
+        ChainState::new(network_params(Network::Regtest, &NetworkOptions::default()).unwrap())
     }
 
     /// The peer's `version`, then `before_verack`, then its `verack`.

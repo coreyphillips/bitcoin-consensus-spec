@@ -18,6 +18,10 @@ pub enum Json {
     Obj(BTreeMap<String, Json>),
 }
 
+/// Deepest nesting of arrays and objects accepted. Requests need three levels; the parser recurses
+/// once per level, so without a limit a line of `[` overflows the stack.
+const MAX_DEPTH: usize = 64;
+
 struct Parser<'a> {
     s: &'a [u8],
     i: usize,
@@ -29,10 +33,13 @@ impl<'a> Parser<'a> {
             self.i += 1;
         }
     }
-    fn parse(&mut self) -> Result<Json, String> {
+    fn parse(&mut self, depth: usize) -> Result<Json, String> {
         self.ws();
         if self.i >= self.s.len() {
             return Err("unexpected end".into());
+        }
+        if depth == MAX_DEPTH && matches!(self.s[self.i], b'{' | b'[') {
+            return Err(format!("nested deeper than {MAX_DEPTH} levels"));
         }
         match self.s[self.i] {
             b'{' => {
@@ -45,7 +52,7 @@ impl<'a> Parser<'a> {
                 }
                 loop {
                     self.ws();
-                    let key = match self.parse()? {
+                    let key = match self.parse(depth + 1)? {
                         Json::Str(k) => k,
                         _ => return Err("object key must be a string".into()),
                     };
@@ -54,7 +61,7 @@ impl<'a> Parser<'a> {
                         return Err("expected ':'".into());
                     }
                     self.i += 1;
-                    let value = self.parse()?;
+                    let value = self.parse(depth + 1)?;
                     map.insert(key, value);
                     self.ws();
                     match self.s.get(self.i) {
@@ -76,7 +83,7 @@ impl<'a> Parser<'a> {
                     return Ok(Json::Arr(items));
                 }
                 loop {
-                    items.push(self.parse()?);
+                    items.push(self.parse(depth + 1)?);
                     self.ws();
                     match self.s.get(self.i) {
                         Some(b',') => self.i += 1,
@@ -163,7 +170,7 @@ impl<'a> Parser<'a> {
 
 pub fn parse_json(text: &str) -> Result<Json, String> {
     let mut p = Parser { s: text.as_bytes(), i: 0 };
-    let v = p.parse()?;
+    let v = p.parse(0)?;
     p.ws();
     if p.i != p.s.len() {
         return Err("trailing characters".into());
