@@ -12,6 +12,7 @@ For events recorded as P2P deliveries ("via": "p2p", the default) the harness
 reproduces the places where Core's P2P block and headers handling differs from
 the RPCs (net_processing.cpp and validation.cpp, v32.1):
 
+- a block message that does not deserialize is dropped without any effect;
 - a block whose parent is known and which IsBlockMutated reports as mutated is
   dropped without any effect;
 - a block whose header is new and whose claimed chain work is below the anti-DoS
@@ -244,14 +245,22 @@ class Node:
         return self.classify(res)
 
     def process_block(self, raw, via, requested):
+        if via not in ("p2p", "rpc"):
+            raise BadRequest("via must be p2p or rpc")
+        # Bytes after the last transaction are ignored on both paths, so they go to Core unchanged.
         try:
-            blk = blocklib.parse_block(raw, allow_trailing=False)
+            blk = blocklib.parse_block(raw)
         except blocklib.DecodeError as e:
-            raise BadRequest("block does not decode: %s" % e)
+            # Core drops a block message it cannot deserialize and submitblock answers
+            # "Block decode failed"; neither records anything about the hash.
+            if via == "rpc":
+                result, reason = self.submit(raw)
+                if reason != "rpc-error: Block decode failed":
+                    log("decoding disagrees with Core: python=%s core=%s/%s" % (e, result, reason))
+                    return result, reason
+            return "mutated", "block-decode-failed"
         if via == "rpc":
             return self.submit(raw)
-        if via != "p2p":
-            raise BadRequest("via must be p2p or rpc")
         h = blk.header.hash_hex()
         prev = blk.header.prev_hex()
         prev_hdr = self.header(prev)

@@ -8,15 +8,16 @@ For each requested node the post-processor:
    and outcome, block requests, peer versions, RPC dispatch, tip updates;
 2. matches every recorded P2P send to the line where Core began processing it
    (per peer and message type, in order, checking payload sizes); sends Core
-   never processed (connection already closed, payload that failed to
-   deserialize) are dropped;
+   never processed (connection already closed) are dropped, while a block
+   whose payload failed to deserialize is kept with its bytes as sent;
 3. derives, for every block delivered over P2P, whether Core had the block in
    flight (requested) and the node clock at processing time (now) from the log;
 4. orders the events between two checkpoints by the position of their log
    lines, which is the order Core processed them in, including blocks obtained
    from other bitcoind peers;
 5. collapses repeated deliveries of byte-identical blocks whose outcome cannot
-   depend on chain state (mutated blocks and context-free CheckBlock failures),
+   depend on chain state (mutated or undecodable blocks and context-free
+   CheckBlock failures),
    which Core may re-request from a peer many times in a timing-dependent way;
 6. writes meta, reset, block, headers, invalidate, restart and check events.
 """
@@ -158,12 +159,16 @@ class SessionLog:
         """After a "received: block" line, find whether the block was processed
         and how it ended. Returns (block_line_index or None, outcome)."""
         lines = self.lines
+        size = int(RE_RECV.search(lines[recv_index].msg).group(2))
         j = recv_index + 1
         block_line = None
         while j < len(lines):
             ln = lines[j]
             if ln.thread == "msghand":
-                if RE_RECV.search(ln.msg) or RE_EXC.search(ln.msg):
+                m = RE_EXC.search(ln.msg)
+                if m and m.group(1) == "block" and int(m.group(2)) == size:
+                    return j, "decode-failed"
+                if m or RE_RECV.search(ln.msg):
                     return None, "not-processed"
                 m = RE_BLOCK.search(ln.msg)
                 if m:
@@ -190,6 +195,27 @@ class SessionLog:
                     break
             j += 1
         return block_line, outcome
+
+    def in_flight(self, index, h):
+        """Whether block h was in flight from any peer just before line index, as
+        tracked for requested_at (for a block that never got a "received block" line)."""
+        peers = set()
+        for ln in self.lines[:index]:
+            if ln.thread == "msghand":
+                m = RE_BLOCK.search(ln.msg)
+                if m:
+                    if m.group(1) == h:
+                        peers.discard(int(m.group(2)))
+                    continue
+                m = RE_REQ.search(ln.msg)
+                if m:
+                    if m.group(1) == h:
+                        peers.add(int(m.group(2)))
+                    continue
+            m = RE_CLEAR.search(ln.msg)
+            if m:
+                peers.discard(int(m.group(1)))
+        return bool(peers)
 
     def headers_processed(self, recv_index):
         lines = self.lines
@@ -306,13 +332,16 @@ class Builder:
         if via == "p2p":
             ev["requested"] = bool(requested)
         try:
-            block = blocklib.parse_block(raw)
+            header = blocklib.parse_block(raw).header
+            if outcome == "decode-failed":
+                raise RuntimeError("Core could not deserialize block %s, this recorder can" % h)
         except blocklib.DecodeError as e:
-            raise RuntimeError("block %s does not decode: %s" % (h, e))
-        if block.trailing:
-            self.warn("block %s carried %d trailing bytes, stripped" % (h, block.trailing))
-            raw = raw[:len(raw) - block.trailing]
-        if block.header.hash_hex() != h:
+            # Core dropped it unprocessed. It stays in the corpus because a harness must not
+            # remember the hash as invalid when the correct copy follows.
+            if outcome != "decode-failed":
+                raise RuntimeError("block %s does not decode: %s" % (h, e))
+            header = blocklib.Header(raw[:80])
+        if header.hash_hex() != h:
             raise RuntimeError("hash mismatch for %s" % h)
         if len(raw) > self.blob_threshold:
             sha = hashlib.sha256(raw).hexdigest()
@@ -329,7 +358,7 @@ class Builder:
         ev["_source"] = source
         ev["_outcome"] = outcome
         ev["_sha"] = hashlib.sha256(raw).hexdigest()
-        ev["_prev"] = block.header.prev_hex()
+        ev["_prev"] = header.prev_hex()
         return ev
 
     def build(self, racy=None):
@@ -410,14 +439,22 @@ class Builder:
                                            % (mtype, peer, e["seq"], e["size"], m.group(2)))
                     payload = self.payload(e)
                     if mtype == "block":
+                        if "hash" not in e:  # shorter than a header
+                            self.stats["p2p_not_processed"] += 1
+                            continue
                         bl, outcome = log.follow_block(li, peer, e["hash"])
                         if bl is None:
                             self.stats["p2p_not_processed"] += 1
                             continue
                         ln = log.lines[bl]
+                        if outcome == "decode-failed":
+                            requested = log.in_flight(bl, e["hash"])
+                            self.stats["p2p_undecodable_kept"] += 1
+                        else:
+                            requested = log.requested_at.get(bl)
                         ev = self.block_event(payload, h=e["hash"], now=ln.now(), via="p2p",
-                                              requested=log.requested_at.get(bl), source="framework", outcome=outcome)
-                        if e.get("req_model") is not None and bool(e["req_model"]) != bool(log.requested_at.get(bl)):
+                                              requested=requested, source="framework", outcome=outcome)
+                        if e.get("req_model") is not None and bool(e["req_model"]) != bool(requested):
                             self.stats["requested_model_disagreements"] += 1
                         items.append((segment_of[e["seq"]], bl, e["seq"], 0, ev))
                     elif mtype == "headers":
@@ -558,7 +595,7 @@ class Builder:
             for _, _, _, _, ev in items:
                 if ev["type"] == "block" and ev.get("_source") == "framework":
                     oc = ev.get("_outcome") or ""
-                    if oc == "mutated" or (oc.startswith("failed:") and oc[7:] in NOEFFECT_FAILS):
+                    if oc in ("mutated", "decode-failed") or (oc.startswith("failed:") and oc[7:] in NOEFFECT_FAILS):
                         key = (ev["_sha"], oc)
                         if key in noeffect_seen:
                             self.stats["repeat_noeffect_collapsed"] += 1

@@ -21,11 +21,11 @@ Bitcoin Core v32.1 (commit `f0de87f040621468b956f01f526a43a010310501`), official
 | feature_bip68_sequence.node1 | 459 | 445 | 0 | 0 | 0 | 13 | 13 | 65385 |
 | mining_basic.node0 | 1007 | 582 | 16 | 0 | 33 | 375 | 375 | 109959 |
 | mining_basic.node1 | 672 | 367 | 300 | 0 | 0 | 4 | 3 | 76326 |
-| feature_spec_pitfalls.node0 | 293 | 225 | 23 | 0 | 0 | 44 | 44 | 42040 |
-| feature_spec_pitfalls.node1 | 23 | 14 | 1 | 0 | 0 | 7 | 7 | 4824 |
+| feature_spec_pitfalls.node0 | 301 | 229 | 23 | 0 | 0 | 48 | 48 | 42804 |
+| feature_spec_pitfalls.node1 | 23 | 14 | 1 | 0 | 0 | 7 | 7 | 4826 |
 | feature_spec_pitfalls.node2 | 295 | 146 | 1 | 0 | 0 | 147 | 147 | 31738 |
 
-Sidecar blobs (blocks over 1,000,000 bytes; over 100,000 bytes in feature_block_reorg): 1097 files, 2948272 bytes. Total corpus size: 13498789 bytes (13.5 MB).
+Sidecar blobs (blocks over 1,000,000 bytes; over 100,000 bytes in feature_block_reorg): 1097 files, 2948272 bytes. Total corpus size: 13499555 bytes (13.5 MB).
 
 ## Verification
 
@@ -50,7 +50,7 @@ Level 0 is the active tip and height at normative checks; level 1 the chain tip 
 | feature_bip68_sequence.node1 | 13/13 | 0/0 | 13/13 | 13/13 | 13/13 |
 | mining_basic.node0 | 375/375 | 0/0 | 375/375 | 328/328 | 375/375 |
 | mining_basic.node1 | 3/3 | 1/1 | 4/4 | 4/4 | 3/3 |
-| feature_spec_pitfalls.node0 | 44/44 | 0/0 | 44/44 | 22/22 | 44/44 |
+| feature_spec_pitfalls.node0 | 48/48 | 0/0 | 48/48 | 25/25 | 48/48 |
 | feature_spec_pitfalls.node1 | 7/7 | 0/0 | 7/7 | 4/4 | 7/7 |
 | feature_spec_pitfalls.node2 | 147/147 | 0/0 | 147/147 | 145/145 | 147/147 |
 
@@ -101,4 +101,5 @@ Level 0 is the active tip and height at normative checks; level 1 the chain tip 
 - mining_basic.node1: blocks the node obtained without passing through the test framework (other nodes, chain cache): 367.
 - mining_basic.node1: headers the node obtained from other nodes: 300.
 - mining_basic.node1: blocks or headers from other nodes moved after their parent (they arrived in a batch without a log line of their own): 226.
+- feature_spec_pitfalls.node0: P2P block sends Core could not deserialize, kept with their bytes (they change nothing): 1.
 - feature_spec_pitfalls.node0: session 1: Core logged low-work handling 2 times.

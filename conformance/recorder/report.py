@@ -7,8 +7,9 @@ import json
 import os
 
 EXPLAIN = {
-    "p2p_not_processed": "P2P sends dropped because Core never processed them (payload failed to deserialize, or the peer was already disconnected)",
-    "repeat_noeffect_collapsed": "byte-identical re-deliveries of blocks whose outcome cannot depend on chain state (mutated, or failing context-free checks), collapsed into the first delivery",
+    "p2p_not_processed": "P2P sends dropped because Core never processed them (the peer was already disconnected)",
+    "p2p_undecodable_kept": "P2P block sends Core could not deserialize, kept with their bytes (they change nothing)",
+    "repeat_noeffect_collapsed": "byte-identical re-deliveries of blocks whose outcome cannot depend on chain state (mutated, undecodable, or failing context-free checks), collapsed into the first delivery",
     "empty_headers_dropped": "empty headers messages dropped (no effect)",
     "submitblock_updated": "submitblock calls recorded with the coinbase witness reserved value Core added before validating",
     "preload_blocks": "blocks of the pre-mined 199-block chain cache the node started with, recorded as rpc deliveries before the first check",

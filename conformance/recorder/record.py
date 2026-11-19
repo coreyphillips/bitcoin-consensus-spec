@@ -487,7 +487,8 @@ class Recorder:
                 updated = blocklib.update_uncommitted_block_structures(block, segwit)
             pre["updated"] = updated
             pre["trailing"] = block.trailing
-            pre.update(self.payload(block.serialize()))
+            # Core ignores bytes after the last transaction; they stay in the corpus as sent.
+            pre.update(self.payload(block.serialize() + raw[len(raw) - block.trailing:]))
             pre["hash"] = block.header.hash_hex()
         elif method == "submitheader":
             hexdata = self.arg(args, kwargs, 0, "hexdata")

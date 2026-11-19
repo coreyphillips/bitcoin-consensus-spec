@@ -59,7 +59,7 @@ A full block delivered to the node.
 | Field | Meaning |
 |---|---|
 | `hash` | Block hash, display order (informational; derivable from the header) |
-| `hex` | Serialized block with witness data, or absent when `blob` is present |
+| `hex` | Serialized block with witness data, or absent when `blob` is present. These are the bytes as delivered: they can carry bytes after the last transaction, which Core ignores, and a `p2p` block can fail to deserialize, which changes nothing (`chain_process_block` gives `mutated`) |
 | `blob`, `sha256`, `size` | Sidecar file path relative to the corpus file's directory, SHA256 and length of the raw block |
 | `now` | The node's clock when Core processed the block (section 3) |
 | `via` | `"p2p"`: received from a peer (the test framework or another node) in a `block` message, or reconstructed from a compact block. `"rpc"`: submitted with `submitblock`, produced by a mining RPC, or part of the pre-mined chain the node started with |
