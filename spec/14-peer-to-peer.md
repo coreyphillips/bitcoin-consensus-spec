@@ -177,9 +177,9 @@ How Bitcoin Core answers `getheaders` (Core: the `GETHEADERS` case of `ProcessMe
 - With an **empty locator**, it sends exactly one header, the stop hash's, if it knows that block and is willing to serve it (on its active chain, or a recent valid fork); otherwise it sends **nothing at all**.
 - Otherwise it takes the first locator hash that it knows and that is on its active chain, or that is a descendant of its active tip (then it uses the tip); hashes it does not know, and hashes on side branches, are skipped; if none qualifies it uses genesis. It then sends the headers of its active chain after that block, up to 2,000, stopping early after the stop hash.
 
-A node keeps sending `getheaders`, with a locator starting from the last header received, until a `headers` message has fewer than 2,000 entries or adds no header to the block tree. A received `headers` message is first checked as a whole (`headers_message_acceptable` below), and then processed with `process_headers` (chapter 11) in order, stopping at the first header that fails.
+A node keeps sending `getheaders`, with a locator starting from the last header received, until a `headers` message has fewer than 2,000 entries or is not processed in full. The locator starts there even when that header is already known or has less work than the best header. A locator built from the best header would not move in either case, and the peer would send the same headers again. (Core: `ProcessHeadersMessage`, `GetLocator(pindexLast)`.) A received `headers` message is first checked as a whole (`headers_message_acceptable` below), and then processed with `process_headers` (chapter 11) in order, stopping at the first header that fails.
 
-The locator is the hashes of a block and its ancestors at decreasing heights: the first 12 entries are consecutive heights, after which the step doubles at each entry; the list always ends with genesis. Bitcoin Core builds it from its best header when synchronizing headers. (Core: `LocatorEntries`, `src/chain.cpp`.)
+The locator is the hashes of a block and its ancestors at decreasing heights: the first 12 entries are consecutive heights, after which the step doubles at each entry; the list always ends with genesis. Bitcoin Core builds the first locator of a headers synchronization from its best header, and each later one from the last header received. (Core: `LocatorEntries`, `src/chain.cpp`.)
 
 ```rust
 /// Core: `MAX_HEADERS_RESULTS`.
@@ -414,7 +414,7 @@ pub fn decode_inv(payload: &[u8]) -> Result<Vec<(u32, Hash256)>, DecodeError> {
 
 ## 14.5 A minimal synchronizing peer
 
-The function below connects to one peer, performs the handshake, downloads headers and blocks until the active tip equals `stop_at` (in headers-only mode, until the header `stop_at` is known), and answers `ping` and `getheaders` along the way. Without `stop_at`, it stops when the peer has no more headers (headers-only mode) or when nothing has happened for `idle_limit` seconds. Synchronization starts only after the node has accepted the peer's `version`, answered it with `verack` and received the peer's `verack`. Until then it ignores every other message, including a `verack` that arrives before the peer's `version`, and it ignores a second `version` at any time. It fails with an error if the handshake has not completed 60 seconds after the connection opened. Nothing the peer sends can move that deadline. It also fails with an error when it makes no progress for `idle_limit` seconds with a target still unreached or a `getheaders` request still unanswered, when the peer stops reading for `idle_limit` seconds, when a requested block does not arrive within `BLOCK_REQUEST_TIMEOUT_SECS`, when the peer sends a block that cannot be decoded or that fails validation, and when the peer breaks the framing rules. The idle limit counts from the handshake, whether or not the peer has sent its last headers, so no peer can keep the node waiting forever. After a full batch of headers the node asks for more, unless the batch added no header: asking again would only bring the same batch back. While a target is unknown it asks for headers again every 10 seconds, because a peer that is itself still synchronizing does not announce new blocks. The target may be below the peer's tip. Once its header is known, only it and its ancestors are requested, and the target is checked after every message, so the blocks it asked for never carry the tip past the target. It is deliberately simple: one peer, one connection, blocking input and output. It is the reference behaviour the conformance suite's interop test exercises against Bitcoin Core; a production node adds multiple peers, peer discovery, retries elsewhere and persistence.
+The function below connects to one peer, performs the handshake, downloads headers and blocks until the active tip equals `stop_at` (in headers-only mode, until the header `stop_at` is known), and answers `ping` and `getheaders` along the way. Without `stop_at`, it stops when the peer has no more headers (headers-only mode) or when nothing has happened for `idle_limit` seconds. Synchronization starts only after the node has accepted the peer's `version`, answered it with `verack` and received the peer's `verack`. Until then it ignores every other message, including a `verack` that arrives before the peer's `version`, and it ignores a second `version` at any time. It fails with an error if the handshake has not completed 60 seconds after the connection opened. Nothing the peer sends can move that deadline. It also fails with an error when it makes no progress for `idle_limit` seconds with a target still unreached or a `getheaders` request still unanswered, when the peer stops reading for `idle_limit` seconds, when a requested block does not arrive within `BLOCK_REQUEST_TIMEOUT_SECS`, when the peer sends a block that cannot be decoded or that fails validation, and when the peer breaks the framing rules. The idle limit counts from the handshake, whether or not the peer has sent its last headers, so no peer can keep the node waiting forever. After a full batch of headers that was processed in full, the node asks for more with a locator starting from the batch's last header. If its previous such request already started from that header, it does not send it again. A batch that is dropped, or that stops at a header that fails, is not followed up. While a target is unknown it asks for headers again every 10 seconds, because a peer that is itself still synchronizing does not announce new blocks. The target may be below the peer's tip. Once its header is known, only it and its ancestors are requested, and the target is checked after every message, so the blocks it asked for never carry the tip past the target. It is deliberately simple: one peer, one connection, blocking input and output. It is the reference behaviour the conformance suite's interop test exercises against Bitcoin Core; a production node adds multiple peers, peer discovery, retries elsewhere and persistence.
 
 ```rust
 /// Outcome of a successful synchronization run.
@@ -497,9 +497,10 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
     let mut in_flight: Vec<(Hash256, Instant)> = Vec::new();
     // Last time the best header or the active tip changed.
     let mut last_progress = Instant::now();
-    let request_headers = |state: &ChainState, stream: &mut std::net::TcpStream| -> std::io::Result<()> {
-        let best = state.best_header().hash;
-        send(stream, "getheaders", &encode_getheaders(&block_locator(&state.tree, &best), &ZERO_HASH))
+    // Where the locator of the last request after a full batch started.
+    let mut continued_from: Option<Hash256> = None;
+    let request_headers = |state: &ChainState, stream: &mut std::net::TcpStream, from: &Hash256| -> std::io::Result<()> {
+        send(stream, "getheaders", &encode_getheaders(&block_locator(&state.tree, from), &ZERO_HASH))
     };
 
     let reached = |state: &ChainState| match stop_at {
@@ -556,7 +557,7 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
                     stream.set_write_timeout(Some(Duration::from_secs(idle_limit)))?;
                     // The idle limit counts from here.
                     last_progress = Instant::now();
-                    request_headers(state, &mut stream)?;
+                    request_headers(state, &mut stream, &state.best_header().hash)?;
                     requested_headers = true;
                     last_headers_request = Instant::now();
                 }
@@ -578,24 +579,27 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
                     requested_headers = false;
                     let headers = decode_headers(&message.payload).map_err(|e| Error::new(ErrorKind::InvalidData, e.0))?;
                     let full_batch = headers.len() == MAX_HEADERS_RESULTS;
-                    let known_before = state.tree.entries.len();
-                    if headers_message_acceptable(state, &headers) {
-                        let _ = state.process_headers(&headers, unix_now());
-                    }
-                    // Asking again after a full batch that added nothing would get the same batch back.
-                    if full_batch && state.tree.entries.len() > known_before {
-                        request_headers(state, &mut stream)?;
-                        requested_headers = true;
-                        last_headers_request = Instant::now();
-                    } else if !full_batch {
+                    let processed = headers_message_acceptable(state, &headers) && state.process_headers(&headers, unix_now()).is_ok();
+                    if !full_batch {
                         headers_synced = true;
+                    } else if processed {
+                        // Not from the best header: it stays put while the batch is already known or
+                        // on a branch with less work, so the peer would send the same batch again.
+                        let last = headers[MAX_HEADERS_RESULTS - 1].hash();
+                        // Asking from `last` twice in a row would repeat the request.
+                        if continued_from != Some(last) {
+                            request_headers(state, &mut stream, &last)?;
+                            continued_from = Some(last);
+                            requested_headers = true;
+                            last_headers_request = Instant::now();
+                        }
                     }
                 }
                 "inv" => {
                     if let Ok(items) = decode_inv(&message.payload) {
                         // `!` on an integer is bitwise NOT: this clears the witness flag.
                         if items.iter().any(|(kind, hash)| (*kind & !MSG_WITNESS_FLAG) == MSG_BLOCK && state.tree.get(hash).is_none()) {
-                            request_headers(state, &mut stream)?;
+                            request_headers(state, &mut stream, &state.best_header().hash)?;
                             requested_headers = true;
                             last_headers_request = Instant::now();
                         }
@@ -646,7 +650,7 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
         // While the target is unknown, ask again from time to time.
         if let Some(target) = stop_at {
             if headers_synced && !requested_headers && state.tree.get(&target).is_none() && last_headers_request.elapsed().as_secs() >= 10 {
-                request_headers(state, &mut stream)?;
+                request_headers(state, &mut stream, &state.best_header().hash)?;
                 requested_headers = true;
                 last_headers_request = Instant::now();
             }
@@ -710,7 +714,7 @@ Default ports are in chapter 12. Peer discovery is not part of consensus; any so
 
 ## 14.7 Tests
 
-Each test plays a peer that never lets the synchronization finish on its own: one that never answers `getheaders`, one that answers every `getheaders` with the same 2,000 headers, and one that stops reading. `sync_from_peer` must return once its idle limit has passed. Two more play a peer that sends a header before the handshake completes: one sends it before its `verack`, the other sends `verack` and the header before its `version`. The node must take neither header.
+Three tests play a peer that never lets the synchronization finish on its own: one that never answers `getheaders`, one that answers every `getheaders` with the same 2,000 headers, and one that stops reading. `sync_from_peer` must return once its idle limit has passed. One plays an honest peer whose chain forks 2,100 headers below the node's best header and has more work: the node must end with the peer's tip as its best header. Two more play a peer that sends a header before the handshake completes: one sends it before its `verack`, the other sends `verack` and the header before its `version`. The node must take neither header.
 
 ```rust
 #[cfg(test)]
@@ -741,15 +745,25 @@ mod sync_tests {
         [encode_message(magic, "version", &encode_version(&version)), before_verack.to_vec(), encode_message(magic, "verack", &[])].concat()
     }
 
+    /// `count` regtest headers extending `parent`. Every merkle root is `tag` repeated, so chains with
+    /// different tags fork at `parent`.
+    fn headers_on(parent: &BlockHeader, count: usize, tag: u8) -> Vec<BlockHeader> {
+        let pow_limit = regtest().params.consensus.pow_limit;
+        let mut headers: Vec<BlockHeader> = Vec::with_capacity(count);
+        for _ in 0..count {
+            let parent = headers.last().unwrap_or(parent);
+            let mut header = BlockHeader { version: 0x2000_0000, prev_block: parent.hash(), merkle_root: [tag; 32], time: parent.time + 600, bits: parent.bits, nonce: 0 };
+            while !check_proof_of_work(&header.hash(), header.bits, pow_limit) {
+                header.nonce += 1;
+            }
+            headers.push(header);
+        }
+        headers
+    }
+
     /// A regtest header extending genesis.
     fn header_on_genesis() -> BlockHeader {
-        let params = regtest().params;
-        let genesis = params.genesis.header;
-        let mut header = BlockHeader { version: 0x2000_0000, prev_block: genesis.hash(), merkle_root: [0; 32], time: genesis.time + 600, bits: genesis.bits, nonce: 0 };
-        while !check_proof_of_work(&header.hash(), header.bits, params.consensus.pow_limit) {
-            header.nonce += 1;
-        }
-        header
+        headers_on(&regtest().params.genesis.header, 1, 0)[0]
     }
 
     /// Plays the peer on a free local port: answers the node's `version` with `reply`, then hands
@@ -783,9 +797,13 @@ mod sync_tests {
 
     /// Runs `sync_from_peer` on a fresh regtest state. Fails the test if it is still running after 30 seconds.
     fn sync(address: String, stop_at: Option<Hash256>, idle_limit: u64, download_blocks: bool) -> (std::io::Result<SyncEnd>, ChainState) {
+        sync_from(regtest(), address, stop_at, idle_limit, download_blocks)
+    }
+
+    /// Runs `sync_from_peer` on `state`. Fails the test if it is still running after 30 seconds.
+    fn sync_from(mut state: ChainState, address: String, stop_at: Option<Hash256>, idle_limit: u64, download_blocks: bool) -> (std::io::Result<SyncEnd>, ChainState) {
         let (done, result) = mpsc::channel();
         std::thread::spawn(move || {
-            let mut state = regtest();
             let end = sync_from_peer(&mut state, &address, stop_at, idle_limit, download_blocks);
             let _ = done.send((end, state));
         });
@@ -801,17 +819,9 @@ mod sync_tests {
     }
 
     #[test]
-    fn a_full_batch_that_adds_nothing_is_not_requested_again() {
+    fn a_repeated_full_batch_is_not_requested_again() {
         let params = regtest().params;
-        let mut headers: Vec<BlockHeader> = Vec::new();
-        for _ in 0..MAX_HEADERS_RESULTS {
-            let parent = headers.last().copied().unwrap_or(params.genesis.header);
-            let mut header = BlockHeader { version: 0x2000_0000, prev_block: parent.hash(), merkle_root: [0; 32], time: parent.time + 600, bits: parent.bits, nonce: 0 };
-            while !check_proof_of_work(&header.hash(), header.bits, params.consensus.pow_limit) {
-                header.nonce += 1;
-            }
-            headers.push(header);
-        }
+        let headers = headers_on(&params.genesis.header, MAX_HEADERS_RESULTS, 0);
         let last = headers.last().unwrap().hash();
         let reply = encode_message(params.magic, "headers", &encode_headers(&headers));
         for stop_at in [None, Some([1u8; 32])] {
@@ -832,6 +842,39 @@ mod sync_tests {
             assert_eq!(state.best_header().hash, last);
             assert_eq!(requests.load(Ordering::SeqCst), 2);
         }
+    }
+
+    #[test]
+    fn a_branch_forking_far_below_the_best_header_is_followed() {
+        let params = regtest().params;
+        let shared = headers_on(&params.genesis.header, 2100, 0);
+        let ours = headers_on(shared.last().unwrap(), 2100, 1);
+        let theirs = headers_on(shared.last().unwrap(), 2200, 2);
+        let mut state = regtest();
+        state.process_headers(&[shared.clone(), ours].concat(), unix_now()).unwrap();
+        // The peer's chain, indexed by height, and an honest answer to `getheaders` from it.
+        let chain = [vec![params.genesis.header], shared, theirs].concat();
+        let hashes: Vec<Hash256> = chain.iter().map(|header| header.hash()).collect();
+        let tip = *hashes.last().unwrap();
+        let magic = params.magic;
+        let requests = Arc::new(AtomicUsize::new(0));
+        let counter = requests.clone();
+        let address = scripted_peer(handshake(&[]), move |stream, message| {
+            if message.command == "getheaders" {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let (locator, _) = decode_getheaders(&message.payload).unwrap();
+                let fork = locator.iter().find_map(|hash| hashes.iter().position(|h| h == hash)).unwrap_or(0);
+                let batch: Vec<BlockHeader> = chain[fork + 1..].iter().take(MAX_HEADERS_RESULTS).copied().collect();
+                let _ = stream.write_all(&encode_message(magic, "headers", &encode_headers(&batch)));
+            }
+        });
+        let (end, state) = sync_from(state, address, None, 5, false);
+        assert_eq!(end.unwrap(), SyncEnd::Idle);
+        assert_eq!(state.best_header().hash, tip);
+        // The locator from the best header at 4,200 reaches the peer's chain only at height 96, so the
+        // first answer is all known headers. The second (2,097 to 4,096) has less work than the best
+        // header, and the third (to 4,300) is short.
+        assert_eq!(requests.load(Ordering::SeqCst), 3);
     }
 
     #[test]
