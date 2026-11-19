@@ -58,7 +58,8 @@ RUN OPTIONS:
   --timeout SECS      Seconds to wait for each harness response (default: 120)
 
 CORPUS OPTIONS:
-  --corpus PATH       Corpus file or directory, repeatable (default: <vectors>/blocks)
+  --corpus PATH       Corpus file or directory, repeatable (default: <vectors>/blocks, and for
+                      the corpus suite also <vectors>/chainwork)
   --restart-shortcut  Skip restart events whose options equal the ones in force (CORPUS.md 4)
   --fail-on-tips      Count each chain tip set (level 1) as a check, so one that differs fails
                       the run; --known-failures names it \"<file> check <n> tips\"
@@ -379,12 +380,23 @@ fn suite_ops(suite: &str) -> &'static [&'static str] {
     }
 }
 
+/// The corpus files of the interop and peer-sync suites, which run regtest nodes.
 fn corpus_paths(opts: &Options, paths: &Paths) -> Vec<PathBuf> {
     if opts.corpus.is_empty() {
         vec![paths.vectors.join("blocks")]
     } else {
         opts.corpus.clone()
     }
+}
+
+/// The corpus suite also replays `<vectors>/chainwork` by default: a signet scenario where the
+/// chain with most work is not the longest, which no regtest scenario can have.
+fn corpus_suite_paths(opts: &Options, paths: &Paths) -> Vec<PathBuf> {
+    let mut v = corpus_paths(opts, paths);
+    if opts.corpus.is_empty() {
+        v.push(paths.vectors.join("chainwork"));
+    }
+    v
 }
 
 fn cmd_run(opts: &Options) -> ExitCode {
@@ -506,7 +518,7 @@ fn cmd_run(opts: &Options) -> ExitCode {
             "signet" => suites::custom::run(&mut ctx, &paths.vectors, "signet"),
             "corpus" => suites::corpus::run(
                 &mut ctx,
-                &corpus_paths(opts, &paths),
+                &corpus_suite_paths(opts, &paths),
                 opts.restart_shortcut,
                 opts.fail_on_tips,
             ),

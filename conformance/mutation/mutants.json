@@ -1425,7 +1425,17 @@
   "item": null,
   "old": "        if a.chain_work != b.chain_work {\n            return a.chain_work < b.chain_work;",
   "new": "        if a.height != b.height {\n            return a.height < b.height;",
-  "expect": "survived",
-  "note": "Every regtest block has the same work, so the longest chain is always the one with most work. #40 tracks a test."
+  "expect": "caught",
+  "note": "Every regtest block has the same work, so the longest chain is always the one with most work. Caught by vectors/chainwork, where a shorter signet branch has more work after a retarget."
+ },
+ {
+  "name": "chain-work-counts-blocks",
+  "kind": "block",
+  "file": "11-chain-state.md",
+  "item": null,
+  "old": "            chain_work: parent.chain_work.wrapping_add(block_proof(header.bits)),",
+  "new": "            chain_work: parent.chain_work.wrapping_add(U256::from_u64(2)),",
+  "expect": "caught",
+  "note": "Adds regtest's work for every block whatever its bits, so chain work is right on regtest and the longest chain wins everywhere. Caught by vectors/chainwork, by its chain work and its tips."
  }
 ]

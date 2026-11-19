@@ -9,7 +9,8 @@
 //! - `restart` becomes `chain_reset` with the new options followed by every `block`, `headers` and
 //!   `invalidate` request sent since the last `reset`, again (responses not scored). With
 //!   `--restart-shortcut`, a restart whose options equal the ones in force sends nothing;
-//! - `check` becomes `chain_tip` (level 0), `chain_tips` when the check carries `tips` (level 1),
+//! - `check` becomes `chain_tip` (level 0, which compares `chainwork` too when the check carries
+//!   it), `chain_tips` when the check carries `tips` (level 1),
 //!   and `utxo_hash` when it carries `utxo` (level 2). A harness that does not list `utxo_hash`
 //!   (an implementation that keeps no UTXO set, PROTOCOL.md section 4.13) is not asked; each such
 //!   check counts at level 2 as not compared.
@@ -527,22 +528,37 @@ pub fn replay_file(
                     label
                 );
                 let loc = format!("{name} check {n} {at}");
-                // Level 0.
+                // Level 0, with the chain work when the check carries it.
+                let want_work = ev.get("chainwork").and_then(Value::as_str);
                 let got = call(ctx, "chain_tip", "");
+                let got_work = got
+                    .as_ref()
+                    .ok()
+                    .and_then(|a| a.get("chainwork"))
+                    .and_then(Value::as_str);
                 let matched = match &got {
                     Ok(a) => {
                         a.get("tip").and_then(Value::as_str) == ev["tip"].as_str()
                             && a.get("height").and_then(Value::as_i64) == ev["height"].as_i64()
+                            && want_work
+                                .is_none_or(|w| got_work.is_some_and(|g| g.eq_ignore_ascii_case(w)))
                     }
                     Err(_) => false,
                 };
                 if let Err(e) = &got {
                     r.errors.push(format!("{loc}: chain_tip: {e}"));
                 }
-                let got_text = match &got {
+                let mut got_text = match &got {
                     Ok(a) => tip_text(&Value::Object(a.clone())),
                     Err(e) => format!("error: {e}"),
                 };
+                if let (Some(w), Ok(_)) = (want_work, &got) {
+                    // After the tips, so that the line keeps the form mutation/run.py reads.
+                    got_text += &format!(
+                        "; chainwork expected {w}, got {}",
+                        got_work.unwrap_or("(none)")
+                    );
+                }
                 if normative {
                     r.normative += 1;
                     if !matched && crate::known::take("corpus", &format!("{name} check {n}")) {
@@ -841,15 +857,15 @@ mod tests {
     use std::time::Duration;
 
     /// A harness that refuses a `chain_reset` whose options carry `"refuse":true`, answers
-    /// `chain_tip` with tip `t` at height 0 and `chain_tips` with that tip alone, and fails every
-    /// other chain op (`utxo_hash` too) as internal.
+    /// `chain_tip` with tip `t` at height 0 with chain work 2 and `chain_tips` with that tip alone,
+    /// and fails every other chain op (`utxo_hash` too) as internal.
     const STUB: &str = r#"while IFS= read -r line; do
   id=${line#*'"id":'}; id=${id%%[,\}]*}
   case "$line" in
     *'"op":"info"'*) printf '{"id":%s,"ok":true,"name":"stub","version":"0","spec_version":"0","ops":["info","chain_reset","chain_process_block","chain_process_headers","chain_invalidate","chain_tip","chain_tips","utxo_hash"]}\n' "$id";;
     *'"refuse":true'*) printf '{"id":%s,"ok":false,"error":"bad_request","message":"refused"}\n' "$id";;
     *'"op":"chain_reset"'*) printf '{"id":%s,"ok":true}\n' "$id";;
-    *'"op":"chain_tip"'*) printf '{"id":%s,"ok":true,"tip":"t","height":0}\n' "$id";;
+    *'"op":"chain_tip"'*) printf '{"id":%s,"ok":true,"tip":"t","height":0,"chainwork":"02"}\n' "$id";;
     *'"op":"chain_tips"'*) printf '{"id":%s,"ok":true,"tips":[{"hash":"t","height":0,"status":"active"}]}\n' "$id";;
     *) printf '{"id":%s,"ok":false,"error":"internal","message":"stub"}\n' "$id";;
   esac
@@ -931,6 +947,26 @@ done"#;
             .details
             .iter()
             .any(|d| d.contains("--fail-on-tips")));
+    }
+
+    #[test]
+    fn a_check_with_chainwork_needs_that_work() {
+        let reset = json!({"type": "reset", "network": "regtest"});
+        let check = |work: Option<&str>| {
+            let mut c = json!({"type": "check", "n": 1, "tip": "t", "height": 0});
+            if let Some(w) = work {
+                c["chainwork"] = json!(w);
+            }
+            c
+        };
+        let fails = |name: &str, work: Option<&str>| {
+            let r = replay(name, &[reset.clone(), check(work)]);
+            assert!(r.errors.is_empty(), "{:?}", r.errors);
+            r.l0_fail
+        };
+        assert_eq!(fails("work-absent", None), 0);
+        assert_eq!(fails("work-same", Some("02")), 0);
+        assert_eq!(fails("work-differs", Some("04")), 1);
     }
 
     #[test]
