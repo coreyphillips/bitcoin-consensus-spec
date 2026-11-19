@@ -7,8 +7,9 @@ Usage:
 The usual pair is the reference (`target/release/reference-harness`) and Bitcoin Core's own code
 (`conformance/oracle-core/target/release/oracle-core-harness`). Each domain generates `--cases`
 requests: fresh random ones and random mutations of the committed vectors. The same seed gives the
-same requests. Exit status: 0 if every comparable answer is identical, 1 if any differs or a
-harness fails (`unsupported_op`, `internal`, no answer).
+same requests. Exit status: 0 if every comparable answer is identical, 1 if any differs, a domain
+compares nothing, or a harness fails (`unsupported_op`, `internal`, no answer, a missing result
+field, a nonzero exit status).
 """
 
 import argparse
@@ -49,7 +50,14 @@ class Harness:
 
     def close(self):
         self.proc.stdin.close()
-        self.proc.wait()
+        if self.proc.wait():
+            sys.exit(f"harness exited with status {self.proc.returncode}: {self.command}")
+
+
+# The result fields PROTOCOL.md section 4 requires. Types are checked exactly, since 1 == True in Python.
+RESULT = {"script_verify": {"valid": bool}, "tx_check": {"valid": bool}, "pow_check": {"valid": bool},
+          "signet_check": {"valid": bool}, "pow_next_work": {"bits": int},
+          "pow_compact": {"target": str, "negative": bool, "overflow": bool, "compact": int, "work": str}}
 
 
 def comparable(answer, harness, request):
@@ -59,6 +67,8 @@ def comparable(answer, harness, request):
         if answer.get("error") != "bad_request":
             sys.exit(f"harness failed: {harness.command}\nanswer: {json.dumps(answer)}\nrequest: {json.dumps(request)}")
         return None
+    if any(type(answer.get(k)) is not t for k, t in RESULT[request["op"]].items()):
+        sys.exit(f"harness answer lacks a required field: {harness.command}\nanswer: {json.dumps(answer)}\nrequest: {json.dumps(request)}")
     answer = {k: v for k, v in answer.items() if k != "message"}
     if answer.get("script_error") == "OK":
         del answer["script_error"]
@@ -358,6 +368,8 @@ def main():
                 if diffs <= args.show:
                     print(json.dumps({"domain": domain, "request": request, "a": x, "b": y}))
         print(f"{domain}: {compared} compared, {diffs} differ, {skipped} malformed for both")
+        if not compared:
+            sys.exit(f"{domain}: no request was compared")
         differing += diffs
     a.close()
     b.close()
