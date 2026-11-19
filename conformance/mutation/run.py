@@ -48,11 +48,11 @@ SCRIPT_SUITES = [
 BLOCK_VECTOR_SUITES = ["block-connect"]
 VERDICTS = ["caught", "caught-level2", "survived"]
 # A check whose call got no answer, worded as the runner's CallError (harness.rs), or whose answer
-# lacks the field it checks (`custom` prints a missing field as null). Any other failed check got
+# lacks the field it checks (`custom` prints "no such field", or null). Any other failed check got
 # an answer that differs from the expected one.
 HARNESS_ERROR = re.compile(
     r": (internal|harness died|protocol violation|bad_request): |: the harness command |: response has no "
-    r"|, got null(;|$)")
+    r"|, got (null|no such field)(;|$)")
 # A normative corpus check, printed by --verbose, whose tip query answered with a tip: the file and
 # the event.
 TIP_DIFFERS = re.compile(

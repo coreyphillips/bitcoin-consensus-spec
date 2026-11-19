@@ -441,6 +441,10 @@ fn handle(op: &str, req: &Fields, chain: &mut Option<ChainState>) -> Result<Opti
                 return Err(BadRequest("block has no transactions".into()));
             }
             let (entry, tree) = get_connect_chain(req, &block)?;
+            // Without it connect_block enforces BIP30, so a fixture error would read as a verdict.
+            if entry.height > consensus.bip34_height && tree.ancestor(&block.header.prev_block, consensus.bip34_height).is_none() {
+                return Err(BadRequest("ancestors must include the block at the BIP34 height".into()));
+            }
             let utxo = get_coins(req)?;
             match connect_block(&block, &entry, &tree, &utxo, &consensus) {
                 Ok(_) => obj(vec![("valid", Json::Bool(true))]),

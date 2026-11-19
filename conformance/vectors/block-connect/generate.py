@@ -203,11 +203,10 @@ def push_int(n):
     return bytes([len(body)]) + body
 
 
-def constructed_case(height, bip34_hash, name, expect):
-    """A mainnet block whose coinbase repeats the txid of an unspent coinbase output, as a
-    pre-BIP34 coinbase that starts with a push of `height` would. Its parent's chain contains the
-    block at the BIP34 height, so only BIP34_IMPLIES_BIP30_LIMIT decides whether BIP30 applies.
-    The header has no valid proof of work: the operation does not check it."""
+def constructed_case(height, bip34_hash, name, expect, conflict=True):
+    """A mainnet block whose coinbase has the txid of a pre-BIP34 coinbase that starts with a push
+    of `height`. With `conflict`, that coinbase's output is unspent. The header has no valid proof
+    of work: the operation does not check it."""
     subsidy = (50 * 100_000_000) >> (height // 210_000)
     coinbase = (struct.pack("<I", 1) + b"\x01" + b"\x00" * 32 + b"\xff" * 4
                  + bytes([len(push_int(height)) + 2]) + push_int(height) + b"\x00\x00" + b"\xff" * 4
@@ -225,7 +224,7 @@ def constructed_case(height, bip34_hash, name, expect):
         "ancestors": [{"height": height - 1, "hash": display(parent), "median_time_past": 1_999_999_000},
                       {"height": 227931, "hash": bip34_hash, "median_time_past": 1_363_934_779}],
         "coins": [{"txid": display(txid), "vout": 0, "amount": subsidy, "script_pubkey": "51",
-                   "height": 164384, "coinbase": True}],
+                   "height": 164384, "coinbase": True}] if conflict else [],
     }
     return {"name": f"main {height} {name}", "request": request, "expect": expect}
 
@@ -256,8 +255,10 @@ def main():
         cases.append(bip30_wrong_height_case(cases))
     main_bip34 = BIP34["main"][1]
     other = "000000000000000000000000000000000000000000000000000000000000beef"
-    cases.append(constructed_case(1_983_701, main_bip34, "below BIP34_IMPLIES_BIP30_LIMIT: BIP30 skipped",
-                                  {"valid": True}))
+    # Below the limit on the BIP34 chain no such coin can be unspent (chapter 10.7), and a
+    # conforming implementation may check BIP30 anyway, so this case has no conflict.
+    cases.append(constructed_case(1_983_701, main_bip34, "below BIP34_IMPLIES_BIP30_LIMIT, no conflicting coin",
+                                  {"valid": True}, conflict=False))
     cases.append(constructed_case(1_983_702, main_bip34, "at BIP34_IMPLIES_BIP30_LIMIT: BIP30 applies",
                                   {"valid": False, "reason": "bad-txns-BIP30"}))
     cases.append(constructed_case(1_983_701, other, "another block at the BIP34 height: BIP30 applies",
