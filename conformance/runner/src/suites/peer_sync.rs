@@ -52,7 +52,7 @@
 use crate::bitcoind::{free_ports, Bitcoind};
 use crate::check::{shorten, Stats};
 use crate::hex;
-use crate::listen::{self, Event, Writer};
+use crate::listen::{self, Event, SendError, Writer};
 use crate::p2p::{self, Message};
 use crate::process;
 use crate::suites::{corpus, interop};
@@ -737,17 +737,37 @@ impl<'a> Session<'a> {
     }
 
     /// Writes a message to the node's connection. Returns whether it was written: without a
-    /// connection, or when the write fails, nothing is sent.
+    /// connection, or when the write fails, nothing is sent. A node that takes no byte of it for
+    /// the timeout, or is stopped, is an error, since [`Session::pump`] does not run meanwhile.
     fn send(&mut self, command: &str, payload: &[u8]) -> Result<bool, String> {
-        let Some((_, writer, _)) = &mut self.conn else {
+        let (Some((_, writer, _)), child) = (&mut self.conn, &mut self.child) else {
             return Ok(false);
         };
-        if writer.send(command, payload).is_err() {
-            // The reader thread reports the closed connection.
-            writer.close();
-            return Ok(false);
+        let timeout = self.timeout;
+        let sent = writer.send(command, payload, |idle| {
+            if let Some(stop) = process::stopped(child) {
+                // As in `Session::pump`: a stopped node cannot act on the EOF `Session::end`
+                // waits on.
+                process::end(child);
+                return Err(format!("the node command {stop}"));
+            }
+            if idle >= timeout {
+                return Err(format!(
+                    "the node read none of a `{command}` message for {} s",
+                    timeout.as_secs()
+                ));
+            }
+            Ok(())
+        });
+        match sent {
+            Ok(()) => Ok(true),
+            Err(SendError::Closed) => {
+                // The reader thread reports the closed connection.
+                writer.close();
+                Ok(false)
+            }
+            Err(SendError::Stalled(e)) => Err(self.with_stderr(e)),
         }
-        Ok(true)
     }
 
     fn on_message(&mut self, m: Message) -> Result<(), String> {
@@ -1887,9 +1907,11 @@ mod tests {
 
     /// A node that completes the handshake, answers `ping`, and reports regtest genesis as its
     /// tip. With `ask` it requests every header it is sent; with `never` it requests nothing.
-    /// `junk` is `ask` that also writes a line that is not UTF-8 before each answer.
+    /// `junk` is `ask` that also writes a line that is not UTF-8 before each answer. `deaf` asks
+    /// for more than the connection holds (20 `getdata` messages of 50,000 transactions, each
+    /// answered with a `notfound` as large) and stops reading; `deaf-stop` then stops itself.
     const FAKE_NODE: &str = r#"
-import hashlib, json, socket, struct, sys, threading
+import hashlib, json, os, signal, socket, struct, sys, threading
 host, port = sys.argv[1].rsplit(":", 1)
 mode, genesis = sys.argv[2], sys.argv[3]
 magic = bytes.fromhex("fabfb5da")
@@ -1912,7 +1934,13 @@ def reader():
             h = exact(24)
             cmd = h[4:16].rstrip(b"\0").decode()
             p = exact(struct.unpack("<I", h[16:20])[0])
-            if cmd == "version": send("verack", b"")
+            if cmd == "version":
+                send("verack", b"")
+                if mode.startswith("deaf"):
+                    inv = b"\xfd" + struct.pack("<H", 50000) + (struct.pack("<I", 1) + bytes(32)) * 50000
+                    for _ in range(20): send("getdata", inv)
+                    if mode == "deaf-stop": os.kill(os.getpid(), signal.SIGSTOP)
+                    return
             elif cmd == "ping": send("pong", p)
             elif cmd == "headers" and mode in ("ask", "junk") and p[0]:
                 send("getdata", bytes([p[0]]) + b"".join(
@@ -1931,6 +1959,15 @@ for line in sys.stdin:
     /// Runs one follow-mode case on regtest genesis against [`FAKE_NODE`]: the verdict and
     /// whether the case block was delivered. `None` without `python3`.
     fn fake_node_case(mode: &str, reason: &str) -> Option<(Option<String>, bool)> {
+        fake_node_run(mode, reason, Duration::from_secs(30)).map(|r| r.unwrap())
+    }
+
+    /// [`fake_node_case`] with the given `--node-timeout`, and an error of the session returned.
+    fn fake_node_run(
+        mode: &str,
+        reason: &str,
+        node_timeout: Duration,
+    ) -> Option<Result<(Option<String>, bool), String>> {
         if process::spawn(process::shell("python3 -c ''").stdin(Stdio::null()))
             .ok()
             .and_then(|mut c| c.wait().ok())
@@ -1977,17 +2014,53 @@ for line in sys.stdin:
             ),
             corpus: Vec::new(),
             port_range: (0, 0),
-            node_timeout: Duration::from_secs(30),
+            node_timeout,
             keep_temp: false,
             ibd_limit: None,
         };
-        let mut s = Session::start(&cfg, &sc, &dir, None).unwrap();
-        let verdict = s.run_case(0, true).unwrap();
-        let delivered = s.delivered.contains(&sc.cases[0].block.hash);
-        s.end();
-        drop(s);
+        let result = Session::start(&cfg, &sc, &dir, None).and_then(|mut s| {
+            let verdict = s.run_case(0, true)?;
+            Ok((verdict, s.delivered.contains(&sc.cases[0].block.hash)))
+        });
         let _ = std::fs::remove_dir_all(&dir);
-        Some((verdict, delivered))
+        Some(result)
+    }
+
+    /// A node that stops reading its connection fails the case at `--node-timeout`, instead of
+    /// holding the runner in the write.
+    #[test]
+    fn a_node_that_stops_reading_times_out() {
+        let started = Instant::now();
+        if let Some(result) = fake_node_run("deaf", "bad-txns-nonfinal", Duration::from_secs(2)) {
+            let e = result.expect_err("a node that stopped reading passed");
+            assert!(
+                e.contains("read none of a `notfound` message for 2 s"),
+                "{e}"
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(20),
+                "{:?}",
+                started.elapsed()
+            );
+        }
+    }
+
+    /// A node stopped while the runner waits for it to read is found by the stopped-process
+    /// check, well before `--node-timeout`.
+    #[test]
+    fn a_node_stopped_while_the_runner_writes_fails() {
+        let started = Instant::now();
+        if let Some(result) =
+            fake_node_run("deaf-stop", "bad-txns-nonfinal", Duration::from_secs(60))
+        {
+            let e = result.expect_err("a stopped node passed");
+            assert!(e.contains("the node command was stopped"), "{e}");
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "{:?}",
+                started.elapsed()
+            );
+        }
     }
 
     #[test]
