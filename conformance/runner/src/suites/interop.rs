@@ -186,7 +186,10 @@ pub fn node_command(
 /// each space.
 pub fn check_datadir_unquoted(template: &str) -> Result<(), String> {
     let mut quote = None;
-    let mut chars = template.char_indices();
+    // For each open `(` or `$(`, the quoting its `)` returns to.
+    let mut outer = Vec::new();
+    let mut prev = ' ';
+    let mut chars = template.char_indices().peekable();
     while let Some((i, c)) = chars.next() {
         match (quote, c) {
             (Some('\''), '\'') | (Some('"'), '"') => quote = None,
@@ -194,6 +197,17 @@ pub fn check_datadir_unquoted(template: &str) -> Result<(), String> {
             (None | Some('"'), '\\') => {
                 chars.next();
             }
+            // A comment: its quote characters open nothing.
+            (None, '#') if prev.is_whitespace() || ";&|()<>".contains(prev) => {
+                while chars.next_if(|&(_, c)| c != '\n').is_some() {}
+            }
+            // A command substitution starts unquoted, even inside double quotes.
+            (None | Some('"'), '$') if chars.next_if(|&(_, c)| c == '(').is_some() => {
+                outer.push(quote);
+                quote = None;
+            }
+            (None, '(') => outer.push(None),
+            (None, ')') => quote = outer.pop().flatten(),
             (Some(_), '{') if template[i..].starts_with("{datadir}") => {
                 return Err(
                     "the node command quotes {datadir}, which the runner already passes \
@@ -203,6 +217,7 @@ pub fn check_datadir_unquoted(template: &str) -> Result<(), String> {
             }
             _ => {}
         }
+        prev = c;
     }
     Ok(())
 }
@@ -810,6 +825,8 @@ mod tests {
             "node --datadir {datadir}",
             r#"node '--x' "it's" {datadir}/x "y""#,
             r#"node \' \" {datadir} "a\"b" '\'"#,
+            "# node's data path\nnode --datadir {datadir}",
+            r#"node --datadir "$(echo {datadir})" "$((1 + (2)))" {datadir}"#,
         ] {
             assert_eq!(check_datadir_unquoted(ok), Ok(()), "{ok}");
         }
@@ -819,6 +836,10 @@ mod tests {
             r#"node "--datadir={datadir}""#,
             "node '--datadir={datadir}/x'",
             r#"node "a\"b {datadir}""#,
+            "# node's data path\nnode --datadir '{datadir}'",
+            "node x#' {datadir}'",
+            r#"node --datadir "$(echo "{datadir}")""#,
+            r#"node "$( (echo a) ) {datadir}""#,
         ] {
             assert!(check_datadir_unquoted(quoted).is_err(), "{quoted}");
         }
