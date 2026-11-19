@@ -2,7 +2,7 @@
 
 Nodes exchange headers and blocks over TCP. Nothing in this chapter affects which blocks are valid, but a node that cannot talk to Bitcoin Core cannot follow the chain, and a node that misbehaves gets disconnected. This chapter specifies the subset of the protocol a validating node needs to *download* headers and blocks from Bitcoin Core v32.1 and stay in sync with it, over the **version 1** (unencrypted) transport, and to answer the requests Bitcoin Core sends to its peers. Serving blocks to other nodes, the encrypted version 2 transport (BIP324), transaction relay, compact blocks (BIP152), address relay and block filters are outside this specification.
 
-The reference implements the protocol in this chapter's code, and the conformance suite's interop test runs it against a real Bitcoin Core node.
+The reference implements the protocol in this chapter's code, and the conformance suite's interop test runs its download path against a real Bitcoin Core node. Bitcoin Core never asks the reference for headers, because the reference neither advertises `NODE_NETWORK` nor announces blocks. The answer to `getheaders` is therefore checked only by the tests of section 14.7.
 
 ## 14.1 Message framing
 
@@ -717,7 +717,7 @@ Default ports are in chapter 12. Peer discovery is not part of consensus; any so
 
 ## 14.7 Tests
 
-Three tests play a peer that never lets the synchronization finish on its own: one that never answers `getheaders`, one that answers every `getheaders` with the same 2,000 headers, and one that stops reading. `sync_from_peer` must return once its idle limit has passed. One plays an honest peer whose chain forks 2,100 headers below the node's best header and has more work: the node must end with the peer's tip as its best header. Another plays a peer that extends its chain after the node has asked from that chain's last header, then announces it with an `inv`: the node must follow the batch that again ends at that header. Two more play a peer that sends a header before the handshake completes: one sends it before its `verack`, the other sends `verack` and the header before its `version`. The node must take neither header.
+Three tests play a peer that never lets the synchronization finish on its own: one that never answers `getheaders`, one that answers every `getheaders` with the same 2,000 headers, and one that stops reading. `sync_from_peer` must return once its idle limit has passed. One plays an honest peer whose chain forks 2,100 headers below the node's best header and has more work: the node must end with the peer's tip as its best header. Another plays a peer that extends its chain after the node has asked from that chain's last header, then announces it with an `inv`: the node must follow the batch that again ends at that header. Two more play a peer that sends a header before the handshake completes: one sends it before its `verack`, the other sends `verack` and the header before its `version`. The node must take neither header. The last two serve headers from a chain of 2,001 connected blocks, with a side branch and two headers past the active tip. One calls `answer_getheaders` for each rule of section 14.3. The other plays a peer that sends `getheaders` to the node, including one that gets no answer and one that cannot be decoded, and checks the bytes of every `headers` message the node sends back.
 
 ```rust
 #[cfg(test)]
@@ -953,6 +953,114 @@ mod sync_tests {
         let (end, _) = sync(address, None, 5, true);
         let error = end.unwrap_err();
         assert_eq!((error.kind(), error.to_string()), (ErrorKind::TimedOut, "peer stopped reading".to_string()));
+    }
+
+    /// The headers of the chain `serving_state` builds.
+    struct Served {
+        /// The active chain, indexed by height.
+        active: Vec<BlockHeader>,
+        /// Two headers forking from the active chain at height 2.
+        side: Vec<BlockHeader>,
+        /// Two headers extending the active tip.
+        ahead: Vec<BlockHeader>,
+    }
+
+    /// A regtest state whose active chain is 2,001 blocks holding only a coinbase. It also has the
+    /// headers, but not the blocks, of a side branch and of two descendants of its tip.
+    fn serving_state() -> (ChainState, Served) {
+        let mut state = regtest();
+        let pow_limit = state.params.consensus.pow_limit;
+        let mut active = vec![state.params.genesis.header];
+        for height in 1..=2001 {
+            let parent = active[height - 1];
+            let coinbase = Transaction {
+                version: 1,
+                inputs: vec![TxIn { prevout: OutPoint::null(), script_sig: [push_int(height as i64), vec![0, 0]].concat(), sequence: 0xffff_ffff, witness: Vec::new() }],
+                outputs: vec![TxOut { value: 0, script_pubkey: vec![OP_1] }],
+                lock_time: 0,
+            };
+            let mut header = BlockHeader { version: 0x2000_0000, prev_block: parent.hash(), merkle_root: coinbase.txid(), time: parent.time + 600, bits: parent.bits, nonce: 0 };
+            while !check_proof_of_work(&header.hash(), header.bits, pow_limit) {
+                header.nonce += 1;
+            }
+            assert_eq!(state.process_block(Block { header, transactions: vec![coinbase] }, unix_now(), true), BlockOutcome::Accepted);
+            active.push(header);
+        }
+        let side = headers_on(&active[2], 2, 1);
+        let ahead = headers_on(&active[2001], 2, 1);
+        state.process_headers(&side, unix_now()).unwrap();
+        state.process_headers(&ahead, unix_now()).unwrap();
+        assert_eq!(state.tip().hash, active[2001].hash());
+        (state, Served { active, side, ahead })
+    }
+
+    #[test]
+    fn getheaders_is_answered_from_the_active_chain() {
+        let (state, served) = serving_state();
+        let (tree, active) = (&state.tree, &served.active);
+        let unknown = [7u8; 32];
+        // An empty locator gets the stop hash's header if it is on the active chain, and no answer otherwise.
+        assert_eq!(answer_getheaders(tree, &[], &active[3].hash()), Some(vec![active[3]]));
+        for stop in [served.side[0].hash(), served.ahead[0].hash(), unknown] {
+            assert_eq!(answer_getheaders(tree, &[], &stop), None);
+        }
+        // Unknown and side-branch hashes are skipped, and the answer ends at the stop hash.
+        let locator = [unknown, served.side[1].hash(), active[2].hash(), active[0].hash()];
+        assert_eq!(answer_getheaders(tree, &locator, &active[5].hash()), Some(active[3..=5].to_vec()));
+        // With no usable hash the answer starts after genesis, and it holds at most 2,000 headers.
+        assert_eq!(answer_getheaders(tree, &[unknown, served.side[1].hash()], &ZERO_HASH), Some(active[1..=2000].to_vec()));
+        // A stop hash off the active chain does not end the answer early.
+        assert_eq!(answer_getheaders(tree, &[active[1998].hash()], &served.side[0].hash()), Some(active[1999..].to_vec()));
+        // A header past the active tip stands for the tip, so a peer that is ahead gets nothing.
+        assert_eq!(answer_getheaders(tree, &[served.ahead[1].hash(), active[0].hash()], &ZERO_HASH), Some(Vec::new()));
+    }
+
+    #[test]
+    fn a_peer_asking_for_headers_gets_them_from_the_active_chain() {
+        let (state, served) = serving_state();
+        let magic = state.params.magic;
+        let active = served.active.clone();
+        let requests = [
+            encode_message(magic, "getheaders", &encode_getheaders(&[active[2].hash()], &active[5].hash())),
+            // Neither of the next two gets an answer.
+            encode_message(magic, "getheaders", &encode_getheaders(&[], &served.side[0].hash())),
+            encode_message(magic, "getheaders", &[0u8; 5]),
+            encode_message(magic, "getheaders", &encode_getheaders(&[], &active[4].hash())),
+            encode_message(magic, "ping", &7u64.to_le_bytes()),
+        ]
+        .concat();
+        let empty = encode_message(magic, "headers", &[0]);
+        let (sender, received) = mpsc::channel();
+        // The node's own `getheaders` is answered only after the `pong`, which ends its run.
+        let address = scripted_peer(handshake(&[]), move |stream, message| match message.command.as_str() {
+            "getheaders" => {
+                let _ = stream.write_all(&requests);
+            }
+            "headers" | "pong" => {
+                let _ = sender.send((message.command.clone(), message.payload.clone()));
+                if message.command == "pong" {
+                    let _ = stream.write_all(&empty);
+                }
+            }
+            _ => {}
+        });
+        let (end, _) = sync_from(state, address, None, 5, false);
+        assert_eq!(end.unwrap(), SyncEnd::Idle);
+        // A `headers` payload as Bitcoin Core sends it: the count, then each header and a zero transaction count.
+        let wire = |headers: &[BlockHeader]| -> Vec<u8> {
+            let mut out = vec![headers.len() as u8];
+            for header in headers {
+                out.extend_from_slice(&header.serialize());
+                out.push(0);
+            }
+            out
+        };
+        let expected = vec![
+            ("headers".to_string(), wire(&active[3..=5])),
+            ("headers".to_string(), wire(&active[4..=4])),
+            ("pong".to_string(), 7u64.to_le_bytes().to_vec()),
+        ];
+        assert_eq!(received.try_iter().collect::<Vec<_>>(), expected);
     }
 }
 ```
