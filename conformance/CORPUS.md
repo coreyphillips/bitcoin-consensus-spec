@@ -4,7 +4,7 @@ The block corpus turns Bitcoin Core's own consensus functional tests into frozen
 
 An implementation replays the events through the harness protocol (`PROTOCOL.md`, sections 4.8 to 4.13) and must reproduce every normative checkpoint.
 
-Ground truth is Bitcoin Core v32.1 (commit `f0de87f040621468b956f01f526a43a010310501`). The scenarios were recorded from the official v32.1 release binaries running the unmodified v32.1 functional tests, plus one test written for this corpus in the same framework (`recorder/extra/feature_spec_pitfalls.py`), and every file was then replayed through a fresh v32.1 node (`recorder/core_chain_harness.py`), which reproduced every normative checkpoint. How the corpus is produced is described in `recorder/README.md`; per-scenario figures are in `recorder/REPORT.md`.
+Ground truth is Bitcoin Core v32.1 (commit `f0de87f040621468b956f01f526a43a010310501`). The scenarios were recorded from the official v32.1 release binaries running the unmodified v32.1 functional tests, plus one test written for this corpus in the same framework (`recorder/extra/feature_spec_pitfalls.py`), and every file was then replayed through a fresh v32.1 node (`recorder/core_chain_harness.py`), which reproduced every normative checkpoint. How the corpus is produced is described in `recorder/README.md`; per-scenario figures are in `recorder/REPORT.md`. Section 9 lists the Core functional tests that touch consensus or chain selection and says which are recorded and why the others are not.
 
 ## 1. Files
 
@@ -163,3 +163,26 @@ Checks are also non-normative when the recorder saw the chain state change while
 ## 8. Versioning
 
 This is format version 1. Fields may be added; existing fields will not change meaning. A new `format_version` means an incompatible change.
+
+## 9. Which Core tests are recorded
+
+Every Bitcoin Core v32.1 functional test that touches consensus or chain selection, and whether the corpus records it. The recorder can record a test whose node runs on regtest, whose consensus options `chain_reset` can carry (`testactivationheight`, `test`), and whose changes to the chain are block and header deliveries, `invalidateblock` and restarts. One recorded test run is one scenario; it gives one file per node.
+
+| Test | Status |
+|---|---|
+| `feature_block.py` | Recorded twice: `feature_block` (with `--skipreorg`) and `feature_block_reorg` |
+| `feature_taproot.py`, `p2p_segwit.py`, `feature_segwit.py`, `p2p_invalid_block.py`, `feature_cltv.py`, `feature_dersig.py`, `feature_nulldummy.py`, `feature_csv_activation.py`, `feature_bip68_sequence.py`, `feature_chain_tiebreaks.py` | Recorded |
+| `mining_basic.py` | Recorded, except its pruned node 2 |
+| `rpc_getchaintips.py`, `mining_template_verification.py` | Recordable with format 1 events, not recorded yet |
+| `p2p_mutated_blocks.py`, `p2p_compactblocks.py` | Not recordable: `record.py` captures the `cmpctblock` and `blocktxn` messages the test sends, but `postprocess.py` cannot turn them into events and stops. Their subject is compact block relay rather than block validity |
+| `rpc_invalidateblock.py`, `rpc_blockchain.py` | Not recordable: they call `reconsiderblock`, which format 1 has no event for |
+| `rpc_preciousblock.py` | Not recordable: `preciousblock` changes the tie-break between equal-work chains, and format 1 has no event for it |
+| `feature_minchainwork.py`, `p2p_headers_sync_with_minchainwork.py`, `p2p_unrequested_blocks.py` | Not recordable: a node runs with `-minimumchainwork` (node 1 in `p2p_unrequested_blocks.py`), which `chain_reset` options cannot carry |
+| `mining_mainnet.py` | Not recordable: it runs on an alternate mainnet chain (the only functional test with real difficulty retargeting), and the recorder handles regtest only. `vectors/chainwork` covers retargeting on a custom signet |
+| `feature_signet.py` | Not recordable: signet, as above. `vectors/signet` covers the signet block solution |
+| `feature_assumevalid.py` | Out of scope: `-assumevalid` accepts a block with an invalid signature, which specification chapter 11 section 11.12 treats as an optimization, not a consensus rule |
+| `feature_presegwit_node_upgrade.py` | Out of scope: its subject is the startup error that asks for `-reindex` after the segwit height changes. The outcome after the reindex is what a `restart` event with new options already expresses |
+| `feature_pruning.py`, `feature_prune_stale_fork.py`, `feature_reindex.py`, `feature_reindex_init.py`, `feature_reindex_readonly.py`, `feature_loadblock.py`, `feature_dbcrash.py`, `feature_assumeutxo.py`, `feature_utxo_set_hash.py` | Out of scope: how a node stores, reloads, snapshots or hashes its chain state, not which chain is valid |
+| `p2p_sendheaders.py`, `p2p_block_sync.py`, `p2p_initial_headers_sync.py`, `p2p_ibd_stalling.py`, `p2p_node_network_limited.py` | Out of scope: which peer a node downloads from and when. The peer-sync suite (`README.md`) covers a node's own synchronization |
+| `feature_versionbits_warning.py` | Out of scope: warnings about unknown version bits, which change no rule |
+| `p2p_invalid_messages.py`, `rpc_generate.py`, `interface_ipc_mining.py` | Out of scope: their subjects are P2P message parsing, the `generate` RPCs and the IPC mining interface. The block rules they check in passing (header proof of work, the block version floor, missing inputs) are also checked by `feature_block.py`, which is recorded |

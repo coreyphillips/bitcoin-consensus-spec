@@ -52,6 +52,7 @@
     "extra/feature_spec_pitfalls.py": "f9c684d7817bbd7af632f7fe534270f14e5b081bc3d6c3dc4ebda6f1dfd60e29",
     "feature_bip68_sequence.py": "e84296532012715ab4ecc949c033fa119ab0f78aaea1276df14da33e80231496",
     "feature_block.py": "f133d848492d487c4b1ad9b3b5d965f81454643d1bce76fe957378c26b8c4ff8",
+    "feature_chain_tiebreaks.py": "fa7d085850b2be8331118f17504de484aaf959871325950da7eba1b58bcd34fd",
     "feature_cltv.py": "fafb9c80607369bd79dcc59d1a8f9a0eaefe058fa3957678aec403bc1fc958e1",
     "feature_csv_activation.py": "256d722df9a654e7dc55c408537747dc5adc03ee867ca6e879bab432255b1d3e",
     "feature_dersig.py": "290d7e6413cfa12c70f0fa34b05625a38c5128a8776d2ded4c21264af639bc01",

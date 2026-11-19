@@ -1,6 +1,6 @@
 # Block corpus recorder
 
-Records Bitcoin Core v32.1's consensus functional tests, plus one test of its own, as block scenarios (format: `../CORPUS.md`), writes them to `../vectors/blocks/`, and verifies them against a fresh v32.1 node.
+Records Bitcoin Core v32.1's consensus functional tests, plus one test of its own, as block scenarios (format: `../CORPUS.md`; section 9 there says which Core tests are recorded and why the others are not), writes them to `../vectors/blocks/`, and verifies them against a fresh v32.1 node.
 
 ## Requirements
 
@@ -30,7 +30,7 @@ make all CORE_SRC=/path/to/bitcoin-v32.1 -j6
 
 A scenario is one recorded test run, listed in `SCENARIOS` in the Makefile together with its test file, arguments, nodes and blob threshold:
 
-- Core's consensus functional tests, with `feature_block` run with `--skipreorg`;
+- Core's consensus functional tests that `../CORPUS.md` section 9 lists as recorded, with `feature_block` run with `--skipreorg`;
 - `feature_block_reorg`: `feature_block.py` again, including its 1088-block reorg (over 1 GB of block data, mostly zero bytes; blocks over 100,000 bytes go to blobs);
 - `feature_spec_pitfalls`: `extra/feature_spec_pitfalls.py`, a test written for this corpus in Core's framework style. It covers BIP68 with transaction versions 0xffffffff and 0x80000000, legacy sigop counting at the 80,000 limit, the subsidy at the regtest halving height, signed block versions, 64-byte transactions with a merkle-matching mutated body, the P2SH stack size limit, the P2P anti-DoS work checks for blocks and headers messages, a transaction with 100,001 outputs, re-spends of an output created and spent inside one block, and blocks followed by extra bytes or sent with a non-canonical transaction count, all on node 0. Two more independent nodes each get their own file: node 1 (BIP34 at height 2, BIP66 and BIP65 at 300) isolates the signed version floor of 2, and node 2 (`-test=bip94`) covers the timewarp rule with full blocks at a retarget boundary.
 
