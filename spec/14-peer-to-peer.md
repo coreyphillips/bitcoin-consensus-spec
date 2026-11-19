@@ -439,8 +439,7 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
     let mut stream = std::net::TcpStream::connect(address)?;
     let handshake_deadline = Instant::now() + Duration::from_secs(60);
     stream.set_read_timeout(Some(Duration::from_millis(200)))?;
-    // Writes use the idle limit only once the handshake is done; until then the deadline bounds them.
-    stream.set_write_timeout(Some(Duration::from_secs(60)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(idle_limit)))?;
     let send = |stream: &mut std::net::TcpStream, command: &str, payload: &[u8]| -> std::io::Result<()> {
         stream.write_all(&encode_message(magic, command, payload)).map_err(|e| match e.kind() {
             ErrorKind::WouldBlock | ErrorKind::TimedOut => Error::new(ErrorKind::TimedOut, "peer stopped reading"),
@@ -455,6 +454,23 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
         }
         stream.set_write_timeout(Some(remaining))
     };
+    // `write_all` reuses one timeout for every partial write, so writes before `verack` go piece by
+    // piece, each bounded by the time left.
+    let send_by_deadline = |stream: &mut std::net::TcpStream, command: &str, payload: &[u8]| -> std::io::Result<()> {
+        let bytes = encode_message(magic, command, payload);
+        let mut written = 0;
+        while written < bytes.len() {
+            bound_by_deadline(stream)?;
+            match stream.write(&bytes[written..]) {
+                Ok(0) => return Err(ErrorKind::WriteZero.into()),
+                Ok(n) => written += n,
+                // The next pass fails once the deadline has passed.
+                Err(e) if matches!(e.kind(), ErrorKind::Interrupted | ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    };
 
     let nonce = sha256(&unix_now().to_le_bytes());
     let version = VersionMessage {
@@ -466,7 +482,7 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
         start_height: state.tip().height,
         relay: false,
     };
-    send(&mut stream, "version", &encode_version(&version))?;
+    send_by_deadline(&mut stream, "version", &encode_version(&version))?;
 
     let mut buffer: Vec<u8> = Vec::new();
     let mut handshake_done = false;
@@ -525,11 +541,13 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
                     if theirs.version < MIN_PEER_PROTO_VERSION {
                         return Err(Error::new(ErrorKind::InvalidData, "peer version too old"));
                     }
-                    send(&mut stream, "sendheaders", &[])?;
-                    if !handshake_done {
-                        bound_by_deadline(&stream)?;
+                    if handshake_done {
+                        send(&mut stream, "sendheaders", &[])?;
+                        send(&mut stream, "verack", &[])?;
+                    } else {
+                        send_by_deadline(&mut stream, "sendheaders", &[])?;
+                        send_by_deadline(&mut stream, "verack", &[])?;
                     }
-                    send(&mut stream, "verack", &[])?;
                 }
                 // A repeated `verack` is ignored, so it cannot restart the idle clock.
                 "verack" if !handshake_done => {
