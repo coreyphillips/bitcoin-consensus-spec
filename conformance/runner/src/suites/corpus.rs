@@ -11,9 +11,10 @@
 //!   `--restart-shortcut`, a restart whose options equal the ones in force sends nothing;
 //! - `check` becomes `chain_tip` (level 0, which compares `chainwork` too when the check carries
 //!   it), `chain_tips` when the check carries `tips` (level 1),
-//!   and `utxo_hash` when it carries `utxo` (level 2). A harness that does not list `utxo_hash`
-//!   (an implementation that keeps no UTXO set, PROTOCOL.md section 4.13) is not asked; each such
-//!   check counts at level 2 as not compared.
+//!   and `utxo_hash` when it carries `utxo` (level 2). A harness that does not list `chain_tips`,
+//!   or `utxo_hash` (an implementation that keeps no UTXO set, PROTOCOL.md section 4.13), is not
+//!   asked; each such check counts at its level as not compared, and so as failed. A call that
+//!   fails is an error and fails the comparison too.
 //!
 //! Level 0 at normative checks is required, and so is level 1 with `--fail-on-tips`. Non-normative
 //! level 0 checks, level 1 without that flag and level 2 are reported separately. A harness error
@@ -264,11 +265,15 @@ pub struct FileResult {
     pub l0_known: u64,
     pub l0_other: u64,
     pub l0_other_fail: u64,
+    /// Level 1 checks. A `chain_tips` call that failed is an error and a tip set that differs.
     pub l1: u64,
     pub l1_fail: u64,
     /// Tip sets that differ as `--known-failures` says (not in `l1_fail`).
     pub l1_known: u64,
-    /// Level 2 checks made. A `utxo_hash` call that failed is an error, not a check.
+    /// Level 1 checks not compared because the harness does not list `chain_tips` (also counted
+    /// in `l1_fail`).
+    pub l1_uncompared: u64,
+    /// Level 2 checks. A `utxo_hash` call that failed is an error and a mismatch.
     pub l2: u64,
     pub l2_fail: u64,
     /// Level 2 checks not compared because the harness does not list `utxo_hash` (also counted
@@ -623,58 +628,69 @@ pub fn replay_file(
                 }
                 // Level 1.
                 if ev.get("tips").is_some() {
-                    match call(ctx, "chain_tips", "") {
-                        Ok(a) => {
-                            r.l1 += 1;
-                            let want = tips_set(&ev["tips"]);
-                            let got = tips_set(a.get("tips").unwrap_or(&Value::Null));
-                            if want != got {
-                                // Taken without --fail-on-tips too, so one list serves runs
-                                // with and without it.
-                                let known =
-                                    crate::known::take("corpus", &format!("{name} check {n} tips"));
-                                let tag = if known {
-                                    r.l1_known += 1;
-                                    "KNOWN"
+                    r.l1 += 1;
+                    if !ctx.supports("chain_tips") {
+                        // Level 1 is optional (CORPUS.md section 4).
+                        r.l1_fail += 1;
+                        r.l1_uncompared += 1;
+                    } else {
+                        let want = tips_set(&ev["tips"]);
+                        let got = call(ctx, "chain_tips", "")
+                            .map(|a| tips_set(a.get("tips").unwrap_or(&Value::Null)));
+                        if let Err(e) = &got {
+                            r.errors.push(format!("{loc}: chain_tips: {e}"));
+                        }
+                        if got.as_ref() != Ok(&want) {
+                            // Taken without --fail-on-tips too, so one list serves runs
+                            // with and without it.
+                            let known =
+                                crate::known::take("corpus", &format!("{name} check {n} tips"));
+                            let tag = if known {
+                                r.l1_known += 1;
+                                "KNOWN"
+                            } else {
+                                r.l1_fail += 1;
+                                if fail_on_tips {
+                                    "FAIL"
                                 } else {
-                                    r.l1_fail += 1;
-                                    if fail_on_tips {
-                                        "FAIL"
-                                    } else {
-                                        "LEVEL1"
-                                    }
-                                };
-                                if ctx.verbose && (known || printed[1] < MAX_MISMATCH_LINES) {
-                                    if !known {
-                                        printed[1] += 1;
-                                    }
-                                    let missing: Vec<_> = want.difference(&got).take(4).collect();
-                                    let extra: Vec<_> = got.difference(&want).take(4).collect();
-                                    println!(
-                                        "{tag:<8} [corpus] {name} check {n} tips {at}: chain tips differ ({} expected, {} got); missing {:?}, unexpected {:?}",
-                                        want.len(),
-                                        got.len(),
-                                        missing,
-                                        extra
-                                    );
+                                    "LEVEL1"
                                 }
+                            };
+                            if ctx.verbose && (known || printed[1] < MAX_MISMATCH_LINES) {
+                                if !known {
+                                    printed[1] += 1;
+                                }
+                                let what = match &got {
+                                    Ok(got) => {
+                                        let missing: Vec<_> =
+                                            want.difference(got).take(4).collect();
+                                        let extra: Vec<_> = got.difference(&want).take(4).collect();
+                                        format!(
+                                            "chain tips differ ({} expected, {} got); missing {:?}, unexpected {:?}",
+                                            want.len(),
+                                            got.len(),
+                                            missing,
+                                            extra
+                                        )
+                                    }
+                                    Err(e) => format!("chain_tips failed: {e}"),
+                                };
+                                println!("{tag:<8} [corpus] {name} check {n} tips {at}: {what}");
                             }
                         }
-                        Err(e) => r.errors.push(format!("{loc}: chain_tips: {e}")),
                     }
                 }
                 // Level 2.
                 if let Some(utxo) = ev.get("utxo") {
+                    r.l2 += 1;
                     if !ctx.supports("utxo_hash") {
                         // PROTOCOL.md section 4.13: optional for an implementation that keeps no
                         // UTXO set.
-                        r.l2 += 1;
                         r.l2_fail += 1;
                         r.l2_uncompared += 1;
                     } else {
                         match call(ctx, "utxo_hash", "") {
                             Ok(a) => {
-                                r.l2 += 1;
                                 let ok = a.get("hash_serialized_3")
                                     == utxo.get("hash_serialized_3")
                                     && a.get("txouts").and_then(Value::as_i64)
@@ -693,7 +709,12 @@ pub fn replay_file(
                                     }
                                 }
                             }
-                            Err(e) => r.errors.push(format!("{loc}: utxo_hash: {e}")),
+                            Err(e) => {
+                                // A mismatch too: with --fail-on-level2, an entry waiving the
+                                // file's errors must not leave the hash unchecked.
+                                r.l2_fail += 1;
+                                r.errors.push(format!("{loc}: utxo_hash: {e}"));
+                            }
                         }
                     }
                 }
@@ -810,6 +831,7 @@ pub fn run(
         totals.l1 += fr.l1;
         totals.l1_fail += fr.l1_fail;
         totals.l1_known += fr.l1_known;
+        totals.l1_uncompared += fr.l1_uncompared;
         totals.l2 += fr.l2;
         totals.l2_fail += fr.l2_fail;
         totals.l2_uncompared += fr.l2_uncompared;
@@ -849,6 +871,12 @@ pub fn run(
         totals.redelivered,
         totals.outcomes.iter().map(|(k, v)| format!("{k} {v}")).collect::<Vec<_>>().join(", ")
     ));
+    if totals.l1_uncompared > 0 {
+        ctx.stats.details.push(format!(
+            "level 1: {} chain tip sets not compared (the harness does not list chain_tips)",
+            totals.l1_uncompared
+        ));
+    }
     if totals.l2_uncompared > 0 {
         ctx.stats.details.push(format!(
             "level 2: {} UTXO set hashes not compared (the harness does not list utxo_hash, PROTOCOL.md section 4.13)",
@@ -898,12 +926,28 @@ done"#;
 
     /// Writes `events` as corpus file `name` and calls `f` with the stub harness and the file.
     fn with_file<T>(name: &str, events: &[Value], f: impl FnOnce(&mut Ctx, &Path) -> T) -> T {
+        with_stub(name, events, STUB, f)
+    }
+
+    /// `STUB` with `from` replaced by `to`, which must change it.
+    fn stub_with(from: &str, to: &str) -> String {
+        assert!(STUB.contains(from), "{from}");
+        STUB.replace(from, to)
+    }
+
+    /// As `with_file`, with the harness script `script`.
+    fn with_stub<T>(
+        name: &str,
+        events: &[Value],
+        script: &str,
+        f: impl FnOnce(&mut Ctx, &Path) -> T,
+    ) -> T {
         // One directory per call: tests run in parallel and each removes its own at the end.
         let dir =
             std::env::temp_dir().join(format!("bcs-corpus-test-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let stub = dir.join(format!("{name}.sh"));
-        std::fs::write(&stub, STUB).unwrap();
+        std::fs::write(&stub, script).unwrap();
         let path = dir.join(format!("{name}.jsonl.gz"));
         let mut gz = flate2::write::GzEncoder::new(
             std::fs::File::create(&path).unwrap(),
@@ -1068,18 +1112,85 @@ done"#;
         assert_eq!(r.errors_location(), "last errors from event 0");
     }
 
+    /// A reset and one normative check with a tip set (that the stub's `chain_tips` matches) and a
+    /// UTXO hash.
+    fn tips_and_utxo_check() -> [Value; 2] {
+        [
+            json!({"type": "reset", "network": "regtest"}),
+            json!({"type": "check", "n": 1, "tip": "t", "height": 0,
+                   "tips": [{"hash": "t", "height": 0, "status": "active"}],
+                   "utxo": {"hash_serialized_3": "ab", "txouts": 1}}),
+        ]
+    }
+
     #[test]
-    fn a_failed_utxo_hash_call_is_an_error_not_a_check() {
-        let r = replay(
-            "utxo",
-            &[
-                json!({"type": "reset", "network": "regtest"}),
-                json!({"type": "check", "n": 1, "tip": "t", "height": 0, "normative": false,
-                       "utxo": {"hash_serialized_3": "ab", "txouts": 1}}),
-            ],
+    fn a_failed_chain_tips_or_utxo_hash_call_fails_its_level() {
+        // The stub fails utxo_hash already; this makes chain_tips fail too.
+        let script = stub_with(r#"*'"op":"chain_tips"'*)"#, r#"*'"op":"no_such_op"'*)"#);
+        let (r, stats) = with_stub(
+            "failed-calls",
+            &tips_and_utxo_check(),
+            &script,
+            |ctx, path| {
+                let r = replay_file(ctx, path, false, false);
+                run(ctx, &[path.to_path_buf()], false, false).unwrap();
+                (r, std::mem::take(&mut ctx.stats))
+            },
         );
-        assert_eq!(r.l2, 0);
-        assert_eq!(r.errors.len(), 1, "{:?}", r.errors);
+        assert_eq!(r.errors.len(), 2, "{:?}", r.errors);
+        assert_eq!((r.l1, r.l1_fail, r.l1_uncompared), (1, 1, 0));
+        assert_eq!((r.l2, r.l2_fail, r.l2_uncompared), (1, 1, 0));
+        // So --fail-on-level2 fails the run even when an entry waives the file's errors.
+        assert_eq!((stats.l2_checked, stats.l2_mismatches), (1, 1));
+        // The file's row: name, checks, L0 normative, L0 other, L1, L2, errors, time.
+        let row = stats
+            .details
+            .iter()
+            .find(|d| d.starts_with("failed-calls"))
+            .unwrap();
+        let cols: Vec<&str> = row.split_whitespace().collect();
+        assert_eq!(cols[4..7], ["0/1", "0/1", "2"], "{row}");
+    }
+
+    #[test]
+    fn a_harness_without_chain_tips_or_utxo_hash_is_not_asked() {
+        // The stub still answers both, so a call made regardless would pass its level.
+        let script = stub_with(r#","chain_tips","utxo_hash"]"#, "]");
+        let events = tips_and_utxo_check();
+        let r = with_stub("unlisted", &events, &script, |ctx, path| {
+            replay_file(ctx, path, false, false)
+        });
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        assert_eq!((r.l0_fail, r.normative), (0, 1));
+        assert_eq!((r.l1, r.l1_fail, r.l1_uncompared), (1, 1, 1));
+        assert_eq!((r.l2, r.l2_fail, r.l2_uncompared), (1, 1, 1));
+
+        let stats = |name: &str, fail_on_tips: bool| {
+            with_stub(name, &events, &script, |ctx, path| {
+                run(ctx, &[path.to_path_buf()], false, fail_on_tips).unwrap();
+                std::mem::take(&mut ctx.stats)
+            })
+        };
+        // Level 1 is reported only, so the file passes.
+        let reported = stats("unlisted-reported", false);
+        assert_eq!(
+            (reported.cases, reported.passed, reported.failed),
+            (1, 1, 0)
+        );
+        assert!(
+            reported
+                .details
+                .iter()
+                .any(|d| d.starts_with("level 1: 1 chain tip sets not compared")),
+            "{:?}",
+            reported.details
+        );
+        // Tip sets that cannot be compared cannot pass when they are enforced.
+        let enforced = stats("unlisted-enforced", true);
+        assert_eq!(
+            (enforced.cases, enforced.passed, enforced.failed),
+            (2, 1, 1)
+        );
     }
 
     #[test]

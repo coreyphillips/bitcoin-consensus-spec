@@ -300,11 +300,15 @@ force sends nothing. A `check` becomes `chain_tip`, plus `chain_tips` when it ca
 - **Level 1** (optional): the set of (hash, height, status) chain tips. Reported only, unless
   `--fail-on-tips` is given: each tip set is then a check, counted in `cases`, and one that differs
   fails the run. `--known-failures` names it `<file> check <n> tips`; such an entry is used with
-  or without the flag.
+  or without the flag. A harness that does not list `chain_tips` is not asked; each tip set is
+  then counted as not compared, which fails the run only with `--fail-on-tips`, and the details
+  say how many.
 - **Level 2** (optional): `hash_serialized_3` and `txouts`. Counted in `level2`/`l2-checked`;
   fails the run only with `--fail-on-level2`. A harness that does not list `utxo_hash` (an
   implementation that keeps no UTXO set, `PROTOCOL.md` section 4.13) is not asked; each UTXO check
   is then counted as not compared, and the details say how many.
+- A `chain_tips` or `utxo_hash` call that fails is a harness error and also fails its level 1 or
+  level 2 comparison, so an entry that waives the file's errors does not waive the comparison.
 
 The details list every file with its results per level, the number of restarts and re-delivered
 events, and the harness's per-event outcomes (diagnostic). With `--verbose` the first normative
