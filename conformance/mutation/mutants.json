@@ -1141,13 +1141,120 @@
  },
  {
   "name": "signet-solution-always-ok",
-  "kind": "block",
+  "kind": "script",
   "file": "13-signet.md",
   "item": null,
   "old": "    verify_input(&to_sign, 0, &spent, &precomputed, flags).is_ok()\n}",
   "new": "    let _ = verify_input(&to_sign, 0, &spent, &precomputed, flags);\n    true\n}",
-  "expect": "survived",
-  "note": "No suite has a signet block: the corpus is regtest and headers-live sees headers only. #39 tracks a test."
+  "expect": "caught"
+ },
+ {
+  "name": "signet-genesis-not-exempt",
+  "kind": "script",
+  "file": "13-signet.md",
+  "item": null,
+  "old": "    if block.hash() == params.genesis_hash {\n        return true;\n    }\n",
+  "new": "",
+  "expect": "caught"
+ },
+ {
+  "name": "signet-no-commitment-ok",
+  "kind": "script",
+  "file": "13-signet.md",
+  "item": null,
+  "old": "        None => return false,\n    };\n    let mut modified_coinbase",
+  "new": "        None => return true,\n    };\n    let mut modified_coinbase",
+  "expect": "caught"
+ },
+ {
+  "name": "signet-solution-trailing-bytes-ok",
+  "kind": "script",
+  "file": "13-signet.md",
+  "item": null,
+  "old": "            Ok((s, w)) if reader.remaining() == 0 => {",
+  "new": "            Ok((s, w)) => {",
+  "expect": "caught"
+ },
+ {
+  "name": "signet-header-alone-is-solution",
+  "kind": "script",
+  "file": "13-signet.md",
+  "item": null,
+  "old": "op.data.len() > SIGNET_HEADER.len()",
+  "new": "op.data.len() >= SIGNET_HEADER.len()",
+  "expect": "caught"
+ },
+ {
+  "name": "signet-last-solution-push",
+  "kind": "script",
+  "file": "13-signet.md",
+  "item": null,
+  "old": "            if solution.is_none() && op.data.len()",
+  "new": "            if op.data.len()",
+  "expect": "caught"
+ },
+ {
+  "name": "signet-empty-push-opcode-dropped",
+  "kind": "script",
+  "file": "13-signet.md",
+  "item": null,
+  "old": "        } else {\n            replacement.push(op.opcode);\n        }",
+  "new": "        } else if op.opcode > OP_PUSHDATA4 {\n            replacement.push(op.opcode);\n        }",
+  "expect": "caught"
+ },
+ {
+  "name": "signet-merkle-original-coinbase",
+  "kind": "script",
+  "file": "13-signet.md",
+  "item": null,
+  "old": "    let mut leaves = vec![modified_coinbase.txid()];",
+  "new": "    let mut leaves = vec![block.transactions[0].txid()];",
+  "expect": "caught"
+ },
+ {
+  "name": "signet-signs-nonce-not-time",
+  "kind": "script",
+  "file": "13-signet.md",
+  "item": null,
+  "old": "    block_data.extend_from_slice(&block.header.time.to_le_bytes());",
+  "new": "    block_data.extend_from_slice(&block.header.nonce.to_le_bytes());",
+  "expect": "caught"
+ },
+ {
+  "name": "signet-to-spend-version-1",
+  "kind": "script",
+  "file": "13-signet.md",
+  "item": null,
+  "old": "    let to_spend = Transaction {\n        version: 0,",
+  "new": "    let to_spend = Transaction {\n        version: 1,",
+  "expect": "caught"
+ },
+ {
+  "name": "signet-no-nulldummy",
+  "kind": "script",
+  "file": "13-signet.md",
+  "item": null,
+  "old": "VERIFY_P2SH | VERIFY_WITNESS | VERIFY_DERSIG | VERIFY_NULLDUMMY;",
+  "new": "VERIFY_P2SH | VERIFY_WITNESS | VERIFY_DERSIG;",
+  "expect": "caught"
+ },
+ {
+  "name": "signet-no-dersig",
+  "kind": "script",
+  "file": "13-signet.md",
+  "item": null,
+  "old": "VERIFY_P2SH | VERIFY_WITNESS | VERIFY_DERSIG | VERIFY_NULLDUMMY;",
+  "new": "VERIFY_P2SH | VERIFY_WITNESS | VERIFY_NULLDUMMY;",
+  "expect": "caught"
+ },
+ {
+  "name": "signet-with-taproot",
+  "kind": "script",
+  "file": "13-signet.md",
+  "item": null,
+  "old": "VERIFY_P2SH | VERIFY_WITNESS | VERIFY_DERSIG | VERIFY_NULLDUMMY;",
+  "new": "VERIFY_P2SH | VERIFY_WITNESS | VERIFY_DERSIG | VERIFY_NULLDUMMY | VERIFY_TAPROOT;",
+  "expect": "caught"
  },
  {
   "name": "retarget-upper-clamp-x8",

@@ -302,6 +302,19 @@ Response: `{"bits": integer}`.
 
 The headers have only a timestamp and `bits`, and need not be a chain that could exist: the cases test the function, as the script cases do. The suite `pow` (`vectors/pow`) sends these three operations; a harness that lists none of them must leave that suite out (section 6).
 
+### 4.17 `signet_check`
+
+The signet block solution check of a block (specification chapter 13, `check_signet_block_solution`), on a signet whose challenge is the given script.
+
+| Request field | Type | Meaning |
+|---|---|---|
+| `block` | hex | A serialized block, with witnesses. Bytes after the last transaction are a `bad_request` |
+| `challenge` | hex | The network's challenge script (`signetchallenge`, as in 4.8) |
+
+Response: `{"valid": bool}`.
+
+The block need not be valid otherwise: its proof of work, header merkle root and transactions are not checked, only its solution. The suite `signet` (`vectors/signet`) sends this operation; a harness that does not list it must leave that suite out (section 6).
+
 ## 5. Live node contract
 
 The interop suite runs the implementation as a real node next to Bitcoin Core (the peer-sync suite has its own contract, section 5.1). For that suite the user supplies a node command template. The runner substitutes these placeholders:

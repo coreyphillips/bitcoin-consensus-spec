@@ -25,7 +25,8 @@
         "schnorr_verify",
         "pow_compact",
         "pow_check",
-        "pow_next_work"
+        "pow_next_work",
+        "signet_check"
       ],
       "spec_version": "v32.1",
       "version": "0.1.0"

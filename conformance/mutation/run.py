@@ -42,6 +42,7 @@ RUNNER = os.path.join(
     "release", "bcs-conformance")
 SCRIPT_SUITES = [
     "script-tests", "tx-valid", "tx-invalid", "sighash", "bip341", "bip340", "script-assets", "custom", "pow",
+    "signet",
 ]
 VERDICTS = ["caught", "caught-level2", "survived"]
 # A check whose call got no answer, worded as the runner's CallError (harness.rs), or whose answer
@@ -67,7 +68,7 @@ LEVELS = ["level 0", "level 0 non-normative", "level 1", "level 2"]
 # What the unmodified reference runs for each kind. A missing vector or corpus file lowers these
 # and still passes, so update them with the vectors.
 TOTALS = {
-    "script": "339801 checks in 9 suites",
+    "script": "339847 checks in 10 suites",
     "block": "level 0 5282/5282, level 0 non-normative 1/1, level 1 1237/1237, level 2 2292/2292",
 }
 
