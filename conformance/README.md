@@ -8,7 +8,7 @@ Tooling that checks an implementation of the specification against Bitcoin Core 
 | `PROTOCOL.md` | The JSON-lines protocol between the runner and an implementation's harness program |
 | `oracle-core/` | `oracle-core-harness`: a harness whose answers come from Bitcoin Core v32.1's own C++ consensus code, compiled from source |
 | `runner/` | `bcs-conformance`: starts a harness, runs the suites, derives expectations from the oracle |
-| `tools/` | `differential.py`: seeded random requests sent to two harnesses, every differing answer printed |
+| `tools/` | `differential.py`: seeded random requests sent to two harnesses, every differing answer printed. `multibranch.py`: seeded random multi-branch chain scenarios sent to two chain harnesses, chain state compared after every step |
 | `vectors/core/` | `script_tests.json`, `tx_valid.json`, `tx_invalid.json`, `sighash.json`, `bip341_wallet_vectors.json`, byte-identical to Core v32.1's `src/test/data/` |
 | `vectors/qa-assets/` | `script_assets_test.json` from the bitcoin-core/qa-assets repository |
 | `vectors/bip340/` | `test-vectors.csv` from BIP340 |
@@ -203,7 +203,8 @@ request the oracle answered) and `results`: 64 characters, one per flag combinat
 CI (`.github/workflows/core.yml`) builds the oracle from a fresh v32.1 clone, runs `derive` and
 fails unless the committed files are byte-identical to the new ones apart from the provenance
 `build` line, which names the machine's compiler and target (`.github/compare-derived.sh`). The
-same workflow replays the corpus through bitcoind with `recorder/core_chain_harness.py`.
+same workflow replays the corpus through bitcoind with `recorder/core_chain_harness.py`, then sends
+100 random multi-branch scenarios to that harness and to the reference (`tools/multibranch.py`).
 
 ## Flag rules
 
