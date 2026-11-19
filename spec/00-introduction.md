@@ -73,7 +73,7 @@ The repository's `conformance/` directory contains a test runner, the test vecto
 | Class | Covers | Runner suites |
 |---|---|---|
 | Script | Chapters 02 to 08 for single transactions | `script-tests`, `tx-valid`, `tx-invalid`, `sighash`, `bip341`, `bip340`, `script-assets`, `custom` |
-| Chain | Chapters 09 to 13 and 15 | `pow`, `signet`, `params`, `corpus`, `headers-live` |
+| Chain | Chapters 09 to 13 and 15 | `pow`, `signet`, `params`, `block-connect`, `corpus`, `headers-live` |
 | Network | Chapter 14 | `interop` |
 
 Separately from the classes, the runner grades how closely each result matches. A suite passes when every verdict matches (for the block corpus, every active tip). Differences in error identifiers, and in the corpus' UTXO set hashes, are counted as a further match *level* and fail the run only with `--fail-on-level2`; differences in the corpus' chain tips are only reported (`conformance/README.md`).

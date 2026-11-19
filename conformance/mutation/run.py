@@ -44,6 +44,8 @@ SCRIPT_SUITES = [
     "script-tests", "tx-valid", "tx-invalid", "sighash", "bip341", "bip340", "script-assets", "custom", "pow",
     "signet", "params",
 ]
+# Vector suites that connect blocks, run for block mutants next to the corpus.
+BLOCK_VECTOR_SUITES = ["block-connect"]
 VERDICTS = ["caught", "caught-level2", "survived"]
 # A check whose call got no answer, worded as the runner's CallError (harness.rs), or whose answer
 # lacks the field it checks (`custom` prints a missing field as null). Any other failed check got
@@ -69,7 +71,7 @@ LEVELS = ["level 0", "level 0 non-normative", "level 1", "level 2"]
 # and still passes, so update them with the vectors.
 TOTALS = {
     "script": "339937 checks in 11 suites",
-    "block": "level 0 5293/5293, level 0 non-normative 1/1, level 1 1243/1243, level 2 2292/2292",
+    "block": "12 checks in 1 suite; level 0 5293/5293, level 0 non-normative 1/1, level 1 1243/1243, level 2 2292/2292",
 }
 
 
@@ -105,15 +107,15 @@ def plural(n, noun):
     return "%d %s%s" % (n, noun, "" if n == 1 else "s")
 
 
-def script_verdict(harness):
+def script_verdict(harness, suites=SCRIPT_SUITES):
     """Runs the script suites once. Returns the verdict, its detail and what ran."""
     args = ["--impl", shlex.quote(harness), "--fail-on-level2", "--verbose"]
-    out = run_runner(args + sum((["--suite", s] for s in SCRIPT_SUITES), []))
+    out = run_runner(args + sum((["--suite", s] for s in suites), []))
     lines = out.stdout.splitlines()
     result = next((line for line in reversed(lines) if line.startswith("RESULT: ")), None)
     if result is None:
         return "error", "no RESULT line from the runner: " + last_line(out.stderr), ""
-    rows = [m for m in map(SUITE_ROW.match, lines) if m and m.group(1) in SCRIPT_SUITES]
+    rows = [m for m in map(SUITE_ROW.match, lines) if m and m.group(1) in suites]
     ran = "%s in %s" % (plural(sum(int(m.group(2)) for m in rows), "check"), plural(len(rows), "suite"))
     fails = [line for line in lines if line.startswith("FAIL ")]
     errors = sum(1 for line in fails if HARNESS_ERROR.search(line))
@@ -127,7 +129,7 @@ def script_verdict(harness):
     if differ:
         return "caught", ", ".join(notes), ran
     problems = [" ".join(line.split()) for line in lines if line.lstrip().startswith("error: ")
-                or (line.split(" ", 1)[0] in SCRIPT_SUITES and not SUITE_ROW.match(line))]
+                or (line.split(" ", 1)[0] in suites and not SUITE_ROW.match(line))]
     return "error", "; ".join(["no verdict differs"] + notes + problems[:1]), ran
 
 
@@ -157,7 +159,19 @@ def corpus_verdict(harness):
     return ("caught-level2", ", ".join(misses), ran) if misses else ("survived", "", ran)
 
 
-EVALUATE = {"script": script_verdict, "block": corpus_verdict}
+def block_verdict(harness):
+    """Runs the block-connect vectors and the block corpus. The stronger verdict wins: a block
+    mutant caught by either is caught."""
+    results = [script_verdict(harness, BLOCK_VECTOR_SUITES), corpus_verdict(harness)]
+    verdicts = [v for v, _, _ in results]
+    for verdict in ["caught", "error", "caught-level2", "survived"]:
+        if verdict in verdicts:
+            break
+    detail = "; ".join(d for v, d, _ in results if v == verdict and d)
+    return verdict, detail, "; ".join(ran for _, _, ran in results)
+
+
+EVALUATE = {"script": script_verdict, "block": block_verdict}
 
 
 def copy_repo(name, work):

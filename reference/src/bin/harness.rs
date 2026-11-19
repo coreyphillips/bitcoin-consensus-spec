@@ -139,6 +139,88 @@ fn get_flags(req: &Fields) -> Result<ScriptFlags, BadRequest> {
     Ok(flags)
 }
 
+fn get_array<'a>(req: &'a Fields, name: &str) -> Result<Vec<&'a Fields>, BadRequest> {
+    match field(req, name)? {
+        Json::Arr(items) => items
+            .iter()
+            .map(|item| match item {
+                Json::Obj(o) => Ok(o),
+                _ => Err(BadRequest(format!("{name} entries must be objects"))),
+            })
+            .collect(),
+        _ => Err(BadRequest(format!("{name} must be an array"))),
+    }
+}
+
+fn get_hash(req: &Fields, name: &str) -> Result<Hash256, BadRequest> {
+    hash_from_display(get_str(req, name)?).ok_or_else(|| BadRequest(format!("{name} is not a 32-byte hash")))
+}
+
+/// The block entry and the chain `block_connect` describes. The ancestors are linked to each other
+/// directly, skipping the heights the request leaves out: `BlockTree::ancestor` then finds every
+/// listed height and no other.
+fn get_connect_chain(req: &Fields, block: &Block) -> Result<(BlockEntry, BlockTree), BadRequest> {
+    let height = i32::try_from(get_int(req, "height")?)
+        .ok()
+        .filter(|h| *h >= 1)
+        .ok_or_else(|| BadRequest("height must be from 1 to 2^31 - 1".into()))?;
+    let mut ancestors = Vec::new();
+    for item in get_array(req, "ancestors")? {
+        let h = i32::try_from(get_int(item, "height")?).map_err(|_| BadRequest("ancestor height out of range".into()))?;
+        let mtp = i64::try_from(get_int(item, "median_time_past")?).map_err(|_| BadRequest("median_time_past out of range".into()))?;
+        ancestors.push((h, get_hash(item, "hash")?, mtp));
+    }
+    ancestors.sort_by(|a, b| b.0.cmp(&a.0));
+    if ancestors.first().map(|a| (a.0, a.1)) != Some((height - 1, block.header.prev_block)) {
+        return Err(BadRequest("ancestors must include the parent, at height - 1 with the hash the header names".into()));
+    }
+    if ancestors.windows(2).any(|w| w[0].0 == w[1].0) || ancestors.last().is_some_and(|a| a.0 < 0) {
+        return Err(BadRequest("ancestor heights must be distinct and not negative".into()));
+    }
+    let blank = BlockHeader { version: 0, prev_block: ZERO_HASH, merkle_root: ZERO_HASH, time: 0, bits: 0, nonce: 0 };
+    let entry = |hash, header, height, parent, median_time_past| BlockEntry {
+        hash,
+        header,
+        height,
+        parent,
+        chain_work: U256::ZERO,
+        median_time_past,
+        block: None,
+        undo: None,
+        sequence_id: 0,
+        failed: false,
+        connected_once: false,
+        header_order: 0,
+    };
+    let this = entry(block.hash(), block.header, height, Some(block.header.prev_block), 0);
+    let mut tree = BlockTree { entries: std::collections::HashMap::new(), active: Vec::new() };
+    tree.entries.insert(this.hash, this.clone());
+    for (i, (h, hash, mtp)) in ancestors.iter().enumerate() {
+        let parent = ancestors.get(i + 1).map(|a| a.1);
+        if tree.entries.insert(*hash, entry(*hash, blank, *h, parent, *mtp)).is_some() {
+            return Err(BadRequest("the block and its ancestors must have distinct hashes".into()));
+        }
+    }
+    Ok((this, tree))
+}
+
+fn get_coins(req: &Fields) -> Result<UtxoSet, BadRequest> {
+    let mut utxo = UtxoSet::new();
+    for item in get_array(req, "coins")? {
+        let outpoint = OutPoint { txid: get_hash(item, "txid")?, vout: get_u32(item, "vout")? };
+        let height = i32::try_from(get_int(item, "height")?).map_err(|_| BadRequest("coin height out of range".into()))?;
+        let is_coinbase = match field(item, "coinbase")? {
+            Json::Bool(b) => *b,
+            _ => return Err(BadRequest("coinbase must be a boolean".into())),
+        };
+        let output = TxOut { value: get_int(item, "amount")? as i64, script_pubkey: get_hex(item, "script_pubkey")? };
+        if utxo.insert(outpoint, Coin { output, height, is_coinbase }).is_some() {
+            return Err(BadRequest("coins must have distinct outpoints".into()));
+        }
+    }
+    Ok(utxo)
+}
+
 fn obj(pairs: Vec<(&str, Json)>) -> Fields {
     pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
 }
@@ -159,6 +241,7 @@ const OPS: &[&str] = &[
     "pow_next_work",
     "signet_check",
     "network_params",
+    "block_connect",
     "chain_reset",
     "chain_process_block",
     "chain_process_headers",
@@ -349,6 +432,20 @@ fn handle(op: &str, req: &Fields, chain: &mut Option<ChainState>) -> Result<Opti
                 ("message_start", Json::Str(hex_encode(&params.magic))),
                 ("default_port", int(params.default_port.into())),
             ])
+        }
+        "block_connect" => {
+            let consensus = get_consensus(req)?;
+            let block = deserialize_block(&get_hex(req, "block")?)
+                .map_err(|e| BadRequest(format!("block does not decode: {}", e.0)))?;
+            if block.transactions.is_empty() {
+                return Err(BadRequest("block has no transactions".into()));
+            }
+            let (entry, tree) = get_connect_chain(req, &block)?;
+            let utxo = get_coins(req)?;
+            match connect_block(&block, &entry, &tree, &utxo, &consensus) {
+                Ok(_) => obj(vec![("valid", Json::Bool(true))]),
+                Err(f) => obj(vec![("valid", Json::Bool(false)), ("reason", Json::Str(f.reason))]),
+            }
         }
         "signet_check" => {
             let bytes = get_hex(req, "block")?;

@@ -370,6 +370,7 @@ fn suite_ops(suite: &str) -> &'static [&'static str] {
         "pow" => &["pow_compact", "pow_check", "pow_next_work"],
         "signet" => &["signet_check"],
         "params" => &["network_params"],
+        "block-connect" => &["block_connect"],
         "corpus" => &[
             "chain_reset",
             "chain_process_block",
@@ -521,6 +522,7 @@ fn cmd_run(opts: &Options) -> ExitCode {
             "pow" => suites::custom::run(&mut ctx, &paths.vectors, "pow"),
             "signet" => suites::custom::run(&mut ctx, &paths.vectors, "signet"),
             "params" => suites::custom::run(&mut ctx, &paths.vectors, "params"),
+            "block-connect" => suites::custom::run(&mut ctx, &paths.vectors, "block-connect"),
             "corpus" => suites::corpus::run(
                 &mut ctx,
                 &corpus_suite_paths(opts, &paths),
