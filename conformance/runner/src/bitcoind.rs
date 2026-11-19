@@ -1,11 +1,12 @@
 //! A regtest `bitcoind` started by the runner (interop suite): process management and a minimal
 //! JSON-RPC client (HTTP/1.1 with the cookie credentials).
 
+use crate::process::{self, Group};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// Picks `count` distinct TCP ports in `range` that nothing listens on (127.0.0.1), starting at
@@ -50,7 +51,8 @@ fn base64(data: &[u8]) -> String {
 }
 
 pub struct Bitcoind {
-    child: Option<Child>,
+    /// Registered with [`process::spawn`], so a signal that ends the runner ends bitcoind too.
+    child: Option<Group>,
     pub p2p_port: u16,
     pub rpc_port: u16,
     auth: String,
@@ -97,13 +99,14 @@ impl Bitcoind {
         let stderr_path = datadir.join("stderr.log");
         let stderr = std::fs::File::create(&stderr_path)
             .map_err(|e| format!("cannot create {}: {e}", stderr_path.display()))?;
-        let child = Command::new(binary)
-            .args(&args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(stderr)
-            .spawn()
-            .map_err(|e| format!("cannot start {}: {e}", binary.display()))?;
+        let child = process::spawn(
+            Command::new(binary)
+                .args(&args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(stderr),
+        )
+        .map_err(|e| format!("cannot start {}: {e}", binary.display()))?;
         let mut node = Bitcoind {
             child: Some(child),
             p2p_port,
@@ -116,6 +119,7 @@ impl Bitcoind {
             if let Some(child) = node.child.as_mut() {
                 if let Ok(Some(status)) = child.try_wait() {
                     let err = std::fs::read_to_string(&stderr_path).unwrap_or_default();
+                    process::end(child);
                     node.child = None;
                     return Err(format!(
                         "bitcoind exited at startup ({status}): {}",
@@ -187,24 +191,16 @@ impl Bitcoind {
         Ok(v["result"].clone())
     }
 
-    /// Stops the node (RPC `stop`, then kill after 60 seconds).
+    /// Stops the node: RPC `stop`, then [`process::end`] if it still runs 60 seconds later.
     pub fn stop(&mut self) {
         let _ = self.rpc("stop", json!([]));
         if let Some(mut child) = self.child.take() {
             let deadline = Instant::now() + Duration::from_secs(60);
-            loop {
-                match child.try_wait() {
-                    Ok(Some(_)) => return,
-                    Ok(None) if Instant::now() < deadline => {
-                        std::thread::sleep(Duration::from_millis(100))
-                    }
-                    _ => {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return;
-                    }
-                }
+            while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(100));
             }
+            // Also when it exited: this is what unregisters the group.
+            process::end(&mut child);
         }
     }
 }
@@ -218,6 +214,98 @@ impl Drop for Bitcoind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Writes the regtest RPC cookie and answers every JSON-RPC call with `null`, exiting on `stop`.
+    const FAKE_BITCOIND: &str = r#"#!/usr/bin/env python3
+import json, os, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+args = dict(a[1:].split("=", 1) for a in sys.argv[1:] if "=" in a)
+class Rpc(BaseHTTPRequestHandler):
+    def do_POST(self):
+        method = json.loads(self.rfile.read(int(self.headers["Content-Length"])))["method"]
+        body = json.dumps({"result": None, "error": None, "id": 1}).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        if method == "stop":
+            os._exit(0)
+    def log_message(self, *a):
+        pass
+server = HTTPServer(("127.0.0.1", int(args["rpcport"])), Rpc)
+os.makedirs(os.path.join(args["datadir"], "regtest"), exist_ok=True)
+with open(os.path.join(args["datadir"], "regtest", ".cookie"), "w") as f:
+    f.write("__cookie__:test")
+server.serve_forever()
+"#;
+
+    /// A fresh directory for one test, holding `script` as the executable `bitcoind`.
+    fn fake(name: &str, script: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("bcs-bitcoind-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let binary = dir.join("bitcoind");
+        std::fs::write(&binary, script).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        dir
+    }
+
+    /// bitcoind runs in a process group of its own that is registered while it runs, so a signal
+    /// to the runner ends it, and that is unregistered once it stopped.
+    #[test]
+    fn bitcoind_runs_in_a_registered_group() {
+        if !Command::new("python3")
+            .args(["-c", ""])
+            .status()
+            .is_ok_and(|s| s.success())
+        {
+            eprintln!("skipped: no python3");
+            return;
+        }
+        let dir = fake("registered", FAKE_BITCOIND);
+        let ports = free_ports((29000, 29999), 2, &[]).unwrap();
+        let mut node = Bitcoind::start(
+            &dir.join("bitcoind"),
+            &dir.join("data"),
+            ports[0],
+            ports[1],
+            false,
+            &[],
+        )
+        .unwrap();
+        let pid = node.child.as_ref().unwrap().id() as i32;
+        // SAFETY: getpgid only reads the process's group.
+        assert_eq!(unsafe { libc::getpgid(pid) }, pid);
+        assert!(process::registered(pid));
+        node.stop();
+        assert!(!process::registered(pid));
+        // SAFETY: signal 0 only checks that the process exists.
+        assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "bitcoind left");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A bitcoind that exits at startup is reported with its standard error and leaves no group
+    /// registered.
+    #[test]
+    fn bitcoind_that_exits_at_startup_is_unregistered() {
+        let dir = fake(
+            "exits",
+            "#!/bin/sh\necho $$ > \"$0.pid\"\necho 'cannot obtain a lock' >&2\nexit 3\n",
+        );
+        let e = Bitcoind::start(&dir.join("bitcoind"), &dir.join("data"), 1, 2, false, &[])
+            .err()
+            .unwrap();
+        assert!(e.starts_with("bitcoind exited at startup"), "{e}");
+        assert!(e.ends_with(": cannot obtain a lock"), "{e}");
+        let pid: i32 = std::fs::read_to_string(dir.join("bitcoind.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(!process::registered(pid));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn base64_matches_rfc4648() {
