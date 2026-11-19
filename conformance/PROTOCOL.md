@@ -178,7 +178,7 @@ Discards all chain state and starts a fresh chain containing only the genesis bl
 | `network` | string | `main`, `testnet3`, `testnet4`, `signet` or `regtest` |
 | `options` | object, optional | Network parameter overrides (specification chapter 12): `{"testactivationheight": {"bip34": 2, "segwit": 120}, "test": ["bip94"], "signetchallenge": hex}` |
 
-Response: `{"genesis": hash}` in display order.
+Response: `{"genesis": hash}` in display order. A deployment name chapter 12 does not list, or any `testactivationheight` on `main`, is a `bad_request`.
 
 ### 4.9 `chain_process_block`
 
@@ -240,7 +240,7 @@ Marks a block, and every descendant, invalid by operator decision, exactly as sp
 
 | Request field | Type | Meaning |
 |---|---|---|
-| `hash` | hash | Block hash, display order. The block must be known (header at least). |
+| `hash` | hash | Block hash, display order. The block must be known (header at least); an unknown hash is a `bad_request`. |
 | `now` | integer, optional | Current time; runners send it for symmetry with the other chain operations, and a harness may ignore it |
 
 Response: `{"tip": hash, "height": integer}` after the operation.

@@ -43,7 +43,8 @@ fn main() {
     let idle: u64 = get("--idle").and_then(|v| v.parse().ok()).unwrap_or(30);
     let headers_only = args.iter().any(|a| a == "--headers-only");
 
-    let mut state = ChainState::new(network_params(network, &options));
+    let params = network_params(network, &options).unwrap_or_else(|e| fail(&format!("--options: {e}"), None));
+    let mut state = ChainState::new(params);
     let result = sync_from_peer(&mut state, &peer, stop_at, idle, !headers_only);
     if let Err(error) = &result {
         fail(&format!("sync failed: {error}"), Some(&state));

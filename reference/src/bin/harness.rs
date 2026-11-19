@@ -52,9 +52,18 @@ fn get_u32(req: &Fields, name: &str) -> Result<u32, BadRequest> {
     u32::try_from(get_int(req, name)?).map_err(|_| BadRequest(format!("{name} must be an unsigned 32-bit integer")))
 }
 
+fn get_i64(req: &Fields, name: &str) -> Result<i64, BadRequest> {
+    i64::try_from(get_int(req, name)?).map_err(|_| BadRequest(format!("{name} must be a signed 64-bit integer")))
+}
+
+/// An input index; range against the transaction is checked by the caller.
+fn get_index(req: &Fields) -> Result<usize, BadRequest> {
+    usize::try_from(get_int(req, "index")?).map_err(|_| BadRequest("index out of range".into()))
+}
+
 fn get_consensus(req: &Fields) -> Result<ConsensusParams, BadRequest> {
     let network = parse_network(get_str(req, "network")?).map_err(BadRequest)?;
-    Ok(network_params(network, &NetworkOptions::default()).consensus)
+    Ok(network_params(network, &NetworkOptions::default()).map_err(BadRequest)?.consensus)
 }
 
 /// The `chain` runs of `pow_next_work`, expanded to headers. Fields other than `time` and `bits`
@@ -75,7 +84,7 @@ fn get_pow_chain(req: &Fields) -> Result<Vec<BlockHeader>, BadRequest> {
             _ => return Err(bad()),
         };
         let bits = u32::try_from(bits).map_err(|_| bad())?;
-        if count < 1 || headers.len() as i128 + count > 100_000 {
+        if count < 1 || count > 100_000 - headers.len() as i128 {
             return Err(BadRequest("chain must hold 1 to 100000 headers".into()));
         }
         for i in 0..count {
@@ -110,7 +119,7 @@ fn get_spent_outputs(req: &Fields) -> Result<Vec<TxOut>, BadRequest> {
             Json::Obj(o) => o,
             _ => return Err(BadRequest("spent output must be an object".into())),
         };
-        let value = get_int(obj, "amount")? as i64;
+        let value = get_i64(obj, "amount")?;
         let script_pubkey = get_hex(obj, "script_pubkey")?;
         out.push(TxOut { value, script_pubkey });
     }
@@ -213,7 +222,7 @@ fn get_coins(req: &Fields) -> Result<UtxoSet, BadRequest> {
             Json::Bool(b) => *b,
             _ => return Err(BadRequest("coinbase must be a boolean".into())),
         };
-        let output = TxOut { value: get_int(item, "amount")? as i64, script_pubkey: get_hex(item, "script_pubkey")? };
+        let output = TxOut { value: get_i64(item, "amount")?, script_pubkey: get_hex(item, "script_pubkey")? };
         if utxo.insert(outpoint, Coin { output, height, is_coinbase }).is_some() {
             return Err(BadRequest("coins must have distinct outpoints".into()));
         }
@@ -261,7 +270,7 @@ fn handle(op: &str, req: &Fields, chain: &mut Option<ChainState>) -> Result<Opti
         ]),
         "script_verify" => {
             let tx = get_tx(req, "tx")?;
-            let index = get_int(req, "index")? as usize;
+            let index = get_index(req)?;
             let spent = get_spent_outputs(req)?;
             let flags = get_flags(req)?;
             if index >= tx.inputs.len() || spent.len() != tx.inputs.len() {
@@ -286,7 +295,7 @@ fn handle(op: &str, req: &Fields, chain: &mut Option<ChainState>) -> Result<Opti
         "sighash_legacy" => {
             let tx = get_tx(req, "tx")?;
             let script_code = get_hex(req, "script_code")?;
-            let index = get_int(req, "index")? as usize;
+            let index = get_index(req)?;
             let hash_type = get_int(req, "hash_type")?;
             if hash_type < i32::MIN as i128 || hash_type > i32::MAX as i128 {
                 return Err(BadRequest("hash_type must be a signed 32-bit integer".into()));
@@ -301,7 +310,7 @@ fn handle(op: &str, req: &Fields, chain: &mut Option<ChainState>) -> Result<Opti
         }
         "sighash_taproot" => {
             let tx = get_tx(req, "tx")?;
-            let index = get_int(req, "index")? as usize;
+            let index = get_index(req)?;
             let spent = get_spent_outputs(req)?;
             let hash_type = get_int(req, "hash_type")?;
             if index >= tx.inputs.len() || spent.len() != tx.inputs.len() || !(0..=255).contains(&hash_type) {
@@ -394,7 +403,7 @@ fn handle(op: &str, req: &Fields, chain: &mut Option<ChainState>) -> Result<Opti
         }
         "network_params" => {
             let network = parse_network(get_str(req, "network")?).map_err(BadRequest)?;
-            let params = network_params(network, &NetworkOptions::default());
+            let params = network_params(network, &NetworkOptions::default()).map_err(BadRequest)?;
             let c = &params.consensus;
             let hash = |h: &Hash256| Json::Str(hash_to_display(h));
             let int = |n: i64| Json::Int(n as i128);
@@ -469,13 +478,13 @@ fn handle(op: &str, req: &Fields, chain: &mut Option<ChainState>) -> Result<Opti
             .filter(|_| reader.remaining() == 0)
             .ok_or_else(|| BadRequest("block does not deserialize or has trailing bytes".into()))?;
             let options = NetworkOptions { signet_challenge: Some(get_hex(req, "challenge")?), ..NetworkOptions::default() };
-            let consensus = network_params(Network::Signet, &options).consensus;
+            let consensus = network_params(Network::Signet, &options).map_err(BadRequest)?.consensus;
             obj(vec![("valid", Json::Bool(check_signet_block_solution(&block, &consensus)))])
         }
         "chain_reset" => {
             let network = parse_network(get_str(req, "network")?).map_err(BadRequest)?;
             let options = parse_network_options(req.get("options")).map_err(BadRequest)?;
-            let params = network_params(network, &options);
+            let params = network_params(network, &options).map_err(BadRequest)?;
             let genesis = hash_to_display(&params.consensus.genesis_hash);
             *chain = Some(ChainState::new(params));
             obj(vec![("genesis", Json::Str(genesis))])
@@ -485,7 +494,7 @@ fn handle(op: &str, req: &Fields, chain: &mut Option<ChainState>) -> Result<Opti
             match op {
                 "chain_process_block" => {
                     let bytes = get_hex(req, "block")?;
-                    let now = get_int(req, "now")? as i64;
+                    let now = get_i64(req, "now")?;
                     let via = match req.get("via") {
                         Some(Json::Str(v)) => v.clone(),
                         _ => "p2p".to_string(),
@@ -542,7 +551,7 @@ fn handle(op: &str, req: &Fields, chain: &mut Option<ChainState>) -> Result<Opti
                     fields
                 }
                 "chain_process_headers" => {
-                    let now = get_int(req, "now")? as i64;
+                    let now = get_i64(req, "now")?;
                     let items = match field(req, "headers")? {
                         Json::Arr(items) => items.clone(),
                         _ => return Err(BadRequest("headers must be an array".into())),
@@ -584,7 +593,11 @@ fn handle(op: &str, req: &Fields, chain: &mut Option<ChainState>) -> Result<Opti
                     fields
                 }
                 "chain_invalidate" => {
-                    let hash = hash_from_display(get_str(req, "hash")?).ok_or_else(|| BadRequest("bad hash".into()))?;
+                    // Core's invalidateblock RPC refuses an unknown hash before InvalidateBlock runs.
+                    let hash = get_hash(req, "hash")?;
+                    if state.tree.get(&hash).is_none() {
+                        return Err(BadRequest("hash is not a known block".into()));
+                    }
                     state.invalidate_block(&hash);
                     let tip = state.tip();
                     obj(vec![("tip", Json::Str(hash_to_display(&tip.hash))), ("height", Json::Int(tip.height as i128))])
@@ -625,59 +638,51 @@ fn handle(op: &str, req: &Fields, chain: &mut Option<ChainState>) -> Result<Opti
     Ok(Some(result))
 }
 
+/// The response to one request line.
+fn respond(line: &[u8], chain: &mut Option<ChainState>) -> Fields {
+    let req = match std::str::from_utf8(line).map_err(|_| "not UTF-8".to_string()).and_then(parse_json) {
+        Ok(Json::Obj(req)) => req,
+        Ok(_) => return failure(Json::Null, "bad_request", "request is not a JSON object".into()),
+        Err(e) => return failure(Json::Null, "bad_request", format!("request is not a JSON object: {e}")),
+    };
+    let id = req.get("id").cloned().unwrap_or(Json::Null);
+    let op = match get_str(&req, "op") {
+        Ok(op) => op,
+        Err(BadRequest(message)) => return failure(id, "bad_request", message),
+    };
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handle(op, &req, chain))) {
+        Ok(Ok(Some(fields))) => {
+            let mut response = obj(vec![("id", id), ("ok", Json::Bool(true))]);
+            response.extend(fields);
+            response
+        }
+        Ok(Ok(None)) => failure(id, "unsupported_op", format!("operation {op} is not supported")),
+        Ok(Err(BadRequest(message))) => failure(id, "bad_request", message),
+        Err(_) => failure(id, "internal", "panic in reference".into()),
+    }
+}
+
+fn failure(id: Json, error: &str, message: String) -> Fields {
+    obj(vec![("id", id), ("ok", Json::Bool(false)), ("error", Json::Str(error.into())), ("message", Json::Str(message))])
+}
+
 fn main() {
-    let stdin = io::stdin();
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
+    let mut input = io::stdin().lock();
+    let mut out = io::stdout().lock();
     let mut chain: Option<ChainState> = None;
-    for line in stdin.lock().lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
-        };
-        if line.trim().is_empty() {
+    // Bytes, not `lines()`: a line that is not UTF-8 gets a response instead of ending the loop.
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match input.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        let mut response: Fields = BTreeMap::new();
-        match parse_json(&line) {
-            Ok(Json::Obj(req)) => {
-                response.insert("id".into(), req.get("id").cloned().unwrap_or(Json::Null));
-                let op = match req.get("op") {
-                    Some(Json::Str(s)) => s.clone(),
-                    _ => String::new(),
-                };
-                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handle(&op, &req, &mut chain)));
-                match outcome {
-                    Ok(Ok(Some(fields))) => {
-                        response.insert("ok".into(), Json::Bool(true));
-                        response.extend(fields);
-                    }
-                    Ok(Ok(None)) => {
-                        response.insert("ok".into(), Json::Bool(false));
-                        response.insert("error".into(), Json::Str("unsupported_op".into()));
-                        response.insert("message".into(), Json::Str(format!("operation {op} is not supported")));
-                    }
-                    Ok(Err(BadRequest(message))) => {
-                        response.insert("ok".into(), Json::Bool(false));
-                        response.insert("error".into(), Json::Str("bad_request".into()));
-                        response.insert("message".into(), Json::Str(message));
-                    }
-                    Err(_) => {
-                        response.insert("ok".into(), Json::Bool(false));
-                        response.insert("error".into(), Json::Str("internal".into()));
-                        response.insert("message".into(), Json::Str("panic in reference".into()));
-                    }
-                }
-            }
-            _ => {
-                response.insert("id".into(), Json::Null);
-                response.insert("ok".into(), Json::Bool(false));
-                response.insert("error".into(), Json::Str("bad_request".into()));
-                response.insert("message".into(), Json::Str("request is not a JSON object".into()));
-            }
-        }
         let mut text = String::new();
-        write_json(&Json::Obj(response), &mut text);
+        write_json(&Json::Obj(respond(&line, &mut chain)), &mut text);
         text.push('\n');
         if out.write_all(text.as_bytes()).is_err() || out.flush().is_err() {
             break;

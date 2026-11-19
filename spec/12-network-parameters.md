@@ -137,7 +137,7 @@ pub const DEFAULT_SIGNET_CHALLENGE: &str = "512103ad5e0edad18cb1f0fc0d28a3d4f1f3
 
 ## 12.5 Test overrides
 
-For testing, Bitcoin Core lets the deployment heights of non-mainnet networks be overridden (`-testactivationheight=name@height` with `name` one of `bip34`, `dersig`, `cltv`, `csv`, `segwit`), and lets regtest enforce BIP94 (`-test=bip94`). Signet accepts a custom challenge (`-signetchallenge`). The conformance suite's recorded scenarios use these options, so implementations that want to pass the suite MUST support them for non-mainnet networks. (Core: `HandleDeploymentArgs`, `ReadTestNetArgs`, `ReadSigNetArgs`, `ReadRegTestArgs`, `src/chainparams.cpp`; mainnet refuses `-testactivationheight` in `AppInitParameterInteraction`, `src/init.cpp`.)
+For testing, Bitcoin Core lets the deployment heights of non-mainnet networks be overridden (`-testactivationheight=name@height` with `name` one of `bip34`, `dersig`, `cltv`, `csv`, `segwit`), and lets regtest enforce BIP94 (`-test=bip94`). Signet accepts a custom challenge (`-signetchallenge`). The conformance suite's recorded scenarios use these options, so implementations that want to pass the suite MUST support them for non-mainnet networks. Any other deployment name, and any deployment override on mainnet, is an error. (Core: `HandleDeploymentArgs`, `ReadTestNetArgs`, `ReadSigNetArgs`, `ReadRegTestArgs`, `src/chainparams.cpp`; mainnet refuses `-testactivationheight` in `AppInitParameterInteraction`, `src/init.cpp`.)
 
 ```rust
 /// Test overrides. Core: `CChainParams::DeploymentOptions`, `RegTestOptions`, `SigNetOptions`.
@@ -159,8 +159,8 @@ fn target_from_hex(text: &str) -> U256 {
     U256::from_be_bytes(&hex_decode(text).expect("valid constant"))
 }
 
-/// Builds the parameters of a network. Panics on an invalid override name or a mainnet override.
-pub fn network_params(network: Network, options: &NetworkOptions) -> NetworkParams {
+/// Builds the parameters of a network. Fails on an unknown deployment name or a mainnet override.
+pub fn network_params(network: Network, options: &NetworkOptions) -> Result<NetworkParams, String> {
     let satoshi_script = p2pk_script(&hex_decode(SATOSHI_PUBKEY).unwrap());
     let main_limit = target_from_hex("00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
     let two_weeks = 14 * 24 * 60 * 60;
@@ -237,8 +237,8 @@ pub fn network_params(network: Network, options: &NetworkOptions) -> NetworkPara
             (create_genesis_block(SATOSHI_MESSAGE, satoshi_script, 1296688602, 2, 0x207fffff, 1, 50 * COIN), [0xfa, 0xbf, 0xb5, 0xda], 18444)
         }
     };
-    if !options.activation_heights.is_empty() {
-        assert!(network != Network::Main, "deployment overrides are not allowed on mainnet");
+    if network == Network::Main && !options.activation_heights.is_empty() {
+        return Err("deployment overrides are not allowed on mainnet".into());
     }
     for (name, height) in &options.activation_heights {
         match name.as_str() {
@@ -247,11 +247,11 @@ pub fn network_params(network: Network, options: &NetworkOptions) -> NetworkPara
             "cltv" => consensus.bip65_height = *height,
             "csv" => consensus.csv_height = *height,
             "segwit" => consensus.segwit_height = *height,
-            other => panic!("unknown deployment {other}"),
+            other => return Err(format!("unknown deployment {other}")),
         }
     }
     consensus.genesis_hash = genesis.hash();
-    NetworkParams { consensus, genesis, magic, default_port }
+    Ok(NetworkParams { consensus, genesis, magic, default_port })
 }
 ```
 
@@ -272,15 +272,23 @@ mod network_parameter_tests {
             (Network::Regtest, "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206"),
         ];
         for (network, hash) in expect {
-            let params = network_params(network, &NetworkOptions::default());
+            let params = network_params(network, &NetworkOptions::default()).unwrap();
             assert_eq!(hash_to_display(&params.consensus.genesis_hash), hash, "{network:?}");
         }
-        let main = network_params(Network::Main, &NetworkOptions::default());
+        let main = network_params(Network::Main, &NetworkOptions::default()).unwrap();
         assert_eq!(hash_to_display(&main.genesis.header.merkle_root), "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b");
-        let testnet4 = network_params(Network::Testnet4, &NetworkOptions::default());
+        let testnet4 = network_params(Network::Testnet4, &NetworkOptions::default()).unwrap();
         assert_eq!(hash_to_display(&testnet4.genesis.header.merkle_root), "7aa0a7ae1e223414cb807e40cd57e667b718e42aaf9306db9102fe28912b7b4e");
-        let signet = network_params(Network::Signet, &NetworkOptions::default());
+        let signet = network_params(Network::Signet, &NetworkOptions::default()).unwrap();
         assert_eq!(hex_encode(&signet.magic), "0a03cf40");
+    }
+
+    #[test]
+    fn rejected_overrides() {
+        let heights = |name: &str| NetworkOptions { activation_heights: vec![(name.to_string(), 5)], ..NetworkOptions::default() };
+        assert_eq!(network_params(Network::Regtest, &heights("segwit")).unwrap().consensus.segwit_height, 5);
+        assert!(network_params(Network::Regtest, &heights("taproot")).is_err());
+        assert!(network_params(Network::Main, &heights("segwit")).is_err());
     }
 }
 ```
