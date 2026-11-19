@@ -33,6 +33,60 @@ pub fn free_ports(range: (u16, u16), count: usize, avoid: &[u16]) -> Result<Vec<
     Err(format!("no {count} free ports in {lo}-{hi}"))
 }
 
+/// The Bitcoin Core release the corpus was recorded from, `core.version` in
+/// conformance/recorder/pins.json.
+pub fn pinned_version() -> String {
+    let pins: Value =
+        serde_json::from_str(include_str!("../../recorder/pins.json")).expect("pins.json is JSON");
+    pins["core"]["version"]
+        .as_str()
+        .expect("pins.json has core.version")
+        .to_string()
+}
+
+/// Checks that `binary -version` is the pinned release. The suites take its verdicts as the
+/// expected ones, and another release can differ from the one the corpus was recorded from.
+pub fn check_version(binary: &Path) -> Result<(), String> {
+    let pinned = pinned_version();
+    // An empty data directory, so that no bitcoin.conf of the user's is read. It is removed
+    // afterwards, so it must be one this call created: `create_dir` fails if it already exists.
+    let datadir = std::env::temp_dir().join(format!("bcs-version-{}", std::process::id()));
+    std::fs::create_dir(&datadir)
+        .map_err(|e| format!("cannot create {}: {e}", datadir.display()))?;
+    let out = Command::new(binary)
+        .arg("-version")
+        .arg(format!("-datadir={}", datadir.display()))
+        .stdin(Stdio::null())
+        .output();
+    let _ = std::fs::remove_dir_all(&datadir);
+    let out = out.map_err(|e| format!("cannot run {} -version: {e}", binary.display()))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let first = text.lines().next().unwrap_or("").trim();
+    if version_matches(first, &pinned) {
+        Ok(())
+    } else {
+        Err(format!(
+            "--bitcoind {} is not Bitcoin Core {pinned}, the release the corpus was recorded from: its -version says {:?}",
+            binary.display(),
+            shorten_line(first)
+        ))
+    }
+}
+
+/// Whether the first line of `bitcoind -version` names release `pinned` ("v32.1"). A release
+/// build says "v32.1.0", a build at the tag "v32.1"; a release candidate or a build of another
+/// commit says more, and does not match.
+fn version_matches(line: &str, pinned: &str) -> bool {
+    line.starts_with("Bitcoin Core")
+        && line
+            .split_whitespace()
+            .any(|t| t == pinned || t == format!("{pinned}.0"))
+}
+
+fn shorten_line(s: &str) -> String {
+    s.chars().take(120).collect()
+}
+
 fn base64(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
@@ -304,6 +358,56 @@ server.serve_forever()
             .parse()
             .unwrap();
         assert!(!process::registered(pid));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn version_line() {
+        assert_eq!(pinned_version(), "v32.1");
+        assert!(version_matches(
+            "Bitcoin Core daemon version v32.1.0",
+            "v32.1"
+        ));
+        assert!(version_matches(
+            "Bitcoin Core daemon version v32.1.0 bitcoind",
+            "v32.1"
+        ));
+        assert!(version_matches("Bitcoin Core version v32.1", "v32.1"));
+        assert!(!version_matches(
+            "Bitcoin Core daemon version v32.0.0",
+            "v32.1"
+        ));
+        assert!(!version_matches(
+            "Bitcoin Core daemon version v32.1.0rc1",
+            "v32.1"
+        ));
+        assert!(!version_matches(
+            "Bitcoin Core daemon version v32.10.0",
+            "v32.1"
+        ));
+        assert!(!version_matches(
+            "Bitcoin Core daemon version v32.99.0-abc123",
+            "v32.1"
+        ));
+        assert!(!version_matches("", "v32.1"));
+    }
+
+    /// A binary that prints another release is refused, with what it printed.
+    #[test]
+    fn another_release_is_refused() {
+        let dir = fake(
+            "version",
+            "#!/bin/sh\necho 'Bitcoin Core daemon version v31.0.0'\n",
+        );
+        let e = check_version(&dir.join("bitcoind")).unwrap_err();
+        assert!(e.contains("is not Bitcoin Core v32.1"), "{e}");
+        assert!(e.contains("v31.0.0"), "{e}");
+        std::fs::write(
+            dir.join("bitcoind"),
+            "#!/bin/sh\necho 'Bitcoin Core daemon version v32.1.0'\n",
+        )
+        .unwrap();
+        check_version(&dir.join("bitcoind")).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

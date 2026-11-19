@@ -588,6 +588,7 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
             cfg.bitcoind.display()
         ));
     }
+    crate::bitcoind::check_version(&cfg.bitcoind)?;
     let chains = chains(&cfg.corpus)?;
     if chains
         .iter()

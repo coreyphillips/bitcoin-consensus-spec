@@ -70,6 +70,16 @@ jobs:
         run: |
           ./target/release/bcs-conformance peer-sync --bitcoind "$BITCOIND" --ibd-limit "$IBD_LIMIT" --sync-node \
             "python3 $PWD/conformance/recorder/core_sync_node.py --bitcoind $BITCOIND --network {network} --datadir {datadir} --peer {peer} --options {options}"
+      # Core uses BIP324 version 2 above and never drops a manual peer, so this runs the
+      # runner's version 1 listener, and its handling of a node that connects again, on the
+      # scenarios that have damaged copies of chain blocks (follow mode only, to keep it short).
+      - name: Peer-sync over version 1, each node dropping the runner once
+        run: |
+          ./target/release/bcs-conformance peer-sync --bitcoind "$BITCOIND" --ibd-limit 0 \
+            --corpus conformance/vectors/blocks/feature_block.node0.jsonl.gz \
+            --corpus conformance/vectors/blocks/p2p_invalid_block.node0.jsonl.gz \
+            --corpus conformance/vectors/blocks/p2p_segwit.node0.jsonl.gz \
+            --sync-node "python3 $PWD/conformance/recorder/core_sync_node.py --bitcoind $BITCOIND --v2transport 0 --reconnect --network {network} --datadir {datadir} --peer {peer} --options {options}"
 
   mutation:
     runs-on: ubuntu-latest
