@@ -4,6 +4,7 @@ section 5.1), to check the suite against the implementation it is derived from.
 
 usage: core_sync_node.py --bitcoind PATH --network regtest --datadir D
                          --peer HOST:PORT [--options JSON] [--v2transport 0|1]
+                         [--reconnect]
 
 Starts bitcoind on the empty data directory, connected only to the peer
 (-connect, a manual connection: Core never disconnects it for an invalid
@@ -16,6 +17,10 @@ standard input:
 Core handles the messages of one peer in order and connects a block before it
 reads the next message, so once the runner has its pong every block sent before
 the ping is processed. Standard input closing stops bitcoind.
+
+Core never drops a manual peer, so with --reconnect the wrapper drops the runner
+itself (RPC disconnectnode) before its first tip answer, and answers once Core
+has connected again. That runs the runner's handling of a node that reconnects.
 
 Example:
   bcs-conformance peer-sync --bitcoind "$BITCOIND" --sync-node \
@@ -77,6 +82,7 @@ def main():
     ap.add_argument("--peer", required=True)
     ap.add_argument("--options", default="{}")
     ap.add_argument("--v2transport", default="1")
+    ap.add_argument("--reconnect", action="store_true")
     a = ap.parse_args()
     if a.network != "regtest":
         emit({"event": "error", "message": "only regtest"})
@@ -123,12 +129,35 @@ def main():
                 return 1
             time.sleep(0.1)
 
+    def reconnect():
+        """Drops the runner and waits for Core's next connection to it. False when there
+        is no connection to drop yet."""
+        old = [p["id"] for p in rpc.call("getpeerinfo") if p.get("version", 0) > 0]
+        if not old:
+            return False
+        for peer_id in old:
+            rpc.call("disconnectnode", "", peer_id)
+        deadline = time.time() + 60
+        while not any(p["id"] not in old and p.get("version", 0) > 0 for p in rpc.call("getpeerinfo")):
+            if time.time() > deadline:
+                raise RuntimeError("bitcoind did not connect to the runner again within 60 s")
+            time.sleep(0.1)
+        return True
+
+    pending_reconnect = a.reconnect
     for line in sys.stdin:
         line = line.strip()
         if not line:
             continue
         req = json.loads(line)
         if req.get("op") == "tip":
+            if pending_reconnect:
+                try:
+                    pending_reconnect = not reconnect()
+                except RuntimeError as e:
+                    emit({"event": "error", "message": str(e)})
+                    stop()
+                    return 1
             emit({"event": "tip", "id": req["id"], "tip": rpc.call("getbestblockhash"),
                   "height": rpc.call("getblockcount")})
         elif req.get("op") == "stop":

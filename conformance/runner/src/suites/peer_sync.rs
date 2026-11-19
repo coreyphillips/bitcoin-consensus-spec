@@ -14,11 +14,16 @@
 //!    its tip except proof of work. A candidate all of whose recorded byte variants get a reject
 //!    reason is a case: a block on top of chain block `i` that Core rejects, so a node that has
 //!    chain blocks 1 to `i` and receives it must still have chain block `i` as its tip. The other
-//!    candidates are left out (counted in the details).
+//!    candidates are left out (counted in the details). A final-chain block recorded with other
+//!    bytes too (a duplicated transaction, a changed witness) has each of them put to proposal
+//!    mode before it is submitted; those Core rejects are its damaged copies.
 //! 2. **Serving.** The node command (`--sync-node`) starts with `{peer}` set to the runner's
 //!    listener. The runner accepts the version 1 transport and BIP324 version 2 (a node may
 //!    reconnect at any time), answers `version`, `ping` and `getheaders` (from the chain it has
 //!    announced so far, then the current case's header), and serves the blocks it announced.
+//!    A chain block with damaged copies is answered with them first, one per request, and only
+//!    then with the block itself, so a node that marks the hash invalid on a damaged copy, or
+//!    accepts one, never gets the chain.
 //!    Requested blocks go out in bursts: once the node has sent no `getdata` for [`QUIET`], all of
 //!    them, back to back in chain order. The burst that holds a case's parent waits for the
 //!    node's request of the case block (at most [`HOLD`]), and the case block goes last, so the
@@ -123,6 +128,13 @@ impl Block {
     fn display(&self) -> String {
         hex::encode_reversed(&self.hash)
     }
+}
+
+/// Other bytes recorded for a final-chain block, which Core rejects: what a peer that damaged
+/// the block in transit would send.
+struct Damaged {
+    bytes: Vec<u8>,
+    reason: String,
 }
 
 /// A block Core rejects on top of chain block `parent`.
@@ -246,6 +258,11 @@ struct Scenario {
     chain: Vec<Block>,
     utxo_hash: String,
     cases: Vec<Case>,
+    /// Damaged copies of chain blocks, by height, in file order.
+    damaged: HashMap<usize, Vec<Damaged>>,
+    /// Other bytes of chain blocks that are not served: larger than a P2P message, or not a
+    /// block Core can decode (Core drops such a message and keeps waiting for the block).
+    damaged_left_out: usize,
     valid_siblings: usize,
     unclassified: Vec<String>,
 }
@@ -271,10 +288,34 @@ fn classify(cfg: &Config, name: &str, loaded: Loaded, root: &Path) -> Result<Sce
         bytes: Vec::new(),
     }];
     let mut cases = Vec::new();
+    let mut damaged = HashMap::new();
+    let mut damaged_left_out = 0;
     let mut valid_siblings = 0;
     let mut unclassified = Vec::new();
     for (height, (hash, list)) in loaded.chain.iter().enumerate() {
         if height > 0 {
+            // Proposed while the parent is the tip and before any copy is submitted: a rejected
+            // submission can leave the header known, and a proposal of a known hash is answered
+            // `duplicate-inconclusive`.
+            let mut copies = Vec::new();
+            for bytes in list.iter().filter(|_| list.len() > 1) {
+                let proposal =
+                    json!([{"mode": "proposal", "data": hex::encode(bytes), "rules": ["segwit"]}]);
+                match core.rpc("getblocktemplate", proposal) {
+                    Ok(Value::Null) => {}
+                    Ok(Value::String(reason))
+                        if !reason.starts_with("duplicate")
+                            && !reason.starts_with("inconclusive")
+                            && bytes.len() <= p2p::MAX_MESSAGE_LENGTH =>
+                    {
+                        copies.push(Damaged {
+                            bytes: bytes.clone(),
+                            reason,
+                        })
+                    }
+                    _ => damaged_left_out += 1,
+                }
+            }
             let mut accepted = None;
             let mut last = String::new();
             for bytes in list {
@@ -290,6 +331,10 @@ fn classify(cfg: &Config, name: &str, loaded: Loaded, root: &Path) -> Result<Sce
             let bytes = accepted.ok_or_else(|| {
                 format!("bitcoind rejected block {height} of the final chain: {last}")
             })?;
+            copies.retain(|d| d.bytes != bytes);
+            if !copies.is_empty() {
+                damaged.insert(height, copies);
+            }
             chain.push(Block { hash: *hash, bytes });
         }
         for (child, list) in by_parent.remove(&height).unwrap_or_default() {
@@ -349,6 +394,8 @@ fn classify(cfg: &Config, name: &str, loaded: Loaded, root: &Path) -> Result<Sce
         chain,
         utxo_hash,
         cases,
+        damaged,
+        damaged_left_out,
         valid_siblings,
         unclassified,
     })
@@ -414,6 +461,8 @@ struct Session<'a> {
     /// [`CASE_RESEND`] ago.
     case_sent: HashMap<[u8; 32], Instant>,
     deferred: Vec<[u8; 32]>,
+    /// Damaged copies sent so far, by chain height.
+    damaged_sent: HashMap<usize, usize>,
 }
 
 fn shell_quote(s: &str) -> String {
@@ -561,6 +610,7 @@ impl<'a> Session<'a> {
             stderr_path,
             case_sent: HashMap::new(),
             deferred: Vec::new(),
+            damaged_sent: HashMap::new(),
         }
     }
 
@@ -917,10 +967,28 @@ impl<'a> Session<'a> {
             .map(|&c| sc.cases[c].block.bytes.as_slice())
     }
 
+    /// Sends a requested block. A chain block that has damaged copies not sent yet gets the next
+    /// of them instead: the request is answered, and the block is not delivered.
     fn send_block(&mut self, hash: &[u8; 32]) -> Result<(), String> {
         let Some(bytes) = self.lookup(hash) else {
             return Ok(());
         };
+        let sc: &'a Scenario = self.sc;
+        if let Some((k, copies)) = self
+            .chain_pos
+            .get(hash)
+            .and_then(|k| sc.damaged.get(k).map(|c| (*k, c)))
+        {
+            let sent = self.damaged_sent.get(&k).copied().unwrap_or(0);
+            if let Some(copy) = copies.get(sent) {
+                if self.send("block", &copy.bytes)? {
+                    self.damaged_sent.insert(k, sent + 1);
+                    self.outstanding.remove(hash);
+                    self.last_activity = Instant::now();
+                }
+                return Ok(());
+            }
+        }
         let case = !self.chain_pos.contains_key(hash);
         if case
             && self
@@ -1034,9 +1102,10 @@ impl<'a> Session<'a> {
                     (true, _) | (false, None) => {
                         let k = self.delivered_prefix + 1;
                         format!(
-                            "chain block {k} ({}) of {}",
+                            "chain block {k} ({}) of {}{}",
                             shorten(&sc.chain[k].display(), 16),
-                            self.upto
+                            self.upto,
+                            self.damaged_note(k)
                         )
                     }
                     (false, Some(c)) => format!(
@@ -1062,6 +1131,25 @@ impl<'a> Session<'a> {
             }
             self.pump(Duration::from_millis(50))?;
         }
+    }
+
+    /// Says which damaged copies of chain block `k` went out, if any did. A node that accepted one,
+    /// or marked the block invalid for it, does not ask for the block again.
+    fn damaged_note(&self, k: usize) -> String {
+        let sent = self.damaged_sent.get(&k).copied().unwrap_or(0);
+        if sent == 0 {
+            return String::new();
+        }
+        let reasons: Vec<&str> = self.sc.damaged[&k][..sent]
+            .iter()
+            .map(|d| d.reason.as_str())
+            .collect();
+        format!(
+            ", after {sent} damaged {} of it (Core: {}): the node accepted a damaged copy or \
+             marked the block invalid for one",
+            if sent == 1 { "copy" } else { "copies" },
+            reasons.join(", ")
+        )
     }
 
     /// `ping` and the matching `pong`: every message sent before it was read. Returns the
@@ -1607,6 +1695,7 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
             cfg.bitcoind.display()
         ));
     }
+    crate::bitcoind::check_version(&cfg.bitcoind)?;
     if cfg.node.contains("{stop_at}") {
         return Err(RULE_STOP_AT.into());
     }
@@ -1708,11 +1797,13 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
                 *reasons.entry(c.reason.as_str()).or_default() += 1;
             }
             println!(
-                "CASES    [{SUITE}] {name}: {} blocks Core rejects ({}), {} valid siblings left out, {} not classified",
+                "CASES    [{SUITE}] {name}: {} blocks Core rejects ({}), {} valid siblings left out, {} not classified, {} damaged copies of chain blocks ({} other copies left out)",
                 sc.cases.len(),
                 reasons.iter().map(|(k, v)| format!("{k} {v}")).collect::<Vec<_>>().join(", "),
                 sc.valid_siblings,
-                sc.unclassified.len()
+                sc.unclassified.len(),
+                sc.damaged.values().map(Vec::len).sum::<usize>(),
+                sc.damaged_left_out
             );
             for u in &sc.unclassified {
                 println!("         not classified: {u}");
@@ -1753,6 +1844,10 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
             },
             sc.valid_siblings
         );
+        let damaged: usize = sc.damaged.values().map(Vec::len).sum();
+        if damaged > 0 {
+            detail.push_str(&format!(", {damaged} damaged copies sent first"));
+        }
         if left_out > 0 {
             detail.push_str(&format!(
                 ", ibd sample {} of {}",
@@ -1907,7 +2002,9 @@ mod tests {
 
     /// A node that completes the handshake, answers `ping`, and reports regtest genesis as its
     /// tip. With `ask` it requests every header it is sent; with `never` it requests nothing.
-    /// `junk` is `ask` that also writes a line that is not UTF-8 before each answer. `deaf` asks
+    /// `retry` is `ask` that requests each block once more when it first gets it, as a node does
+    /// after dropping a damaged copy. `junk` is `ask` that also writes a line that is not UTF-8
+    /// before each answer. `deaf` asks
     /// for more than the connection holds (20 `getdata` messages of 50,000 transactions, each
     /// answered with a `notfound` as large) and stops reading; `deaf-stop` then stops itself.
     const FAKE_NODE: &str = r#"
@@ -1918,6 +2015,7 @@ magic = bytes.fromhex("fabfb5da")
 def dsha(b): return hashlib.sha256(hashlib.sha256(b).digest()).digest()
 s = socket.create_connection((host, int(port)))
 lock = threading.Lock()
+seen = set()
 def send(cmd, p):
     with lock:
         s.sendall(magic + cmd.encode().ljust(12, b"\0") + struct.pack("<I", len(p)) + dsha(p)[:4] + p)
@@ -1942,9 +2040,12 @@ def reader():
                     if mode == "deaf-stop": os.kill(os.getpid(), signal.SIGSTOP)
                     return
             elif cmd == "ping": send("pong", p)
-            elif cmd == "headers" and mode in ("ask", "junk") and p[0]:
+            elif cmd == "headers" and mode in ("ask", "junk", "retry") and p[0]:
                 send("getdata", bytes([p[0]]) + b"".join(
                     struct.pack("<I", 0x40000002) + dsha(p[1 + 81 * i:81 + 81 * i]) for i in range(p[0])))
+            elif cmd == "block" and mode == "retry" and dsha(p[:80]) not in seen:
+                seen.add(dsha(p[:80]))
+                send("getdata", b"\x01" + struct.pack("<I", 0x40000002) + dsha(p[:80]))
     except (EOFError, OSError):
         pass
 threading.Thread(target=reader, daemon=True).start()
@@ -1962,12 +2063,9 @@ for line in sys.stdin:
         fake_node_run(mode, reason, Duration::from_secs(30)).map(|r| r.unwrap())
     }
 
-    /// [`fake_node_case`] with the given `--node-timeout`, and an error of the session returned.
-    fn fake_node_run(
-        mode: &str,
-        reason: &str,
-        node_timeout: Duration,
-    ) -> Option<Result<(Option<String>, bool), String>> {
+    /// A fresh directory holding [`FAKE_NODE`], and a configuration that runs it in `mode`.
+    /// `None` without `python3`.
+    fn fake_node_cfg(name: &str, mode: &str, node_timeout: Duration) -> Option<(PathBuf, Config)> {
         if process::spawn(process::shell("python3 -c ''").stdin(Stdio::null()))
             .ok()
             .and_then(|mut c| c.wait().ok())
@@ -1976,14 +2074,34 @@ for line in sys.stdin:
             eprintln!("skipped: no python3");
             return None;
         }
-        let dir = std::env::temp_dir().join(format!(
-            "bcs-peer-sync-test-{mode}-{reason}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("bcs-peer-sync-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("fake_node.py");
         std::fs::write(&script, FAKE_NODE).unwrap();
+        let cfg = Config {
+            bitcoind: PathBuf::new(),
+            node: format!(
+                "python3 -I {} {{peer}} {mode} {REGTEST_GENESIS}",
+                script.display()
+            ),
+            corpus: Vec::new(),
+            port_range: (0, 0),
+            node_timeout,
+            keep_temp: false,
+            ibd_limit: None,
+        };
+        Some((dir, cfg))
+    }
+
+    /// [`fake_node_case`] with the given `--node-timeout`, and an error of the session returned.
+    fn fake_node_run(
+        mode: &str,
+        reason: &str,
+        node_timeout: Duration,
+    ) -> Option<Result<(Option<String>, bool), String>> {
+        let (dir, cfg) = fake_node_cfg(&format!("{mode}-{reason}"), mode, node_timeout)?;
         let header = header_on_genesis(true);
         let mut bytes = header.to_vec();
         bytes.push(0);
@@ -2003,20 +2121,10 @@ for line in sys.stdin:
                 },
                 reason: reason.into(),
             }],
+            damaged: HashMap::new(),
+            damaged_left_out: 0,
             valid_siblings: 0,
             unclassified: Vec::new(),
-        };
-        let cfg = Config {
-            bitcoind: PathBuf::new(),
-            node: format!(
-                "python3 -I {} {{peer}} {mode} {REGTEST_GENESIS}",
-                script.display()
-            ),
-            corpus: Vec::new(),
-            port_range: (0, 0),
-            node_timeout,
-            keep_temp: false,
-            ibd_limit: None,
         };
         let result = Session::start(&cfg, &sc, &dir, None).and_then(|mut s| {
             let verdict = s.run_case(0, true)?;
@@ -2063,6 +2171,49 @@ for line in sys.stdin:
         }
     }
 
+    /// A chain block with a damaged copy: the node's first request gets the copy, its second the
+    /// block, which only then counts as delivered.
+    #[test]
+    fn damaged_copy_goes_before_the_block() {
+        let Some((dir, cfg)) = fake_node_cfg("damaged", "retry", Duration::from_secs(30)) else {
+            return;
+        };
+        let header = header_on_genesis(true);
+        let mut bytes = header.to_vec();
+        bytes.push(0);
+        let mut copy = bytes.clone();
+        copy.push(0);
+        let mut sc = genesis_only();
+        sc.chain.push(Block {
+            hash: sha256d(&header),
+            bytes: bytes.clone(),
+        });
+        sc.damaged.insert(
+            1,
+            vec![Damaged {
+                bytes: copy,
+                reason: "bad-txnmrklroot".into(),
+            }],
+        );
+        let result = Session::start(&cfg, &sc, &dir, None).and_then(|mut s| {
+            s.extend(1)?;
+            s.wait_delivered(None)?;
+            Ok((
+                s.damaged_sent.get(&1).copied(),
+                s.requests,
+                s.damaged_note(1),
+            ))
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        let (sent, requests, note) = result.unwrap();
+        assert_eq!(sent, Some(1));
+        assert_eq!(requests, 2);
+        assert!(
+            note.contains("after 1 damaged copy of it (Core: bad-txnmrklroot)"),
+            "{note}"
+        );
+    }
+
     #[test]
     fn case_block_requested_and_delivered_passes() {
         if let Some((verdict, delivered)) = fake_node_case("ask", "bad-txns-nonfinal") {
@@ -2107,6 +2258,8 @@ for line in sys.stdin:
             }],
             utxo_hash: String::new(),
             cases: Vec::new(),
+            damaged: HashMap::new(),
+            damaged_left_out: 0,
             valid_siblings: 0,
             unclassified: Vec::new(),
         }
