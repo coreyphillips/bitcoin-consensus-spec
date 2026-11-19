@@ -48,7 +48,8 @@ pub fn shell(command: &str) -> Command {
 
 /// The lines of a node command's standard output, without their `\n` or `\r\n`. Only lines that
 /// start with `{` are messages (PROTOCOL.md section 5, item 4), so any other line may hold any
-/// bytes: a line that is not UTF-8 is decoded lossily instead of ending the output.
+/// bytes: a line that is not UTF-8 is decoded lossily instead of ending the output. A message must
+/// be UTF-8 (section 1), so a line that starts with `{` and is not is an error.
 pub fn output_lines(output: impl Read) -> impl Iterator<Item = io::Result<String>> {
     let mut reader = BufReader::new(output);
     std::iter::from_fn(move || {
@@ -61,6 +62,20 @@ pub fn output_lines(output: impl Read) -> impl Iterator<Item = io::Result<String
                     if line.last() == Some(&b'\r') {
                         line.pop();
                     }
+                }
+                if line.first() == Some(&b'{') {
+                    // Decoded lossily, a key such as `hash_serialized_3` would no longer match
+                    // and its value would be ignored.
+                    return Some(String::from_utf8(line).map_err(|e| {
+                        let text = String::from_utf8_lossy(e.as_bytes());
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "a line starting with {{ is not UTF-8: {}",
+                                crate::check::shorten(&text, 200)
+                            ),
+                        )
+                    }));
                 }
                 Some(Ok(String::from_utf8_lossy(&line).into_owned()))
             }
@@ -352,6 +367,19 @@ mod tests {
         assert_eq!(
             lines,
             ["a", "\u{fffd}\u{fffd} junk", "{\"event\":\"tip\"}", "last"]
+        );
+    }
+
+    /// A line that starts with `{` and is not UTF-8 is an error, not a message.
+    #[test]
+    fn output_lines_refuse_a_message_that_is_not_utf8() {
+        let output: &[u8] = b"{\"event\":\"stopped\",\"hash_serialized_3\xff\":\"00\"}\n";
+        let e = output_lines(output).next().unwrap().unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            e.to_string()
+                .starts_with("a line starting with { is not UTF-8: "),
+            "{e}"
         );
     }
 

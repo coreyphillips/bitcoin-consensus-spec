@@ -779,6 +779,28 @@ mod tests {
         assert!(out.exit.unwrap().success());
     }
 
+    /// A stopped line that is not UTF-8 fails the chain instead of passing with its fields lost.
+    #[test]
+    fn a_stopped_line_that_is_not_utf8_fails() {
+        let path =
+            std::env::temp_dir().join(format!("bcs-interop-utf8-msg-{}", std::process::id()));
+        let out = run_node(
+            r#"printf '{"event":"stopped","tip":"00","height":0,"hash_serialized_3\377":"00"}\n'"#,
+            &path,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(out.stopped.is_none());
+        assert_eq!(out.problems.len(), 1, "{:?}", out.problems);
+        assert!(
+            out.problems[0]
+                .starts_with("cannot read the node's output: a line starting with { is not UTF-8"),
+            "{}",
+            out.problems[0]
+        );
+    }
+
     /// A node that closes its output and runs on is ended at the node timeout, and one that
     /// closes it and exits is reported with its exit status.
     #[test]
