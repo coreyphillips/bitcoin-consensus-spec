@@ -196,11 +196,18 @@ fn run_node(command: &str, stderr_path: &Path, timeout: Duration) -> Result<Node
     };
     let deadline = Instant::now() + timeout;
     let mut stop_check = Instant::now();
+    let mut output_closed = false;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            out.problems
-                .push(format!("no stopped line within {} s", timeout.as_secs()));
+            out.problems.push(if output_closed {
+                format!(
+                    "the node closed its output without a stopped line and did not exit within {} s",
+                    timeout.as_secs()
+                )
+            } else {
+                format!("no stopped line within {} s", timeout.as_secs())
+            });
             break;
         }
         if stop_check.elapsed() >= crate::process::STOP_CHECK {
@@ -263,15 +270,21 @@ fn run_node(command: &str, stderr_path: &Path, timeout: Duration) -> Result<Node
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let status = child.wait().ok();
-                out.exit = status;
-                if out.stopped.is_none() {
-                    out.problems.push(format!(
-                        "the node closed its output without a stopped line{}",
-                        status.map(|s| format!(" ({s})")).unwrap_or_default()
-                    ));
+                // A node can close its output and run on, so it still has only until the deadline
+                // to exit, and is ended below like one that timed out.
+                output_closed = true;
+                match child.try_wait() {
+                    Ok(None) => std::thread::sleep(left.min(Duration::from_millis(100))),
+                    exited => {
+                        let status = exited.ok().flatten();
+                        out.exit = status;
+                        out.problems.push(format!(
+                            "the node closed its output without a stopped line{}",
+                            status.map(|s| format!(" ({s})")).unwrap_or_default()
+                        ));
+                        break;
+                    }
                 }
-                break;
             }
         }
     }
@@ -746,6 +759,31 @@ mod tests {
         assert_eq!(out.problems.len(), 1, "{:?}", out.problems);
         assert!(
             out.problems[0].starts_with("the node command was stopped (process "),
+            "{}",
+            out.problems[0]
+        );
+    }
+
+    /// A node that closes its output and runs on is ended at the node timeout, and one that
+    /// closes it and exits is reported with its exit status.
+    #[test]
+    fn a_node_that_closed_its_output_is_held_to_the_timeout() {
+        let path = std::env::temp_dir().join(format!("bcs-interop-closed-{}", std::process::id()));
+        let started = Instant::now();
+        let out = run_node("exec >&-; sleep 60", &path, Duration::from_secs(2)).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(out.exit.is_none());
+        assert_eq!(
+            out.problems,
+            ["the node closed its output without a stopped line and did not exit within 2 s"]
+        );
+
+        let out = run_node("exec >&-; exit 3", &path, Duration::from_secs(60)).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(out.exit.and_then(|s| s.code()), Some(3));
+        assert_eq!(out.problems.len(), 1, "{:?}", out.problems);
+        assert!(
+            out.problems[0].starts_with("the node closed its output without a stopped line ("),
             "{}",
             out.problems[0]
         );
