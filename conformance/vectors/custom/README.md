@@ -4,6 +4,8 @@ Targeted cases written for this project, each with the response Bitcoin Core v32
 
 `script-versions.jsonl` (from `generate_script_versions.py`) covers interpreter rules inside witness version 0 scripts, P2SH-wrapped witness programs and tapscripts, and legacy `FindAndDelete`. The other suites have almost no case where a rule is exercised inside one script version, so a rule switched off for that version alone passed them: the opcode, push and number size limits, strict DER, `OP_CHECKLOCKTIMEVERIFY` and `OP_CHECKSEQUENCEVERIFY` in witness version 0 or tapscript, the commitment of an unknown tapleaf version (without it, every taproot output is spendable by anyone), and the P2SH-wrapped forms of the witness program rules. It also covers rules that only the block corpus reached before: the 10,000-byte witness script limit, witness scripts over 520 bytes (allowed), a lone key path signature that starts with 0x50 (not an annex), the disable bit of the input's sequence in `OP_CHECKSEQUENCEVERIFY`, taproot hash type 0x80, a control block of 129 nodes, `NULLDUMMY` in witness version 0, and the edges of every `OP_SUCCESS` range. Every opcode from 0x4f to 0xff is also a tapscript of its own, so each `OP_SUCCESS` opcode decides some case.
 
+`taproot.jsonl` (from `generate_taproot.py`) calls `taproot_commitment_verify` and `sighash_taproot` directly. The `bip341` suite only ever expects a valid commitment and only hashes key path spends without an annex, so a harness that ignored the parity bit or the control block size rule, or dropped `annex`, `leaf_hash` or `codesep_pos`, passed every suite. The commitment cases change one thing at a time in a correct control block: the parity bit (for an odd and an even output key), the path (node order, one byte, one node fewer, another leaf's path), the script, the leaf version, the internal key and the output key. They also cover the size rule: 0, 32, 34, 64 and 96 bytes, and a correct path of 129 nodes next to one of 128. The sighash cases hash every valid hash type on the key path with an annex and on the script path with and without an annex and `codesep_pos`, with annexes of 1 and 300 bytes. They also cover the two ways the algorithm fails: an invalid hash type, and `SIGHASH_SINGLE` with no output at the input's index.
+
 Format: JSON lines, one case per line, `{"name": ..., "request": <a PROTOCOL.md request without id>, "expect": <response fields that must match>}`. `valid` is scored at level 1; `script_error` and `reason` at level 2.
 
 Regenerate with:
@@ -11,4 +13,5 @@ Regenerate with:
 ```sh
 python3 conformance/vectors/custom/generate.py <oracle-core-harness> conformance/vectors/custom/edge-cases.jsonl
 python3 conformance/vectors/custom/generate_script_versions.py <oracle-core-harness> conformance/vectors/custom/script-versions.jsonl
+python3 conformance/vectors/custom/generate_taproot.py <oracle-core-harness> conformance/vectors/custom/taproot.jsonl
 ```

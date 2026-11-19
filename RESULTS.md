@@ -13,7 +13,7 @@ The reference is the specification's own code (every ```rust block in `spec/`, b
 | `sighash`: Bitcoin Core `sighash.json` | 1,000 | pass |
 | `bip341` / `bip340`: BIP341 wallet vectors, BIP340 vectors | 26 / 19 | pass |
 | `script-assets`: qa-assets `script_assets_test.json` under all 64 flag combinations | 239,168 | pass, identical error identifiers |
-| `custom`: edge cases found by mutation testing and by reviewing other implementations, expectations computed by Bitcoin Core's own code | 424 | pass, identical error identifiers |
+| `custom`: edge cases found by mutation testing and by reviewing other implementations, expectations computed by Bitcoin Core's own code | 493 | pass, identical error identifiers |
 | `pow`: compact targets, proof-of-work checks and difficulty adjustment on every network, expectations computed by Bitcoin Core's own `pow.cpp` | 1,414 | pass |
 | `signet`: signet block solutions under chosen challenges, expectations computed by Bitcoin Core's own `signet.cpp` | 46 | pass |
 | `params`: the consensus parameters of the five networks, expectations read from Bitcoin Core's own `kernel/chainparams.cpp` | 90 | pass |
