@@ -254,6 +254,9 @@ fn run_node(command: &str, stderr_path: &Path, timeout: Duration) -> Result<Node
                 if let Ok(Some(status)) = child.try_wait() {
                     // Drain what is left, then stop waiting.
                     while let Ok(Ok(line)) = rx.recv_timeout(Duration::from_millis(200)) {
+                        if !line.starts_with('{') {
+                            continue;
+                        }
                         if let Ok(v) = serde_json::from_str::<Value>(&line) {
                             if v["event"] == "stopped" {
                                 out.stopped = Some(v);
