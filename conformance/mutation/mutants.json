@@ -1433,5 +1433,15 @@
   "new": "            chain_work: parent.chain_work.wrapping_add(U256::from_u64(2)),",
   "expect": "caught",
   "note": "Adds regtest's work for every block whatever its bits, so chain work is right on regtest and the longest chain wins everywhere. Caught by vectors/chainwork, by its chain work and its tips."
+ },
+ {
+  "name": "signet-solution-not-checked-in-block",
+  "kind": "block",
+  "file": "10-blocks.md",
+  "item": null,
+  "old": "    if params.signet_challenge.is_some() && !check_signet_block_solution(block, params) {\n        return Err(invalid(\"bad-signet-blksig\"));\n    }\n",
+  "new": "",
+  "expect": "caught",
+  "note": "The signet suite calls chapter 13's check directly, and every recorded scenario is regtest. Caught by vectors/signet/signet-blocks.jsonl.gz, where blocks without a valid solution must leave the tip where it was."
  }
 ]

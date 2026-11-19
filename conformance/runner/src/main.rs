@@ -59,7 +59,8 @@ RUN OPTIONS:
 
 CORPUS OPTIONS:
   --corpus PATH       Corpus file or directory, repeatable (default: <vectors>/blocks, and for
-                      the corpus suite also <vectors>/chainwork); no two files may share a name
+                      the corpus suite also <vectors>/chainwork and <vectors>/signet); no two
+                      files may share a name
   --restart-shortcut  Skip restart events whose options equal the ones in force (CORPUS.md 4)
   --fail-on-tips      Count each chain tip set (level 1) as a check, so one that differs fails
                       the run; --known-failures names it \"<file> check <n> tips\"
@@ -390,12 +391,14 @@ fn corpus_paths(opts: &Options, paths: &Paths) -> Vec<PathBuf> {
     }
 }
 
-/// The corpus suite also replays `<vectors>/chainwork` by default: a signet scenario where the
-/// chain with most work is not the longest, which no regtest scenario can have.
+/// The corpus suite also replays two signet directories by default, for what no regtest scenario
+/// can have: `<vectors>/chainwork`, where the chain with most work is not the longest, and the
+/// `*.jsonl.gz` files of `<vectors>/signet`, where blocks without a valid solution are rejected.
 fn corpus_suite_paths(opts: &Options, paths: &Paths) -> Vec<PathBuf> {
     let mut v = corpus_paths(opts, paths);
     if opts.corpus.is_empty() {
         v.push(paths.vectors.join("chainwork"));
+        v.push(paths.vectors.join("signet"));
     }
     v
 }
