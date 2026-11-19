@@ -174,7 +174,7 @@ Every Bitcoin Core v32.1 functional test that touches consensus or chain selecti
 | `feature_taproot.py`, `p2p_segwit.py`, `feature_segwit.py`, `p2p_invalid_block.py`, `feature_cltv.py`, `feature_dersig.py`, `feature_nulldummy.py`, `feature_csv_activation.py`, `feature_bip68_sequence.py`, `feature_chain_tiebreaks.py` | Recorded |
 | `mining_basic.py` | Recorded, except its pruned node 2 |
 | `rpc_getchaintips.py`, `mining_template_verification.py` | Recordable with format 1 events, not recorded yet |
-| `p2p_mutated_blocks.py`, `p2p_compactblocks.py` | Recordable (the recorder captures compact block and `blocktxn` deliveries), not recorded yet. Their subject is compact block relay rather than block validity |
+| `p2p_mutated_blocks.py`, `p2p_compactblocks.py` | Not recordable: `record.py` captures the `cmpctblock` and `blocktxn` messages the test sends, but `postprocess.py` cannot turn them into events and stops. Their subject is compact block relay rather than block validity |
 | `rpc_invalidateblock.py`, `rpc_blockchain.py` | Not recordable: they call `reconsiderblock`, which format 1 has no event for |
 | `rpc_preciousblock.py` | Not recordable: `preciousblock` changes the tie-break between equal-work chains, and format 1 has no event for it |
 | `feature_minchainwork.py`, `p2p_headers_sync_with_minchainwork.py`, `p2p_unrequested_blocks.py` | Not recordable: a node runs with `-minimumchainwork` (node 1 in `p2p_unrequested_blocks.py`), which `chain_reset` options cannot carry |
@@ -185,3 +185,4 @@ Every Bitcoin Core v32.1 functional test that touches consensus or chain selecti
 | `feature_pruning.py`, `feature_prune_stale_fork.py`, `feature_reindex.py`, `feature_reindex_init.py`, `feature_reindex_readonly.py`, `feature_loadblock.py`, `feature_dbcrash.py`, `feature_assumeutxo.py`, `feature_utxo_set_hash.py` | Out of scope: how a node stores, reloads, snapshots or hashes its chain state, not which chain is valid |
 | `p2p_sendheaders.py`, `p2p_block_sync.py`, `p2p_initial_headers_sync.py`, `p2p_ibd_stalling.py`, `p2p_node_network_limited.py` | Out of scope: which peer a node downloads from and when. The peer-sync suite (`README.md`) covers a node's own synchronization |
 | `feature_versionbits_warning.py` | Out of scope: warnings about unknown version bits, which change no rule |
+| `p2p_invalid_messages.py`, `rpc_generate.py`, `interface_ipc_mining.py` | Out of scope: their subjects are P2P message parsing, the `generate` RPCs and the IPC mining interface. The block rules they check in passing (header proof of work, the block version floor, missing inputs) are also checked by `feature_block.py`, which is recorded |
