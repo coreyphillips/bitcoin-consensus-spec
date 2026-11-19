@@ -70,7 +70,7 @@ LEVELS = ["level 0", "level 0 non-normative", "level 1", "level 2"]
 # What the unmodified reference runs for each kind. A missing vector or corpus file lowers these
 # and still passes, so update them with the vectors.
 TOTALS = {
-    "script": "339937 checks in 11 suites",
+    "script": "340006 checks in 11 suites",
     "block": "22 checks in 1 suite; level 0 5309/5309, level 0 non-normative 1/1, level 1 1259/1259, level 2 2292/2292",
 }
 
