@@ -118,15 +118,13 @@ class Scenario:
             # Two harnesses that both leave a field out would otherwise compare equal.
             raise SystemExit(f"{self.where()}: harness answer lacks {e}: {h.command}")
 
-    def step(self, request, compare=True):
+    def step(self, request):
         """Sends a chain operation to both harnesses, then compares their chain state."""
         self.steps += 1
         answers = self.both(request)
         if self.log:
             self.log.write(json.dumps({"scenario": self.index, "step": self.steps, "request": request,
                                        "a": answers[0], "b": answers[1]}) + "\n")
-        if not compare:
-            return
         x, y = self.state(self.a), self.state(self.b)
         if x != y:
             lines = [f"{self.where()}: chain state differs after {request['op']}"]
@@ -440,13 +438,13 @@ class Scenario:
         self.order.append(g)
         self.tip = g.hash
 
-        # A trunk past coinbase maturity, compared once at its end.
+        # A trunk past coinbase maturity.
         self.trunk = MATURITY + rng.randint(1, 10)
         b = g
-        for height in range(1, self.trunk + 1):
+        for _ in range(self.trunk):
             self.now = b.time + 1200
             b = self.make_block(b, time=b.time + rng.randint(1, 1200))
-            self.step({"op": "chain_process_block", "block": b.raw.hex(), "now": self.now}, compare=height == self.trunk)
+            self.step({"op": "chain_process_block", "block": b.raw.hex(), "now": self.now})
         self.now = b.time + 600
 
         actions = [(self.extend, 50), (self.resend_pending, 10), (self.mutate, 10), (self.invalidate, 10),
@@ -474,6 +472,8 @@ def main():
     parser.add_argument("--only", type=int, help="run only this scenario of the seed")
     parser.add_argument("--log", help="write every chain operation and both answers to this file")
     args = parser.parse_args()
+    if args.scenarios < 1:
+        parser.error("--scenarios must be at least 1")
 
     a, b = Harness(args.a), Harness(args.b)
     need = {"chain_reset", "chain_process_block", "chain_process_headers", "chain_invalidate",

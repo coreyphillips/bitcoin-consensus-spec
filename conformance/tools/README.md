@@ -31,7 +31,7 @@ The weekly `core` workflow runs 20,000 requests per domain with a new seed each 
 - mutated copies of blocks (a duplicated last transaction, a transaction changed under the merkle root, a witness changed under the commitment), sent before or after the real block;
 - invalidations of a reported chain tip or one of its recent ancestors.
 
-After every chain operation past the trunk both harnesses are asked for `chain_tip`, `chain_tips` and `utxo_hash`, and the answers must be identical (the trunk is compared once, at its end). The first difference ends the scenario and prints the seed, the scenario, the step and both chain states. Per-request results are diagnostics (PROTOCOL.md section 4.9) and are not compared.
+After every chain operation, the trunk included, both harnesses are asked for `chain_tip`, `chain_tips` and `utxo_hash`, and the answers must be identical. The first difference ends the scenario and prints the seed, the scenario, the step and both chain states. Per-request results are diagnostics (PROTOCOL.md section 4.9) and are not compared.
 
 ```sh
 cargo build --release -p bitcoin-consensus-spec --bin reference-harness
