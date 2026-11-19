@@ -75,9 +75,7 @@ struct Line {
 }
 
 impl Line {
-    /// Whether the line can be a response at all. One that cannot is skipped as it is read, so
-    /// output before the harness reads a large request cannot fill [`QUEUED_LINES`] and keep the
-    /// harness from reading it.
+    /// Whether the line can be a response at all.
     fn starts_object(&self) -> bool {
         self.bytes.trim_ascii().first() == Some(&b'{')
     }
@@ -186,6 +184,8 @@ struct Process {
     child: crate::process::Group,
     stdin: ChildStdin,
     lines: Receiver<io::Result<Line>>,
+    /// The id of the request the runner waits for.
+    current: Arc<AtomicU64>,
 }
 
 pub struct Harness {
@@ -227,12 +227,18 @@ fn spawn(command: &str, skipped: Arc<AtomicU64>) -> Result<Process, String> {
     }
     let stdout = child.stdout.take().expect("piped stdout");
     let (tx, rx) = mpsc::sync_channel(QUEUED_LINES);
+    let current = Arc::new(AtomicU64::new(0));
+    let id = current.clone();
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         loop {
             match read_line(&mut reader) {
                 Ok(None) => break,
-                Ok(Some(line)) if !line.starts_object() => skip(&skipped, &line),
+                // Skipped as it is read, so output before the harness reads a large request cannot
+                // fill QUEUED_LINES and keep the harness from reading it.
+                Ok(Some(line)) if response(&line, id.load(Ordering::Relaxed)).is_none() => {
+                    skip(&skipped, &line)
+                }
                 Ok(Some(line)) => {
                     if tx.send(Ok(line)).is_err() {
                         break;
@@ -249,6 +255,7 @@ fn spawn(command: &str, skipped: Arc<AtomicU64>) -> Result<Process, String> {
         child,
         stdin,
         lines: rx,
+        current,
     })
 }
 
@@ -265,14 +272,24 @@ fn set_nonblocking(stdin: &ChildStdin) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Writes `line` to the harness. While its input pipe is full, this waits for the harness to read
-/// until `deadline`, looking for a stopped process every [`crate::process::STOP_CHECK`].
+/// The result of a call.
+type Reply = Result<Map<String, Value>, CallError>;
+
+/// Writes `line`, request `id`, to the harness. While its input pipe is full, this waits for the
+/// harness to read until `deadline`, looking for a stopped process every
+/// [`crate::process::STOP_CHECK`]. Meanwhile it takes the harness's output, as answers to earlier
+/// requests queued before this request would otherwise fill [`QUEUED_LINES`], and the harness
+/// would wait for the runner to read while the runner waits for it. A line taken as the response
+/// ([`response`]) is returned.
 fn send(
     process: &mut Process,
     line: &[u8],
+    id: u64,
+    skipped: &AtomicU64,
     deadline: Instant,
     timeout: Duration,
-) -> Result<(), CallError> {
+) -> Result<Option<Reply>, CallError> {
+    let mut early = None;
     let mut rest = line;
     while !rest.is_empty() {
         match process.stdin.write(rest) {
@@ -288,6 +305,16 @@ fn send(
             Err(e) if e.kind() == ErrorKind::Interrupted => continue,
             Err(e) if e.kind() == ErrorKind::WouldBlock => {}
             Err(e) => return Err(CallError::Died(format!("cannot write request: {e}"))),
+        }
+        while early.is_none() {
+            match process.lines.try_recv() {
+                Ok(Ok(l)) => match response(&l, id) {
+                    Some(r) => early = Some(r),
+                    None => skip(skipped, &l),
+                },
+                Ok(Err(e)) => return Err(CallError::Died(format!("cannot read response: {e}"))),
+                Err(_) => break,
+            }
         }
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
@@ -310,7 +337,7 @@ fn send(
             }
         }
     }
-    Ok(())
+    Ok(early)
 }
 
 impl Harness {
@@ -432,8 +459,18 @@ impl Harness {
             .process
             .as_mut()
             .ok_or_else(|| CallError::Died("harness is not running".into()))?;
+        process.current.store(id, Ordering::Relaxed);
         let deadline = Instant::now() + timeout;
-        send(process, line.as_bytes(), deadline, timeout)?;
+        if let Some(r) = send(
+            process,
+            line.as_bytes(),
+            id,
+            &self.skipped,
+            deadline,
+            timeout,
+        )? {
+            return r;
+        }
         loop {
             // Checked before every receive, as `recv_timeout` returns a queued line even with no
             // time left.
@@ -485,6 +522,7 @@ impl Drop for Harness {
                 mut child,
                 stdin,
                 lines,
+                ..
             } = p;
             // The reader may be waiting for room for a line, and the harness for it to read.
             drop(lines);
@@ -701,6 +739,20 @@ mod tests {
         let body = format!("\"tx\":\"{}\"", "00".repeat(1 << 20));
         assert!(h.call("x", &body).is_ok());
         assert_eq!(h.skipped_lines(), 100000);
+    }
+
+    /// Answers to earlier requests the harness writes before it reads a large request do not keep
+    /// it from reading it.
+    #[test]
+    fn earlier_answers_before_a_large_request() {
+        let mut h = Harness::start(
+            r#"read -r l; yes '{"id":1,"ok":true,"ops":["x"]}' | head -n 100000; head -n 1 >/dev/null; echo '{"id":2,"ok":true}'"#,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        let body = format!("\"tx\":\"{}\"", "00".repeat(1 << 20));
+        assert!(h.call("x", &body).is_ok());
+        assert_eq!(h.skipped_lines(), 99999);
     }
 
     /// Answers to earlier requests without end fail the call at the timeout, though a line is
