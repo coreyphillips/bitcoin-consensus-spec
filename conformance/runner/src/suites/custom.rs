@@ -1,6 +1,5 @@
-//! The `custom` suite: targeted cases in `conformance/vectors/custom/*.jsonl`. The `pow` and
-//! `signet` suites run `conformance/vectors/pow/*.jsonl` and `conformance/vectors/signet/*.jsonl`
-//! the same way.
+//! The `custom` suite: targeted cases in `conformance/vectors/custom/*.jsonl`. The `pow`, `signet`
+//! and `params` suites run `conformance/vectors/<suite>/*.jsonl` the same way.
 //!
 //! Each line is `{"name": ..., "request": <a PROTOCOL.md request without id>, "expect": <response
 //! fields>}`. The request is sent as it is. Every expected field must match the response:
@@ -115,8 +114,12 @@ pub fn run(ctx: &mut Ctx, vectors: &Path, subdir: &str) -> Result<(), String> {
             .expect
             .iter()
             .filter(|(k, _)| *k != "script_error" && *k != "reason")
-            .filter(|(k, v)| field(k) != **v)
-            .map(|(k, v)| format!("{k}: expected {v}, got {}", field(k)))
+            // A missing field fails even where null is expected (`signet_challenge`).
+            .filter(|(k, v)| !got.contains_key(*k) || field(k) != **v)
+            .map(|(k, v)| match got.get(k) {
+                Some(g) => format!("{k}: expected {v}, got {g}"),
+                None => format!("{k}: expected {v}, got no such field"),
+            })
             .collect();
         if !level1.is_empty() {
             ctx.fail_as(&case.name, &case.loc, &shorten(&level1.join("; "), 400));

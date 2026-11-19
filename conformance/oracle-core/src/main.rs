@@ -29,6 +29,7 @@ const OPS: &[&str] = &[
     "pow_check",
     "pow_next_work",
     "signet_check",
+    "network_params",
 ];
 
 /// Operations outside PROTOCOL.md, listed under `extensions` in `info` (not under `ops`).
@@ -120,6 +121,7 @@ fn handle_line(line: &str) -> String {
         "pow_check" => pow_check(obj),
         "pow_next_work" => pow_next_work(obj),
         "signet_check" => signet_check(obj),
+        "network_params" => network_params(obj),
         other => Err(Failure::Unsupported(format!(
             "oracle-core only provides the operations that need no chain state, not {other}"
         ))),
@@ -441,4 +443,12 @@ fn signet_check(req: &Fields) -> Result<Fields, Failure> {
     let challenge = hex_field(req, "challenge")?;
     let valid = ffi::signet_check(&block, &challenge)?;
     Ok(fields(json!({"valid": valid})))
+}
+
+fn network_params(req: &Fields) -> Result<Fields, Failure> {
+    let json = ffi::network_params(str_field(req, "network")?)?;
+    match serde_json::from_str(&json) {
+        Ok(Value::Object(map)) => Ok(map),
+        _ => Err(Failure::Internal(format!("cpp/params.cpp printed invalid JSON: {json}"))),
+    }
 }

@@ -15,6 +15,7 @@ Tooling that checks an implementation of the specification against Bitcoin Core 
 | `vectors/custom/` | Targeted request and expected response pairs (`*.jsonl`) |
 | `vectors/pow/` | Proof-of-work and difficulty adjustment cases on every network, in the same format |
 | `vectors/signet/` | Signet block solution cases under chosen challenges, in the same format |
+| `vectors/params/` | The consensus parameters of every network, in the same format |
 | `vectors/blocks/` | The block corpus: scenarios recorded from Core's functional tests (`CORPUS.md`) |
 | `vectors/chainwork/` | One signet scenario in the corpus format where the chain with most work is not the longest |
 
@@ -43,7 +44,8 @@ does not show (a file marked `--assume-unchanged`, for example) also stops it. I
 libsecp256k1 configured as Core configures it. For the proof-of-work operations (`cpp/pow.cpp`) it
 also compiles `pow.cpp`, `chain.cpp`, `arith_uint256.cpp`, `primitives/block.cpp`,
 `consensus/merkle.cpp`, `kernel/chainparams.cpp` (each network's parameters) and `util/time.cpp`.
-For `signet_check` (`cpp/signet.cpp`) it compiles `signet.cpp`. `cpp/log.cpp` provides the logging
+For `signet_check` (`cpp/signet.cpp`) it compiles `signet.cpp`. `network_params` (`cpp/params.cpp`)
+reads the networks' `CChainParams` and only formats them. `cpp/log.cpp` provides the logging
 hooks `kernel/chainparams.cpp` and `signet.cpp` link against and discards every message; Core's
 logger would need its generated build configuration. Only Core's portable SHA-256 code is used
 (`DISABLE_OPTIMIZED_SHA256`; same results). `cpp/check.cpp` defines the assertion handlers of
@@ -62,10 +64,11 @@ What each operation calls:
 | `pow_compact` | `arith_uint256::SetCompact`, `GetCompact` of the decoded target, `GetBitsProof` |
 | `pow_check` | `CheckProofOfWorkImpl` with the network's consensus parameters (not `CheckProofOfWork`, which answers from one bit of the hash in fuzz builds) |
 | `pow_next_work` | `GetNextWorkRequired` on `CBlockIndex` entries (`nHeight`, `nTime`, `nBits`, `pprev`) from the first block of the parent's difficulty period to the parent, parameters from `CChainParams::Main()`, `TestNet()`, `TestNet4()`, `SigNet()` or `RegTest()` |
+| `network_params` | the fields of `CChainParams::Main()`, `TestNet()`, `TestNet4()`, `SigNet()` or `RegTest()` and their `Consensus::Params`; a script flag exception with a flag the protocol does not name is `internal` |
 | `signet_check` | deserialization of the block with witnesses (trailing bytes or any decoding error: `bad_request`), then `CheckSignetBlockSolution` with the consensus parameters of `CChainParams::SigNet` given the request's challenge |
 
-Chain operations answer `unsupported_op` (the `pow_*` and `signet_check` operations need no chain
-state: the request carries the headers or the block they read). `info` reports `spec_version` `v32.1`, plus `core_commit`
+Chain operations answer `unsupported_op` (the `pow_*`, `signet_check` and `network_params` operations
+need no chain state: the request carries the headers or the block they read). `info` reports `spec_version` `v32.1`, plus `core_commit`
 and a `build` string (compiler, target, profile) that `derive` records as provenance.
 
 Script error identifiers are the names of the `script_errors[]` table in
@@ -103,7 +106,7 @@ target/release/bcs-conformance suites                         # list suites
 the harness lists at least one needed operation; checks needing an unlisted operation are counted
 as unsupported, and unsupported checks (or a suite with no supported operation) fail the run unless
 the suite is left out with `--suite` or `--exclude` (`PROTOCOL.md` section 6). A plain run selects
-every suite marked `default` by `bcs-conformance suites`: the vector suites, `custom`, `pow`, `signet` and `corpus`.
+every suite marked `default` by `bcs-conformance suites`: the vector suites, `custom`, `pow`, `signet`, `params` and `corpus`.
 `headers-live`, `interop` and `peer-sync` need extra arguments and run only when named. Options: `--vectors DIR`
 (default `conformance/vectors`), `--derived DIR` (default `<vectors>/derived`), `--timeout SECS` per
 response (default 120; a harness that dies or stalls is restarted, at most 5 times),
@@ -266,6 +269,9 @@ combinations (plus the same `tx_check`s, with Core's reject reason at level 2).
 - **signet** (`vectors/signet/*.jsonl`). The same format and scoring as `custom`, for the chapter 13
   operation `signet_check`: signed and unsigned blocks under chosen challenges, where the solution
   is found and what it signs (see `vectors/signet/README.md`).
+- **params** (`vectors/params/*.jsonl`). The same format and scoring as `custom`, for the chapter 12
+  operation `network_params`: one case per network and parameter, so a wrong deployment height,
+  halving interval, BIP94 setting or script flag exception list fails (see `vectors/params/README.md`).
 
 ## Corpus suite
 

@@ -315,6 +315,30 @@ Response: `{"valid": bool}`.
 
 The block need not be valid otherwise: its proof of work, header merkle root and transactions are not checked, only its solution. The suite `signet` (`vectors/signet`) sends this operation; a harness that does not list it must leave that suite out (section 6).
 
+### 4.18 `network_params`
+
+The consensus parameters of a network without test overrides (specification chapter 12, `network_params`).
+
+| Request field | Type | Meaning |
+|---|---|---|
+| `network` | string | As in 4.8 |
+
+| Response field | Type | Meaning |
+|---|---|---|
+| `genesis_hash` | hash | Display order |
+| `subsidy_halving_interval` | integer | |
+| `bip34_height`, `bip65_height`, `bip66_height`, `csv_height`, `segwit_height` | integer | Deployment heights |
+| `bip34_hash` | hash | Display order; zero where the network has none |
+| `pow_limit` | hex | 32 bytes big-endian |
+| `pow_target_timespan`, `pow_target_spacing` | integer | Seconds |
+| `pow_allow_min_difficulty_blocks`, `pow_no_retargeting`, `enforce_bip94` | bool | |
+| `script_flag_exceptions` | array | `[hash, [flag, ...]]` pairs: a block hash in display order and the flags that replace `P2SH`, `WITNESS` and `TAPROOT` for it (chapter 10 section 10.6), with flag names as in 4.2, in the order of the table in section 3.1. Sorted by hash |
+| `signet_challenge` | hex or null | Null on networks other than signet |
+| `message_start` | hex | 4 bytes |
+| `default_port` | integer | |
+
+The suite `params` (`vectors/params`) sends this operation and compares one field per case; a harness that does not list it must leave that suite out (section 6). An implementation that keeps its parameters in another form can still answer it from them.
+
 ## 5. Live node contract
 
 The interop suite runs the implementation as a real node next to Bitcoin Core (the peer-sync suite has its own contract, section 5.1). For that suite the user supplies a node command template. The runner substitutes these placeholders:
