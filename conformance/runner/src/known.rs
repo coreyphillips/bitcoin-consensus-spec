@@ -13,6 +13,7 @@
 //! differs as `<file> check <n> tips`, and the replay errors of a file, which fail that file once,
 //! as `<file> errors from event <n>`: `<n>` is the event whose replay recorded the first error, so
 //! an earlier error does not pass as known. `<file> errors` names them wherever they start.
+//! `<file>` is the file name alone, which is why `corpus_files` refuses two files that share it.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};

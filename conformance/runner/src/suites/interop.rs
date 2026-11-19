@@ -553,14 +553,8 @@ pub fn run(stats: &mut Stats, verbose: bool, cfg: &Config) -> Result<(), String>
             .find(|e| e["type"] == "reset")
             .and_then(|e| e.get("options").cloned())
             .unwrap_or_else(|| json!({}));
-        let name = file
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .trim_end_matches(".jsonl.gz")
-            .to_string();
         chains.push(Chain {
-            name,
+            name: corpus::file_name(file),
             options,
             load: Load::Corpus { file: file.clone() },
         });
