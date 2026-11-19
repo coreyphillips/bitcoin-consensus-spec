@@ -132,14 +132,22 @@ def replay(path, cmd, restart_mode, max_report):
                 if normative:
                     res["normative"] += 1
                 tip = h.req("chain_tip")
+                want_work = ev.get("chainwork")
+                got_work = tip.get("chainwork")
                 ok0 = tip.get("ok") and tip["tip"] == ev["tip"] and tip["height"] == ev["height"]
+                if want_work is not None:
+                    ok0 = ok0 and isinstance(got_work, str) and got_work.lower() == want_work.lower()
                 bucket = res["level0"] if normative else res["level0_nonnormative"]
                 bucket["match" if ok0 else "mismatch"] += 1
                 if not ok0 and len(res["mismatches"]) < max_report:
+                    want = [ev["tip"], ev["height"]]
+                    got = [tip.get("tip"), tip.get("height")]
+                    if want_work is not None:
+                        want.append(want_work)
+                        got.append(got_work)
                     res["mismatches"].append({"check": ev.get("n"), "event": idx, "level": 0, "normative": normative,
                                               "label": ev.get("label"),
-                                              "want": [ev["tip"], ev["height"]],
-                                              "got": [tip.get("tip"), tip.get("height")]})
+                                              "want": want, "got": got})
                 if "tips" in ev:
                     tips = h.req("chain_tips")
                     got = sorted((t["hash"], t["height"], t["status"]) for t in tips.get("tips", []))
