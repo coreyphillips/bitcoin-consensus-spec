@@ -88,9 +88,6 @@ pub const SETTLE: Duration = Duration::from_secs(1);
 /// the block is on its best header chain; answering at once would keep it busy, and not answering
 /// would use up its blocks-in-flight slots.
 pub const CASE_RESEND: Duration = Duration::from_secs(1);
-/// How long the runner reads the node's standard output after the node exits, when a process it
-/// left behind keeps that output open.
-const EXIT_READ: Duration = Duration::from_secs(2);
 /// Consecutive node failures (no connection, no answer, crash) after which a scenario is abandoned.
 const MAX_NODE_ERRORS: u32 = 3;
 
@@ -403,8 +400,8 @@ struct Session<'a> {
     answers: HashMap<u64, Value>,
     next_query: u64,
     stopped: Option<Value>,
-    /// The node's exit status, seen before any stopped line, and when it was seen.
-    exited: Option<(std::process::ExitStatus, Instant)>,
+    /// The `stop` request has been written.
+    stop_sent: bool,
     /// The node closed its standard output, and every line of it has been handled.
     stdout_closed: bool,
     /// Set by [`Session::finish`] once the stopped line names the final tip: whether it carried
@@ -556,7 +553,7 @@ impl<'a> Session<'a> {
             answers: HashMap::new(),
             next_query: 0,
             stopped: None,
-            exited: None,
+            stop_sent: false,
             stdout_closed: false,
             utxo_reported: None,
             node_error: None,
@@ -682,15 +679,11 @@ impl<'a> Session<'a> {
             return Err(format!("the node reported an error: {e}"));
         }
         if self.stopped.is_none() {
-            if self.exited.is_none() {
-                if let Ok(Some(status)) = self.child.try_wait() {
-                    self.exited = Some((status, Instant::now()));
-                }
-            }
-            // Lines the node wrote before exiting, its stopped line among them, can still be
-            // queued behind other events, so the exit is an error only once they are all read.
-            if let Some((status, at)) = self.exited {
-                if self.stdout_closed || at.elapsed() >= EXIT_READ {
+            if let Ok(Some(status)) = self.child.try_wait() {
+                // After `stop`, the stopped line can still be queued behind other events, so the
+                // exit is an error only once the output is all read. Output a leftover process
+                // keeps open is left to the stop request's deadline.
+                if !self.stop_sent || self.stdout_closed {
                     return Err(self.with_stderr(format!("the node exited ({status})")));
                 }
             }
@@ -1266,6 +1259,7 @@ impl<'a> Session<'a> {
             )));
         }
         self.write_line(&json!({"op": "stop"}).to_string())?;
+        self.stop_sent = true;
         let deadline = Instant::now() + Duration::from_secs(60);
         while self.stopped.is_none() {
             if Instant::now() >= deadline {
@@ -2077,6 +2071,7 @@ for line in sys.stdin:
                 Event::NodeEof,
             ],
         );
+        s.stop_sent = true;
         while s.stopped.is_none() {
             s.pump(Duration::from_millis(50)).unwrap();
         }
@@ -2092,6 +2087,7 @@ for line in sys.stdin:
             0,
             vec![closed(), Event::NodeLine(tip.to_string()), Event::NodeEof],
         );
+        s.stop_sent = true;
         s.pump(Duration::from_millis(50)).unwrap();
         s.pump(Duration::from_millis(50)).unwrap();
         assert!(s.answers.contains_key(&1));
@@ -2100,21 +2096,13 @@ for line in sys.stdin:
     }
 
     #[test]
-    fn exit_with_output_held_open_fails_after_exit_read() {
+    fn exit_before_stop_fails_at_once() {
         let sc = genesis_only();
-        let (mut s, _tx) = exited_session(&sc, 3, vec![closed()]);
-        let start = Instant::now();
-        let e = loop {
-            if let Err(e) = s.pump(Duration::from_millis(50)) {
-                break e;
-            }
-            assert!(
-                start.elapsed() < EXIT_READ * 3,
-                "the exit was never reported"
-            );
-        };
-        assert!(start.elapsed() >= EXIT_READ);
+        let tip = json!({"event": "tip", "id": 1, "tip": REGTEST_GENESIS, "height": 0});
+        let (mut s, _tx) = exited_session(&sc, 3, vec![closed(), Event::NodeLine(tip.to_string())]);
+        let e = s.pump(Duration::from_millis(50)).unwrap_err();
         assert!(e.contains("the node exited (exit status: 3)"), "{e}");
+        assert!(!s.answers.contains_key(&1));
     }
 
     #[test]
