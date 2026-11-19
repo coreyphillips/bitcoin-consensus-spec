@@ -69,7 +69,7 @@ LEVELS = ["level 0", "level 0 non-normative", "level 1", "level 2"]
 # and still passes, so update them with the vectors.
 TOTALS = {
     "script": "339937 checks in 11 suites",
-    "block": "level 0 5287/5287, level 0 non-normative 1/1, level 1 1237/1237, level 2 2292/2292",
+    "block": "level 0 5293/5293, level 0 non-normative 1/1, level 1 1243/1243, level 2 2292/2292",
 }
 
 

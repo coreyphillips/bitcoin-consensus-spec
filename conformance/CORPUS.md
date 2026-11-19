@@ -18,6 +18,7 @@ conformance/vectors/blocks/blobs/<sha256>.blk.gz
 - `blobs/` holds sidecar files for large blocks, so that lines stay short: a `block` event carries either `hex` or `blob`. In this corpus, blocks larger than 1,000,000 bytes use blobs, and in `feature_block_reorg` blocks larger than 100,000 bytes. A blob file is the gzip-compressed raw block, named by the SHA256 of the uncompressed bytes. Blobs are shared between scenarios.
 - Unknown fields must be ignored. Field names starting with an underscore never appear.
 - `conformance/vectors/chainwork/most-work.jsonl.gz` is in the same format but was not recorded: its blocks are mined by a script, on a custom signet, so that the chain with most work is shorter than another chain (`vectors/chainwork/README.md`). Its expectations were confirmed by replaying it through Bitcoin Core v32.1. The `corpus` suite replays it with the recorded scenarios.
+- `conformance/vectors/signet/signet-blocks.jsonl.gz` is mined and signed the same way, on a custom signet whose challenge is a key, so that blocks without a valid solution must be rejected (`vectors/signet/README.md`). It was confirmed the same way and is replayed with them too.
 
 Encodings follow `PROTOCOL.md` section 3: bytes are lowercase hex, hashes are in display order, integers are JSON numbers, times are Unix seconds.
 
@@ -45,7 +46,7 @@ Start from a fresh chain. Always the second line.
 
 | Field | Meaning |
 |---|---|
-| `network` | `"regtest"` in every recorded scenario; `"signet"` in `most-work` |
+| `network` | `"regtest"` in every recorded scenario; `"signet"` in `most-work` and `signet-blocks` |
 | `options` | Consensus parameter overrides, exactly the `options` object of `chain_reset` (`PROTOCOL.md` 4.8): `testactivationheight` (deployment name to activation height), `test` (list, `"bip94"` enables the BIP94 rules) and, for signet, `signetchallenge`. Empty object if none. |
 | `genesis` | Expected genesis hash (a sanity check of the `chain_reset` response) |
 | `args` | Informational: the node's command line, without machine-specific paths and ports |

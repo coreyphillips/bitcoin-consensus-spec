@@ -53,7 +53,7 @@ Payloads over 256 KiB are kept as side files in the raw capture. `postprocess.py
 
 ## Core chain harness
 
-`core_chain_harness.py` speaks the chain operations of `../PROTOCOL.md` (`info`, `chain_reset`, `chain_process_block`, `chain_process_headers`, `chain_invalidate`, `chain_tip`, `chain_tips`, `utxo_hash`) by driving a fresh regtest `bitcoind` per `chain_reset`, or a custom signet one when the reset has a `signetchallenge` (`../vectors/chainwork`; signet has no mock time, so a `now` ahead of the real clock is refused):
+`core_chain_harness.py` speaks the chain operations of `../PROTOCOL.md` (`info`, `chain_reset`, `chain_process_block`, `chain_process_headers`, `chain_invalidate`, `chain_tip`, `chain_tips`, `utxo_hash`) by driving a fresh regtest `bitcoind` per `chain_reset`, or a custom signet one when the reset has a `signetchallenge` (`../vectors/chainwork`, `../vectors/signet`; signet has no mock time, so a `now` ahead of the real clock is refused):
 
 ```sh
 docker run -i --rm bcs-recorder:32.1 python3 core_chain_harness.py

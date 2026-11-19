@@ -22,3 +22,25 @@ python3 conformance/vectors/signet/generate.py <oracle-core-harness> conformance
 ```
 
 Each case states the verdict it was built for, and the script stops if Core's answer differs.
+
+## Blocks through chain processing
+
+`signet_check` alone does not show that an implementation calls the check when it processes a block. `signet-blocks.jsonl.gz` is a scenario in the corpus format (`CORPUS.md`), replayed by the `corpus` suite, not by this one. It runs on a custom signet whose challenge is the key with `OP_CHECKSIG` above. Its blocks carry real proof of work at signet's limit and a valid witness commitment, and all go through `submitblock` (`via: "rpc"`):
+
+- height 1: a block without a solution, then one signed by another key, then the signed block;
+- height 2, on the signed block: a block without a solution, then the signed block.
+
+A check follows each block. The two signed blocks must become the tip, and each of the other three must leave it where it was. Bitcoin Core rejects those three with `bad-signet-blksig`, which each check's label records. The runner does not score per-block reasons, so the checks catch an implementation that accepts such a block, whatever reason it gives for a rejection.
+
+Regenerate with the command below (about 25 million double SHA256 hashes in Python worker processes). Every block takes the smallest nonce that meets its target, so the file is the same on every run.
+
+```sh
+python3 conformance/vectors/signet/generate_blocks.py conformance/vectors/signet/signet-blocks.jsonl.gz [workers]
+```
+
+The expectations, tip sets included, are confirmed against Bitcoin Core v32.1 by replaying the file through `recorder/core_chain_harness.py`:
+
+```sh
+target/release/bcs-conformance corpus --corpus conformance/vectors/signet --fail-on-tips \
+  --impl "docker run -i --rm -v $PWD/conformance/recorder:/h:ro bcs-recorder:32.1 python3 /h/core_chain_harness.py"
+```
