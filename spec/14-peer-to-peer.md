@@ -437,9 +437,10 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
     let idle_limit = idle_limit.max(1);
     let magic = state.params.magic;
     let mut stream = std::net::TcpStream::connect(address)?;
-    let connected = Instant::now();
+    let handshake_deadline = Instant::now() + Duration::from_secs(60);
     stream.set_read_timeout(Some(Duration::from_millis(200)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(idle_limit)))?;
+    // Writes use the idle limit only once the handshake is done; until then the deadline bounds them.
+    stream.set_write_timeout(Some(Duration::from_secs(60)))?;
     let send = |stream: &mut std::net::TcpStream, command: &str, payload: &[u8]| -> std::io::Result<()> {
         stream.write_all(&encode_message(magic, command, payload)).map_err(|e| match e.kind() {
             ErrorKind::WouldBlock | ErrorKind::TimedOut => Error::new(ErrorKind::TimedOut, "peer stopped reading"),
@@ -506,6 +507,14 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
         }
 
         for message in messages {
+            // A read or an earlier reply can end past the deadline, so check it before each message.
+            if !handshake_done {
+                let remaining = handshake_deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(Error::new(ErrorKind::TimedOut, "handshake did not complete"));
+                }
+                stream.set_write_timeout(Some(remaining))?;
+            }
             match message.command.as_str() {
                 "version" => {
                     let theirs = decode_version(&message.payload).map_err(|e| Error::new(ErrorKind::InvalidData, e.0))?;
@@ -518,6 +527,7 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
                 // A repeated `verack` is ignored, so it cannot restart the idle clock.
                 "verack" if !handshake_done => {
                     handshake_done = true;
+                    stream.set_write_timeout(Some(Duration::from_secs(idle_limit)))?;
                     // The idle limit counts from here.
                     last_progress = Instant::now();
                     request_headers(state, &mut stream)?;
@@ -598,7 +608,7 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
             last_progress = Instant::now();
         }
         if !handshake_done {
-            if connected.elapsed().as_secs() >= 60 {
+            if Instant::now() >= handshake_deadline {
                 return Err(Error::new(ErrorKind::TimedOut, "handshake did not complete"));
             }
             continue;
