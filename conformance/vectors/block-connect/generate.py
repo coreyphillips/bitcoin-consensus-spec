@@ -49,6 +49,8 @@ HISTORIC = [
     ("main", 388381, "000000000000000004c2b624ed5d7756c508d90fd0da2c7c679febfa6c4735f0", "BIP65 height"),
     ("main", 419327, "0000000000000000051804b4c2da5298c4573386bf1d4242bf0e26a49ec32e42", "below the CSV height"),
     ("main", 419328, "000000000000000004a1b34462cb8aeebd5799177f7a29cf28f2d1961716b5b5", "CSV height"),
+    ("main", 481823, "000000000000000000cbeff0b533f8e1189cf09dfbebf57a8ebe349362811b80", "below the segwit height"),
+    ("main", 481824, "0000000000000000001c8018d9cb3b742ef25114f27563e3fc4a1902167f9893", "segwit height"),
     ("main", 692261, "0000000000000000000f14c35b2d841e986ab5441de8c585d5ffe55ea1e395ad",
      "script flag exception: no taproot"),
 ]
@@ -248,9 +250,12 @@ def spent_txs(network, txids, pool):
     if ELECTRUM and network == "main":
         todo = [t for t in txids if not os.path.exists(os.path.join(CACHE, network, "electrum-tx", t))]
         batches = [todo[i:i + 50] for i in range(0, len(todo), 50)]
-        for batch in pool.map(electrum_txs, batches):
-            for t, tx in batch.items():
+
+        # Cached by the worker, so a batch that fails does not lose those that finished after it.
+        def fetch_batch(batch):
+            for t, tx in electrum_txs(batch).items():
                 cached(network, "electrum-tx", t, lambda: tx)
+        list(pool.map(fetch_batch, batches))
         out = {}
         for t in txids:
             tx = cached(network, "electrum-tx", t, None)

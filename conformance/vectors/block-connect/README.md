@@ -9,10 +9,8 @@ Blocks connected with `block_connect` (`PROTOCOL.md` section 4.19): chapter 10's
 - the script flag exception blocks 170060 on mainnet and 394 on testnet3, both of which fail with `P2SH`;
 - mainnet block 692261, the other flag exception, which spent a taproot output before taproot activated and fails with `TAPROOT`;
 - the first halving block, 210000;
-- the blocks on each side of the BIP34 (227930, 227931), BIP66 (363724, 363725), BIP65 (388380, 388381), and CSV (419327, 419328) heights. From the CSV height on, the ancestors include the block before each coin that a BIP68 sequence lock reads;
+- the blocks on each side of the BIP34 (227930, 227931), BIP66 (363724, 363725), BIP65 (388380, 388381), CSV (419327, 419328) and segwit (481823, 481824) heights. From the CSV height on, the ancestors include the block before each coin that a BIP68 sequence lock reads;
 - three constructed mainnet blocks whose coinbase has the txid of a pre-BIP34 coinbase: at height 1,983,702 on a chain that contains the BIP34 block, with that coinbase unspent, BIP30 applies again (`bad-txns-BIP30`); at 1,983,701 on a chain with another block at the BIP34 height, also unspent, it applies too; and at 1,983,701 on the BIP34 chain the block is valid. That last case has no conflicting coin: on that chain none can be unspent, and an implementation that always checks BIP30 conforms (chapter 10 section 10.7).
-
-Not yet covered: blocks 481823 and 481824, on each side of the segwit height.
 
 Expectations. Every historic block is on the chain that Bitcoin Core v32.1 accepts, so it is valid when connected to the UTXO set of its parent. The oracle cannot compute the constructed cases: `GetBlockScriptFlags`, `IsBIP30Repeat` and `BIP34_IMPLIES_BIP30_LIMIT` are in `src/validation.cpp`, which needs the rest of the node. Their verdicts follow the BIP30 section of Core's `ConnectBlock`, and are the same whether or not an implementation skips the check below 1,983,702.
 
