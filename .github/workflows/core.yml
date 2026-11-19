@@ -46,6 +46,8 @@ jobs:
         run: ./target/release/bcs-conformance derive --oracle conformance/oracle-core/target/release/oracle-core-harness --out "$RUNNER_TEMP/derived"
       - name: The committed derived vectors are the regenerated ones
         run: sh .github/compare-derived.sh conformance/vectors/derived "$RUNNER_TEMP/derived"
+      - name: The committed pow vectors are the oracle's answers
+        run: ./target/release/bcs-conformance --impl conformance/oracle-core/target/release/oracle-core-harness --suite pow --fail-on-level2
 
   corpus:
     runs-on: ubuntu-latest

@@ -1,4 +1,5 @@
-//! The `custom` suite: targeted cases in `conformance/vectors/custom/*.jsonl`.
+//! The `custom` suite: targeted cases in `conformance/vectors/custom/*.jsonl`. The `pow` suite
+//! runs `conformance/vectors/pow/*.jsonl` the same way.
 //!
 //! Each line is `{"name": ..., "request": <a PROTOCOL.md request without id>, "expect": <response
 //! fields>}`. The request is sent as it is. Every expected field must match the response:
@@ -75,8 +76,8 @@ fn load(path: &Path) -> Result<Vec<Case>, String> {
     Ok(cases)
 }
 
-pub fn run(ctx: &mut Ctx, vectors: &Path) -> Result<(), String> {
-    let dir = vectors.join("custom");
+pub fn run(ctx: &mut Ctx, vectors: &Path, subdir: &str) -> Result<(), String> {
+    let dir = vectors.join(subdir);
     let paths = files(&dir)?;
     if paths.is_empty() {
         return Err(format!("no *.jsonl files in {}", dir.display()));

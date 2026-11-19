@@ -365,6 +365,7 @@ fn suite_ops(suite: &str) -> &'static [&'static str] {
             "taproot_commitment_verify",
             "schnorr_verify",
         ],
+        "pow" => &["pow_compact", "pow_check", "pow_next_work"],
         "corpus" => &[
             "chain_reset",
             "chain_process_block",
@@ -499,7 +500,8 @@ fn cmd_run(opts: &Options) -> ExitCode {
             "sighash" => suites::sighash::run(&mut ctx, &paths.vectors),
             "bip341" => suites::bip341::run(&mut ctx, &paths.vectors),
             "bip340" => suites::bip340::run(&mut ctx, &paths.vectors),
-            "custom" => suites::custom::run(&mut ctx, &paths.vectors),
+            "custom" => suites::custom::run(&mut ctx, &paths.vectors, "custom"),
+            "pow" => suites::custom::run(&mut ctx, &paths.vectors, "pow"),
             "corpus" => suites::corpus::run(
                 &mut ctx,
                 &corpus_paths(opts, &paths),

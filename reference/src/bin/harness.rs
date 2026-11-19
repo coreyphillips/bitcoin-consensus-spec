@@ -48,6 +48,44 @@ fn get_int(req: &Fields, name: &str) -> Result<i128, BadRequest> {
     }
 }
 
+fn get_u32(req: &Fields, name: &str) -> Result<u32, BadRequest> {
+    u32::try_from(get_int(req, name)?).map_err(|_| BadRequest(format!("{name} must be an unsigned 32-bit integer")))
+}
+
+fn get_consensus(req: &Fields) -> Result<ConsensusParams, BadRequest> {
+    let network = parse_network(get_str(req, "network")?).map_err(BadRequest)?;
+    Ok(network_params(network, &NetworkOptions::default()).consensus)
+}
+
+/// The `chain` runs of `pow_next_work`, expanded to headers. Fields other than `time` and `bits`
+/// are zero: chapter 09 reads nothing else.
+fn get_pow_chain(req: &Fields) -> Result<Vec<BlockHeader>, BadRequest> {
+    let runs = match field(req, "chain")? {
+        Json::Arr(items) => items,
+        _ => return Err(BadRequest("chain must be an array".into())),
+    };
+    let bad = || BadRequest("chain entries must be [count, time, step, bits] integers".into());
+    let mut headers = Vec::new();
+    for run in runs {
+        let (count, time, step, bits) = match run {
+            Json::Arr(v) => match v.as_slice() {
+                [Json::Int(c), Json::Int(t), Json::Int(s), Json::Int(b)] => (*c, *t, *s, *b),
+                _ => return Err(bad()),
+            },
+            _ => return Err(bad()),
+        };
+        let bits = u32::try_from(bits).map_err(|_| bad())?;
+        if count < 1 || headers.len() as i128 + count > 100_000 {
+            return Err(BadRequest("chain must hold 1 to 100000 headers".into()));
+        }
+        for i in 0..count {
+            let time = u32::try_from(time + i * step).map_err(|_| BadRequest("chain time out of range".into()))?;
+            headers.push(BlockHeader { version: 0, prev_block: [0; 32], merkle_root: [0; 32], time, bits, nonce: 0 });
+        }
+    }
+    Ok(headers)
+}
+
 fn opt_hex(req: &Fields, name: &str) -> Result<Option<Vec<u8>>, BadRequest> {
     match req.get(name) {
         None | Some(Json::Null) => Ok(None),
@@ -116,6 +154,9 @@ const OPS: &[&str] = &[
     "sighash_taproot",
     "taproot_commitment_verify",
     "schnorr_verify",
+    "pow_compact",
+    "pow_check",
+    "pow_next_work",
     "chain_reset",
     "chain_process_block",
     "chain_process_headers",
@@ -230,6 +271,41 @@ fn handle(op: &str, req: &Fields, chain: &mut Option<ChainState>) -> Result<Opti
                 return Err(BadRequest("pubkey must be 32 bytes and sig 64 bytes".into()));
             }
             obj(vec![("valid", Json::Bool(schnorr_verify(&pubkey, &msg, &sig)))])
+        }
+        "pow_compact" => {
+            let bits = get_u32(req, "bits")?;
+            let (target, negative, overflow) = compact_to_target(bits);
+            obj(vec![
+                ("target", Json::Str(hex_encode(&target.to_be_bytes()))),
+                ("negative", Json::Bool(negative)),
+                ("overflow", Json::Bool(overflow)),
+                ("compact", Json::Int(target_to_compact(target) as i128)),
+                ("work", Json::Str(hex_encode(&block_proof(bits).to_be_bytes()))),
+            ])
+        }
+        "pow_check" => {
+            let consensus = get_consensus(req)?;
+            let hash = Some(get_hex(req, "hash")?)
+                .filter(|b| b.len() == 32)
+                .and_then(|b| hash_from_display(&hex_encode(&b)))
+                .ok_or_else(|| BadRequest("hash must be 32 bytes".into()))?;
+            let bits = get_u32(req, "bits")?;
+            obj(vec![("valid", Json::Bool(check_proof_of_work(&hash, bits, consensus.pow_limit)))])
+        }
+        "pow_next_work" => {
+            let consensus = get_consensus(req)?;
+            let parent_height = get_int(req, "parent_height")?;
+            let time = get_u32(req, "time")?;
+            let headers = get_pow_chain(req)?;
+            let interval = consensus.difficulty_adjustment_interval() as i128;
+            if !(0..=i32::MAX as i128).contains(&parent_height) || headers.len() as i128 != parent_height % interval + 1 {
+                return Err(BadRequest("chain must run from the first block of the parent's difficulty period to the parent".into()));
+            }
+            let first = parent_height as i32 - (headers.len() as i32 - 1);
+            let ancestor = |h: i32| headers[(h - first) as usize];
+            let parent = headers[headers.len() - 1];
+            let bits = next_work_required(&consensus, parent_height as i32, &parent, &ancestor, time);
+            obj(vec![("bits", Json::Int(bits as i128))])
         }
         "chain_reset" => {
             let network = parse_network(get_str(req, "network")?).map_err(BadRequest)?;

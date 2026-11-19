@@ -1151,73 +1151,66 @@
  },
  {
   "name": "retarget-upper-clamp-x8",
-  "kind": "block",
+  "kind": "script",
   "file": "09-proof-of-work.md",
   "item": null,
   "old": "        actual_timespan = params.pow_target_timespan * 4;",
   "new": "        actual_timespan = params.pow_target_timespan * 8;",
-  "expect": "survived",
-  "note": "Every corpus scenario is regtest, which never retargets, so no suite computes a retarget; only the manual headers-live suite reaches it. #38 tracks a test."
+  "expect": "caught"
  },
  {
   "name": "retarget-2016-intervals",
-  "kind": "block",
+  "kind": "script",
   "file": "09-proof-of-work.md",
   "item": 58,
   "old": "    let mut actual_timespan = last.time as i64 - first.time as i64;",
   "new": "    let mut actual_timespan = last.time as i64 - first.time as i64 + params.pow_target_spacing;",
-  "expect": "survived",
-  "note": "Every corpus scenario is regtest, which never retargets, so no suite computes a retarget; only the manual headers-live suite reaches it. #38 tracks a test."
+  "expect": "caught"
  },
  {
   "name": "bip94-retarget-from-last",
-  "kind": "block",
+  "kind": "script",
   "file": "09-proof-of-work.md",
   "item": 61,
   "old": "    let base_bits = if params.enforce_bip94 { first.bits } else { last.bits };",
   "new": "    let base_bits = last.bits;",
-  "expect": "survived",
-  "note": "Every corpus scenario is regtest, which never retargets, so no suite computes a retarget; only the manual headers-live suite reaches it. #38 tracks a test."
+  "expect": "caught"
  },
  {
   "name": "min-difficulty-rule-ge",
-  "kind": "block",
+  "kind": "script",
   "file": "09-proof-of-work.md",
   "item": 60,
   "old": "            if new_block_time as i64 > parent.time as i64 + params.pow_target_spacing * 2 {",
   "new": "            if new_block_time as i64 >= parent.time as i64 + params.pow_target_spacing * 2 {",
-  "expect": "survived",
-  "note": "Regtest never applies the testnet minimum-difficulty rule, and headers-live is manual. #38 tracks a test."
+  "expect": "caught"
  },
  {
   "name": "min-difficulty-no-walk-back",
-  "kind": "block",
+  "kind": "script",
   "file": "09-proof-of-work.md",
   "item": 60,
   "old": "            while index_height > 0 && index_height as i64 % interval != 0 && header.bits == pow_limit_bits {",
   "new": "            while false && index_height > 0 && index_height as i64 % interval != 0 && header.bits == pow_limit_bits {",
-  "expect": "survived",
-  "note": "Regtest never applies the testnet minimum-difficulty rule, and headers-live is manual. #38 tracks a test."
+  "expect": "caught"
  },
  {
   "name": "compact-no-sign-normalize",
-  "kind": "block",
+  "kind": "script",
   "file": "09-proof-of-work.md",
   "item": 59,
   "old": "    if (compact & 0x0080_0000) != 0 {\n        compact >>= 8;\n        size += 1;\n    }",
   "new": "",
-  "expect": "survived",
-  "note": "Regtest bits never need the sign step. The unit test in chapter 09 catches it, but a candidate does not run that. #38 tracks a test."
+  "expect": "caught"
  },
  {
   "name": "pow-limit-unchecked",
-  "kind": "block",
+  "kind": "script",
   "file": "09-proof-of-work.md",
   "item": null,
   "old": "    if negative || target.is_zero() || overflow || target > pow_limit {",
   "new": "    if negative || target.is_zero() || overflow || { let _ = pow_limit; false } {",
-  "expect": "survived",
-  "note": "No corpus block has a target above the proof-of-work limit. #38 tracks a test."
+  "expect": "caught"
  },
  {
   "name": "mtp-lower-median",
@@ -1311,13 +1304,12 @@
  },
  {
   "name": "work-uses-target-not-inverse",
-  "kind": "block",
+  "kind": "script",
   "file": "09-proof-of-work.md",
   "item": null,
   "old": "    quotient.wrapping_add(U256::ONE)\n}",
   "new": "    let _ = quotient;\n    U256::ONE\n}",
-  "expect": "survived",
-  "note": "Every regtest block has the same work, and the corpus does not compare chain work. The unit test in chapter 09 catches it, but a candidate does not run that. #40 tracks a test."
+  "expect": "caught"
  },
  {
   "name": "longest-chain-not-most-work",

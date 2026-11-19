@@ -10,6 +10,8 @@ const RC_BAD_TX: c_int = -1;
 const RC_BAD_INDEX: c_int = -2;
 const RC_BAD_SPENT: c_int = -3;
 const RC_BAD_FLAGS: c_int = -4;
+const RC_BAD_NETWORK: c_int = -5;
+const RC_BAD_CHAIN: c_int = -6;
 const RC_EXCEPTION: c_int = -100;
 
 /// Flag bits of the C ABI, in protocol order (cpp/oracle.cpp maps them to Core's constants).
@@ -93,7 +95,28 @@ extern "C" {
         msg_len: usize,
         sig64: *const u8,
     ) -> c_int;
+    fn bcs_core_pow_compact(
+        bits: u32,
+        target32: *mut u8,
+        negative: *mut c_int,
+        overflow: *mut c_int,
+        compact: *mut u32,
+        work32: *mut u8,
+    ) -> c_int;
+    fn bcs_core_pow_check(network: c_int, hash32: *const u8, bits: u32) -> c_int;
+    fn bcs_core_pow_next_work(
+        network: c_int,
+        parent_height: i32,
+        n: usize,
+        times: *const u32,
+        bits: *const u32,
+        time: u32,
+        out_bits: *mut u32,
+    ) -> c_int;
 }
+
+/// Network names of the protocol, in the order of the C ABI (cpp/pow.cpp).
+const NETWORKS: [&str; 5] = ["main", "testnet3", "testnet4", "signet", "regtest"];
 
 /// Why a call into Core could not produce a result.
 #[derive(Debug)]
@@ -124,6 +147,13 @@ fn rc_to_bool(rc: c_int) -> Result<bool, CoreError> {
         )),
         RC_BAD_FLAGS => Err(CoreError::BadRequest(
             "unknown flag, or a combination VerifyScript does not accept (WITNESS requires P2SH, CLEANSTACK requires P2SH and WITNESS)".into(),
+        )),
+        RC_BAD_NETWORK => Err(CoreError::BadRequest(format!(
+            "network must be one of {}",
+            NETWORKS.join(", ")
+        ))),
+        RC_BAD_CHAIN => Err(CoreError::BadRequest(
+            "chain must hold the headers from the first block of the parent's difficulty period to the parent".into(),
         )),
         RC_EXCEPTION => Err(CoreError::Internal(format!("Bitcoin Core threw: {}", last_exception()))),
         other => Err(CoreError::Internal(format!("unexpected return code {other}"))),
@@ -331,4 +361,84 @@ pub fn schnorr_verify(pubkey: &[u8; 32], msg: &[u8], sig: &[u8; 64]) -> Result<b
     let rc =
         unsafe { bcs_core_schnorr_verify(pubkey.as_ptr(), msg.as_ptr(), msg.len(), sig.as_ptr()) };
     rc_to_bool(rc)
+}
+
+fn network_code(network: &str) -> Result<c_int, CoreError> {
+    NETWORKS
+        .iter()
+        .position(|n| *n == network)
+        .map(|i| i as c_int)
+        .ok_or_else(|| {
+            CoreError::BadRequest(format!("network must be one of {}", NETWORKS.join(", ")))
+        })
+}
+
+/// `SetCompact` of `bits`, `GetCompact` of the decoded target, and `GetBitsProof(bits)`.
+pub struct Compact {
+    pub target: [u8; 32],
+    pub negative: bool,
+    pub overflow: bool,
+    pub compact: u32,
+    pub work: [u8; 32],
+}
+
+/// Targets and work are big-endian.
+pub fn pow_compact(bits: u32) -> Result<Compact, CoreError> {
+    let mut target = [0u8; 32];
+    let mut work = [0u8; 32];
+    let (mut negative, mut overflow, mut compact) = (0, 0, 0u32);
+    // SAFETY: all buffers are live for the call and have the sizes the C side writes.
+    let rc = unsafe {
+        bcs_core_pow_compact(
+            bits,
+            target.as_mut_ptr(),
+            &mut negative,
+            &mut overflow,
+            &mut compact,
+            work.as_mut_ptr(),
+        )
+    };
+    rc_to_bool(rc)?;
+    Ok(Compact {
+        target,
+        negative: negative != 0,
+        overflow: overflow != 0,
+        compact,
+        work,
+    })
+}
+
+/// `CheckProofOfWorkImpl` with the network's parameters. `hash` is in raw order.
+pub fn pow_check(network: &str, hash: &[u8; 32], bits: u32) -> Result<bool, CoreError> {
+    let code = network_code(network)?;
+    // SAFETY: the hash buffer is live for the call.
+    let rc = unsafe { bcs_core_pow_check(code, hash.as_ptr(), bits) };
+    rc_to_bool(rc)
+}
+
+/// `GetNextWorkRequired` for a block at `time` whose parent is the last of `headers` (time, bits).
+pub fn pow_next_work(
+    network: &str,
+    parent_height: i32,
+    headers: &[(u32, u32)],
+    time: u32,
+) -> Result<u32, CoreError> {
+    let code = network_code(network)?;
+    let times: Vec<u32> = headers.iter().map(|h| h.0).collect();
+    let bits: Vec<u32> = headers.iter().map(|h| h.1).collect();
+    let mut out = 0u32;
+    // SAFETY: both arrays hold headers.len() entries and are live for the call.
+    let rc = unsafe {
+        bcs_core_pow_next_work(
+            code,
+            parent_height,
+            headers.len(),
+            times.as_ptr(),
+            bits.as_ptr(),
+            time,
+            &mut out,
+        )
+    };
+    rc_to_bool(rc)?;
+    Ok(out)
 }
