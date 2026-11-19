@@ -413,7 +413,7 @@ pub fn decode_inv(payload: &[u8]) -> Result<Vec<(u32, Hash256)>, DecodeError> {
 
 ## 14.5 A minimal synchronizing peer
 
-The function below connects to one peer, performs the handshake, downloads headers and blocks until the active tip equals `stop_at` (in headers-only mode, until the header `stop_at` is known), and answers `ping` and `getheaders` along the way. Without `stop_at`, it stops when the peer has no more headers (headers-only mode) or when nothing has happened for `idle_limit` seconds. It fails with an error when it makes no progress for `idle_limit` seconds with a target still unreached or a `getheaders` request still unanswered, when the peer stops reading for `idle_limit` seconds, when a requested block does not arrive within `BLOCK_REQUEST_TIMEOUT_SECS`, when the peer sends a block that cannot be decoded or that fails validation, and when the peer breaks the framing rules. The idle limit counts from the handshake, whether or not the peer has sent its last headers, so no peer can keep the node waiting forever. After a full batch of headers the node asks for more, unless the batch added no header: asking again would only bring the same batch back. While a target is unknown it asks for headers again every 10 seconds, because a peer that is itself still synchronizing does not announce new blocks. The target may be below the peer's tip. Once its header is known, only it and its ancestors are requested, and the target is checked after every message, so the blocks it asked for never carry the tip past the target. It is deliberately simple: one peer, one connection, blocking input and output. It is the reference behaviour the conformance suite's interop test exercises against Bitcoin Core; a production node adds multiple peers, peer discovery, retries elsewhere and persistence.
+The function below connects to one peer, performs the handshake, downloads headers and blocks until the active tip equals `stop_at` (in headers-only mode, until the header `stop_at` is known), and answers `ping` and `getheaders` along the way. Without `stop_at`, it stops when the peer has no more headers (headers-only mode) or when nothing has happened for `idle_limit` seconds. Until the peer's `verack` arrives it ignores every message but `version` and `verack`, and it fails with an error if the handshake has not completed 60 seconds after the connection opened. Nothing the peer sends can move that deadline. It also fails with an error when it makes no progress for `idle_limit` seconds with a target still unreached or a `getheaders` request still unanswered, when the peer stops reading for `idle_limit` seconds, when a requested block does not arrive within `BLOCK_REQUEST_TIMEOUT_SECS`, when the peer sends a block that cannot be decoded or that fails validation, and when the peer breaks the framing rules. The idle limit counts from the handshake, whether or not the peer has sent its last headers, so no peer can keep the node waiting forever. After a full batch of headers the node asks for more, unless the batch added no header: asking again would only bring the same batch back. While a target is unknown it asks for headers again every 10 seconds, because a peer that is itself still synchronizing does not announce new blocks. The target may be below the peer's tip. Once its header is known, only it and its ancestors are requested, and the target is checked after every message, so the blocks it asked for never carry the tip past the target. It is deliberately simple: one peer, one connection, blocking input and output. It is the reference behaviour the conformance suite's interop test exercises against Bitcoin Core; a production node adds multiple peers, peer discovery, retries elsewhere and persistence.
 
 ```rust
 /// Outcome of a successful synchronization run.
@@ -437,6 +437,7 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
     let idle_limit = idle_limit.max(1);
     let magic = state.params.magic;
     let mut stream = std::net::TcpStream::connect(address)?;
+    let handshake_deadline = Instant::now() + Duration::from_secs(60);
     stream.set_read_timeout(Some(Duration::from_millis(200)))?;
     stream.set_write_timeout(Some(Duration::from_secs(idle_limit)))?;
     let send = |stream: &mut std::net::TcpStream, command: &str, payload: &[u8]| -> std::io::Result<()> {
@@ -444,6 +445,31 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
             ErrorKind::WouldBlock | ErrorKind::TimedOut => Error::new(ErrorKind::TimedOut, "peer stopped reading"),
             _ => e,
         })
+    };
+    // A write timeout is relative, so it is set again before each write that precedes `verack`.
+    let bound_by_deadline = |stream: &std::net::TcpStream| -> std::io::Result<()> {
+        let remaining = handshake_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(Error::new(ErrorKind::TimedOut, "handshake did not complete"));
+        }
+        stream.set_write_timeout(Some(remaining))
+    };
+    // `write_all` reuses one timeout for every partial write, so writes before `verack` go piece by
+    // piece, each bounded by the time left.
+    let send_by_deadline = |stream: &mut std::net::TcpStream, command: &str, payload: &[u8]| -> std::io::Result<()> {
+        let bytes = encode_message(magic, command, payload);
+        let mut written = 0;
+        while written < bytes.len() {
+            bound_by_deadline(stream)?;
+            match stream.write(&bytes[written..]) {
+                Ok(0) => return Err(ErrorKind::WriteZero.into()),
+                Ok(n) => written += n,
+                // The next pass fails once the deadline has passed.
+                Err(e) if matches!(e.kind(), ErrorKind::Interrupted | ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
     };
 
     let nonce = sha256(&unix_now().to_le_bytes());
@@ -456,7 +482,7 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
         start_height: state.tip().height,
         relay: false,
     };
-    send(&mut stream, "version", &encode_version(&version))?;
+    send_by_deadline(&mut stream, "version", &encode_version(&version))?;
 
     let mut buffer: Vec<u8> = Vec::new();
     let mut handshake_done = false;
@@ -505,24 +531,36 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
         }
 
         for message in messages {
+            // A read or an earlier reply can end past the deadline, so check it before each message.
+            if !handshake_done {
+                bound_by_deadline(&stream)?;
+            }
             match message.command.as_str() {
                 "version" => {
                     let theirs = decode_version(&message.payload).map_err(|e| Error::new(ErrorKind::InvalidData, e.0))?;
                     if theirs.version < MIN_PEER_PROTO_VERSION {
                         return Err(Error::new(ErrorKind::InvalidData, "peer version too old"));
                     }
-                    send(&mut stream, "sendheaders", &[])?;
-                    send(&mut stream, "verack", &[])?;
+                    if handshake_done {
+                        send(&mut stream, "sendheaders", &[])?;
+                        send(&mut stream, "verack", &[])?;
+                    } else {
+                        send_by_deadline(&mut stream, "sendheaders", &[])?;
+                        send_by_deadline(&mut stream, "verack", &[])?;
+                    }
                 }
                 // A repeated `verack` is ignored, so it cannot restart the idle clock.
                 "verack" if !handshake_done => {
                     handshake_done = true;
+                    stream.set_write_timeout(Some(Duration::from_secs(idle_limit)))?;
                     // The idle limit counts from here.
                     last_progress = Instant::now();
                     request_headers(state, &mut stream)?;
                     requested_headers = true;
                     last_headers_request = Instant::now();
                 }
+                // Anything else before `verack` is ignored (14.2).
+                _ if !handshake_done => {}
                 "ping" => {
                     if let Some(nonce) = message.payload.get(..8) {
                         send(&mut stream, "pong", nonce)?;
@@ -595,7 +633,7 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
             last_progress = Instant::now();
         }
         if !handshake_done {
-            if last_progress.elapsed().as_secs() >= 60 {
+            if Instant::now() >= handshake_deadline {
                 return Err(Error::new(ErrorKind::TimedOut, "handshake did not complete"));
             }
             continue;
@@ -671,7 +709,7 @@ Default ports are in chapter 12. Peer discovery is not part of consensus; any so
 
 ## 14.7 Tests
 
-Each test plays a peer that never lets the synchronization finish on its own: one that never answers `getheaders`, one that answers every `getheaders` with the same 2,000 headers, and one that stops reading. `sync_from_peer` must return once its idle limit has passed.
+Each test plays a peer that never lets the synchronization finish on its own: one that never answers `getheaders`, one that answers every `getheaders` with the same 2,000 headers, and one that stops reading. `sync_from_peer` must return once its idle limit has passed. One more test plays a peer that sends a header before its `verack`; the node must not take it.
 
 ```rust
 #[cfg(test)]
@@ -687,9 +725,10 @@ mod sync_tests {
         ChainState::new(network_params(Network::Regtest, &NetworkOptions::default()))
     }
 
-    /// Plays the peer on a free local port: completes the handshake, then hands every later message
-    /// to `script`. Returns the address to connect to.
-    fn scripted_peer(mut script: impl FnMut(&mut TcpStream, &Message) + Send + 'static) -> String {
+    /// Plays the peer on a free local port: completes the handshake, writing `before_verack` between
+    /// its `version` and its `verack`, then hands every later message to `script`. Returns the
+    /// address to connect to.
+    fn scripted_peer(before_verack: Vec<u8>, mut script: impl FnMut(&mut TcpStream, &Message) + Send + 'static) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap().to_string();
         let magic = regtest().params.magic;
@@ -717,6 +756,7 @@ mod sync_tests {
                         relay: false,
                     };
                     let _ = stream.write_all(&encode_message(magic, "version", &encode_version(&version)));
+                    let _ = stream.write_all(&before_verack);
                     let _ = stream.write_all(&encode_message(magic, "verack", &[]));
                 } else {
                     script(&mut stream, &message);
@@ -740,7 +780,7 @@ mod sync_tests {
     #[test]
     fn unanswered_getheaders_ends_at_the_idle_limit() {
         for stop_at in [None, Some([1u8; 32])] {
-            let (end, _) = sync(scripted_peer(|_, _| {}), stop_at, 1, true);
+            let (end, _) = sync(scripted_peer(Vec::new(), |_, _| {}), stop_at, 1, true);
             assert_eq!(end.unwrap_err().kind(), ErrorKind::TimedOut);
         }
     }
@@ -763,7 +803,7 @@ mod sync_tests {
             let requests = Arc::new(AtomicUsize::new(0));
             let counter = requests.clone();
             let reply = reply.clone();
-            let address = scripted_peer(move |stream, message| {
+            let address = scripted_peer(Vec::new(), move |stream, message| {
                 if message.command == "getheaders" {
                     counter.fetch_add(1, Ordering::SeqCst);
                     let _ = stream.write_all(&reply);
@@ -780,11 +820,31 @@ mod sync_tests {
     }
 
     #[test]
+    fn headers_before_verack_are_ignored() {
+        let params = regtest().params;
+        let genesis = params.genesis.header;
+        let mut header = BlockHeader { version: 0x2000_0000, prev_block: genesis.hash(), merkle_root: [0; 32], time: genesis.time + 600, bits: genesis.bits, nonce: 0 };
+        while !check_proof_of_work(&header.hash(), header.bits, params.consensus.pow_limit) {
+            header.nonce += 1;
+        }
+        let early = encode_message(params.magic, "headers", &encode_headers(&[header]));
+        let empty = encode_message(params.magic, "headers", &encode_headers(&[]));
+        let address = scripted_peer(early, move |stream, message| {
+            if message.command == "getheaders" {
+                let _ = stream.write_all(&empty);
+            }
+        });
+        let (end, state) = sync(address, None, 1, false);
+        assert_eq!(end.unwrap(), SyncEnd::Idle);
+        assert_eq!(state.best_header().hash, genesis.hash());
+    }
+
+    #[test]
     fn a_peer_that_stops_reading_ends_at_the_write_timeout() {
         let magic = regtest().params.magic;
         let pings: Vec<u8> = (0..4096u64).flat_map(|nonce| encode_message(magic, "ping", &nonce.to_le_bytes())).collect();
         // From the first getheaders on, the peer only sends pings, so the node's pongs pile up.
-        let address = scripted_peer(move |stream, message| {
+        let address = scripted_peer(Vec::new(), move |stream, message| {
             if message.command == "getheaders" {
                 while stream.write_all(&pings).is_ok() {}
             }
