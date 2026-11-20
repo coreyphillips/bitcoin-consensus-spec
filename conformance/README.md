@@ -169,7 +169,9 @@ failure fails the run as before, and so does a corpus file the runner cannot rea
 list says. An entry that names no failure, in a suite that ran, is printed as `STALE` and fails the
 run, so the list shrinks as the implementation is fixed and never hides a check that passes. When
 the entry is the start of a name that failed, the `STALE` line shows that name. Entries of suites
-that did not run are ignored, so one file can serve runs that select different suites.
+that did not run are ignored, so one file can serve runs that select different suites. So are
+those of a suite that stopped on an error, such as a `--corpus` path that does not exist: the
+error fails the run, and the entries are checked on the next run that gets past it.
 
 ## Generating derived vectors
 
