@@ -35,6 +35,7 @@ fn a_fence_inside_a_block_quote_fails() {
         ">```rust",
         "> > ```rust",
         "  >   ```rust",
+        "  >\t   ```rust",
         "> ~~~rust",
         "- > ```rust",
         "1. > ```rust",
@@ -52,8 +53,13 @@ fn a_fence_inside_a_block_quote_fails() {
 }
 
 #[test]
-fn indented_code_in_a_block_quote_is_not_a_fence() {
-    assert_eq!(extract(">     ```rust\n>     fn a() {}\n>     ```\n").unwrap(), "");
+fn a_fence_in_a_quoted_list_continuation_fails() {
+    for marker in ["rust", "Rust"] {
+        let text = format!("> - An item\n>\n>     ```{marker}\n>     pub fn a() {{}}\n>     ```\n");
+        let error = extract(&text).unwrap_err();
+        assert!(error.starts_with("spec/99-test.md:3: "), "{marker}: {error}");
+        assert!(error.contains("block quote"), "{marker}: {error}");
+    }
 }
 
 #[test]

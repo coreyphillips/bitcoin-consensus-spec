@@ -76,23 +76,20 @@ pub(crate) fn extract(text: &str, file_name: &str) -> Result<String, String> {
         if opened_at.is_none() {
             // A fence in a block quote, even one in a list item, still opens a code block, but the
             // checks below would not see it. Inside an open block the same line is only code.
+            // Indentation is ignored: one line cannot show whether four spaces after `>` start
+            // indented code or continue a list item, so quoted indented code that starts with
+            // backticks fails too.
             let mut unquoted = trimmed;
             let mut quoted = false;
             loop {
                 if let Some(rest) = unquoted.strip_prefix('>') {
                     quoted = true;
-                    unquoted = rest.strip_prefix(' ').unwrap_or(rest);
+                    unquoted = rest.trim_start();
                 } else if let Some(rest) = after_list_marker(unquoted) {
-                    unquoted = &rest[1..];
+                    unquoted = rest.trim_start();
                 } else {
                     break;
                 }
-                // Four more spaces start an indented code block, whose backticks are literal.
-                let content = unquoted.trim_start();
-                if unquoted.len() - content.len() >= 4 {
-                    break;
-                }
-                unquoted = content;
             }
             let fence = unquoted.starts_with("```") || unquoted.starts_with("~~~");
             if fence && quoted {
