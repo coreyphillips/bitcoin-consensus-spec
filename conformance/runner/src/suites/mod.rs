@@ -661,4 +661,27 @@ mod tests {
         assert_eq!(stale.len(), 1);
         assert_eq!(stale[0].location, "row 7");
     }
+
+    /// Every file of the vendored directories is listed in `vectors/SHA256SUMS`, and has the hash
+    /// recorded there (the hash of the file at its pinned upstream commit).
+    #[test]
+    fn vendored_vectors_match_sha256sums() {
+        let vectors = Path::new(env!("CARGO_MANIFEST_DIR")).join("../vectors");
+        let sums = std::fs::read_to_string(vectors.join("SHA256SUMS")).unwrap();
+        let mut listed = std::collections::BTreeSet::new();
+        for line in sums.lines() {
+            let (sha, name) = line.split_once("  ").expect("`<sha256>  <path>` lines");
+            let got = derived::sha256_file(&vectors.join(name)).unwrap();
+            assert_eq!(got, sha, "{name} is not the pinned upstream file");
+            assert!(listed.insert(name.to_string()), "{name} is listed twice");
+        }
+        let mut present = std::collections::BTreeSet::new();
+        for dir in ["core", "qa-assets", "bip340"] {
+            for entry in std::fs::read_dir(vectors.join(dir)).unwrap() {
+                let name = entry.unwrap().file_name();
+                present.insert(format!("{dir}/{}", name.to_string_lossy()));
+            }
+        }
+        assert_eq!(listed, present, "SHA256SUMS must list exactly the vendored files");
+    }
 }
