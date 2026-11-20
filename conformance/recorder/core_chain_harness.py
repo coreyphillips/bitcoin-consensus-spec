@@ -418,18 +418,37 @@ class Harness:
         return None
 
 
+def reject_constant(name):
+    raise ValueError("%s is not JSON" % name)
+
+
+def parse_request(raw):
+    """The request object and its id. A BadRequest from here is answered with a null id and
+    nothing runs (PROTOCOL.md section 2)."""
+    try:
+        req = json.loads(raw.decode("utf-8"), parse_constant=reject_constant)
+    except (ValueError, RecursionError) as e:
+        raise BadRequest("request is not a JSON object: %s" % e)
+    if not isinstance(req, dict):
+        raise BadRequest("request is not a JSON object")
+    rid = req.get("id")
+    # bool is a subclass of int, and json reads 1.0 and 1e400 as floats.
+    if type(rid) is not int or not -(1 << 63) <= rid < (1 << 63):
+        raise BadRequest("id must be a signed 64-bit integer")
+    return req, rid
+
+
 def main():
     h = Harness()
     out = sys.stdout
     try:
-        for line in sys.stdin:
-            line = line.strip()
-            if not line:
+        # Bytes, so that a line that is not UTF-8 gets a bad_request instead of ending the loop.
+        for raw in sys.stdin.buffer:
+            if not raw.strip():
                 continue
             rid = None
             try:
-                req = json.loads(line)
-                rid = req.get("id")
+                req, rid = parse_request(raw)
                 res = h.handle(req)
                 if res is None:
                     resp = {"id": rid, "ok": False, "error": "unsupported_op", "message": str(req.get("op"))}
