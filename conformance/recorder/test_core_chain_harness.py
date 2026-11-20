@@ -63,6 +63,7 @@ class RequestIdTest(unittest.TestCase):
             (b'{"id":2.5,' + signet + b"}", None),
             (b'{"id":9223372036854775808,' + signet + b"}", None),
             (b'{"id":NaN,' + signet + b"}", None),
+            (b'{"id":NaN,"id":2,' + signet + b"}", None),
             (b'{"id":1e400,"op":"chain_tip"}', None),
             (b'{"id":3,"op":"chain_tip","x":"\xff"}', None),
             (b"[1]", None),
