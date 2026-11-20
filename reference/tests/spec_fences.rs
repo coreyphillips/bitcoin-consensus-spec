@@ -28,7 +28,18 @@ fn a_mistyped_opening_fence_fails() {
 
 #[test]
 fn a_fence_inside_a_block_quote_fails() {
-    for opening in ["> ```rust", "> ```Rust", "> ```text", ">```rust", "> > ```rust", "  >   ```rust", "> ~~~rust"] {
+    for opening in [
+        "> ```rust",
+        "> ```Rust",
+        "> ```text",
+        ">```rust",
+        "> > ```rust",
+        "  >   ```rust",
+        "> ~~~rust",
+        "- > ```rust",
+        "1. > ```rust",
+        "> * ```rust",
+    ] {
         let text = format!("> prose\n{opening}\n> fn a() {{}}\n> ```\n");
         match extract(&text) {
             Err(error) => {
@@ -38,6 +49,11 @@ fn a_fence_inside_a_block_quote_fails() {
             Ok(code) => panic!("{opening} was accepted and gave {code:?}"),
         }
     }
+}
+
+#[test]
+fn indented_code_in_a_block_quote_is_not_a_fence() {
+    assert_eq!(extract(">     ```rust\n>     fn a() {}\n>     ```\n").unwrap(), "");
 }
 
 #[test]

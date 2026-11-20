@@ -74,14 +74,28 @@ pub(crate) fn extract(text: &str, file_name: &str) -> Result<String, String> {
         let at = format!("spec/{file_name}:{number}");
         let trimmed = line.trim_start();
         if opened_at.is_none() {
-            // A fence behind `>` markers still opens a code block, but the checks below would not
-            // see it. Inside an open block the same line is only code.
+            // A fence in a block quote, even one in a list item, still opens a code block, but the
+            // checks below would not see it. Inside an open block the same line is only code.
             let mut unquoted = trimmed;
-            while let Some(rest) = unquoted.strip_prefix('>') {
-                unquoted = rest.trim_start();
+            let mut quoted = false;
+            loop {
+                if let Some(rest) = unquoted.strip_prefix('>') {
+                    quoted = true;
+                    unquoted = rest.strip_prefix(' ').unwrap_or(rest);
+                } else if let Some(rest) = after_list_marker(unquoted) {
+                    unquoted = &rest[1..];
+                } else {
+                    break;
+                }
+                // Four more spaces start an indented code block, whose backticks are literal.
+                let content = unquoted.trim_start();
+                if unquoted.len() - content.len() >= 4 {
+                    break;
+                }
+                unquoted = content;
             }
             let fence = unquoted.starts_with("```") || unquoted.starts_with("~~~");
-            if fence && unquoted.len() < trimmed.len() {
+            if fence && quoted {
                 return Err(format!("{at}: code blocks must not be inside a block quote"));
             }
             if trimmed.starts_with("~~~") {
@@ -132,6 +146,18 @@ pub(crate) fn extract(text: &str, file_name: &str) -> Result<String, String> {
         return Err(format!("spec/{file_name}:{opened}: code block is never closed"));
     }
     Ok(out)
+}
+
+/// Returns what follows a list item marker (`-`, `*`, `+`, `1.` or `1)`), starting with the space
+/// or tab a marker needs.
+fn after_list_marker(line: &str) -> Option<&str> {
+    let digits = line.len() - line.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let rest = match digits {
+        0 => line.strip_prefix(['-', '*', '+'])?,
+        1..=9 => line[digits..].strip_prefix(['.', ')'])?,
+        _ => return None,
+    };
+    rest.starts_with([' ', '\t']).then_some(rest)
 }
 
 /// `05-script-execution` becomes `ch05_script_execution`; `A-quirks` becomes `appendix_a_quirks`.
