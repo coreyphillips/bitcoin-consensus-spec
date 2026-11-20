@@ -30,7 +30,7 @@ A pull request that changes `spec/`, `reference/`, the runner, the vectors or th
 
 ## Changing the specification
 
-- Code in a fenced block whose info string is `rust` is the reference (`reference/build.rs` compiles it). A `text` block is not compiled, and any other fence fails the build.
+- Code in a fenced block whose info string is `rust` is the reference (`reference/build.rs` compiles it). A `text` block is not compiled, and any other fence fails the build. So does a fence inside a block quote.
 - A normative definition names the Bitcoin Core function and file it mirrors in a `Core:` line (chapter 01 section 1.1).
 - A place where a natural implementation differs from Core gets an Appendix A item and a mutant that breaks it.
 - The first change to `spec/` after a version tag moves `spec/VERSION` to the next revision, states it in `README.md` and chapter 00, and opens its entry in `CHANGELOG.md`. Later changes add a line to that entry (`README.md`, "Updating").

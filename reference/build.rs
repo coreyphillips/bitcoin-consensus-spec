@@ -7,7 +7,7 @@
 //!
 //! Blocks marked `text` are not compiled. Any other fence fails the build, because a block opened
 //! with `Rust`, `rs`, no info string, tildes or four backticks would otherwise drop out of the
-//! crate unnoticed.
+//! crate unnoticed. A fence inside a block quote fails the build for the same reason.
 
 use std::{env, fs, path::Path};
 
@@ -60,7 +60,8 @@ fn main() {
 
 /// Returns the normative Rust code of one chapter, with a comment pointing at the source line of
 /// every block so compiler messages can be traced back to the document. Fails on any fence it
-/// cannot classify as opening a `rust` block, opening a `text` block, or closing a block.
+/// cannot classify as opening a `rust` block, opening a `text` block, or closing a block, and on
+/// any fence that opens a block inside a block quote.
 ///
 /// `tests/spec_fences.rs` includes this file to test this function.
 pub(crate) fn extract(text: &str, file_name: &str) -> Result<String, String> {
@@ -72,8 +73,20 @@ pub(crate) fn extract(text: &str, file_name: &str) -> Result<String, String> {
         let number = index + 1;
         let at = format!("spec/{file_name}:{number}");
         let trimmed = line.trim_start();
-        if opened_at.is_none() && trimmed.starts_with("~~~") {
-            return Err(format!("{at}: open code blocks with three backticks, not tildes"));
+        if opened_at.is_none() {
+            // A fence behind `>` markers still opens a code block, but the checks below would not
+            // see it. Inside an open block the same line is only code.
+            let mut unquoted = trimmed;
+            while let Some(rest) = unquoted.strip_prefix('>') {
+                unquoted = rest.trim_start();
+            }
+            let fence = unquoted.starts_with("```") || unquoted.starts_with("~~~");
+            if fence && unquoted.len() < trimmed.len() {
+                return Err(format!("{at}: code blocks must not be inside a block quote"));
+            }
+            if trimmed.starts_with("~~~") {
+                return Err(format!("{at}: open code blocks with three backticks, not tildes"));
+            }
         }
         let Some(rest) = trimmed.strip_prefix("```") else {
             if normative {
