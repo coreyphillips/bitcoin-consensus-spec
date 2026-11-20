@@ -23,6 +23,8 @@ jobs:
       # does not have; the full audit runs in extended.yml.
       - name: Appendix A items without a mutant
         run: python3 conformance/mutation/run.py --items
+      - name: Core chain harness request loop, with bitcoind stubbed
+        run: python3 -m unittest discover -s conformance/recorder
       - name: No em or en dash characters
         run: |
           if grep -rnI --exclude-dir=target --exclude-dir=.git -e "$(printf '\xe2\x80\x94')" -e "$(printf '\xe2\x80\x93')" . ; then
