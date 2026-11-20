@@ -380,7 +380,7 @@ pub fn is_push_only(script: &[u8]) -> bool {
 
 ## 4.8 OP_SUCCESS opcodes
 
-BIP342 redefines a set of unused or disabled opcodes in tapscript as `OP_SUCCESSx`: the mere presence of one makes a tapscript succeed (chapter 05). The set is 80, 98, 126 to 129, 131 to 134, 137, 138, 141, 142, 149 to 153, and 187 to 254. (Core: `IsOpSuccess`, `src/script/script.cpp`.)
+BIP342 redefines a set of unused or disabled opcodes in tapscript as `OP_SUCCESSx`: the mere presence of one makes a tapscript succeed (chapter 07 section 7.2). The set is 80, 98, 126 to 129, 131 to 134, 137, 138, 141, 142, 149 to 153, and 187 to 254. (Core: `IsOpSuccess`, `src/script/script.cpp`.)
 
 ```rust
 /// Core: `IsOpSuccess`.

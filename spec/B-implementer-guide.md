@@ -47,6 +47,8 @@ Every optimization below has caused a consensus failure in some implementation. 
 | Fast paths for common scripts | Templates such as pay-to-public-key-hash must still apply every interpreter rule: push size limits, `FindAndDelete`, strict DER only under `DERSIG`, lax DER always, high-S accepted. The simplest safe fast path is no fast path. |
 | Deduplicating transactions by txid | Two transactions with the same txid can differ in witness data; only the one in the block counts. |
 
+Some of the specification's code is slower than Bitcoin Core in ways a crafted transaction can exploit. It rehashes a taproot input's `SIGHASH_SINGLE` output for every signature check, where Bitcoin Core hashes it once per input (chapter 06 section 6.5).
+
 ## B.5 Handing this specification to an AI
 
 The specification was written so that an AI system can implement it. In our experience the following prompt works; adapt the language and architecture to taste.

@@ -1107,7 +1107,7 @@ Three details of the code above deserve attention:
 
 - The opcode position used by `OP_CODESEPARATOR` advances only at the end of a completed operation, so the first operation is position 0, exactly as in Bitcoin Core's loop.
 - `OP_PICK` and `OP_ROLL` require two elements before popping n, then require n to index the remaining stack.
-- `OP_CHECKSIG` copies its two operands before popping them; `OP_CHECKMULTISIG` checks signatures against the stack in place and pops at the end, after the `NULLDUMMY` check of the dummy.
+- `OP_CHECKSIG` copies its two operands before popping them; `OP_CHECKMULTISIG` checks signatures against the stack in place and pops only at the end: its operands first, then the `NULLDUMMY` check, then the dummy.
 
 ## 5.7 Arithmetic results
 

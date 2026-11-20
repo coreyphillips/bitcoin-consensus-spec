@@ -35,14 +35,14 @@ Every item below is a place where a natural implementation differs from Bitcoin 
 | 17 | The 520-byte push limit applies to pushes in non-executed branches. | 05 section 5.6 |
 | 18 | The 1,000-element limit counts main plus alternate stack after **every** operation, including pushes. | 05 section 5.6 |
 | 19 | Script numbers: 4-byte operands (5 for CLTV/CSV), non-minimal encodings accepted, negative zero is zero and false, results may be 5 bytes. | 04 sections 4.5 and 4.6 |
-| 20 | Number decoding failures report `SCRIPTNUM` in Bitcoin Core v32.1, not `UNKNOWN_ERROR`. (Which release made this change cannot be confirmed from the v32.1 source tree.) | 05 section 5.2 |
+| 20 | Number decoding failures report `SCRIPTNUM` in Bitcoin Core v32.1, not `UNKNOWN_ERROR`. | 05 section 5.2 |
 | 21 | `CHECKMULTISIG` pops one extra element (the dummy); with `NULLDUMMY` it must be empty. | 05 section 5.6 |
 | 22 | FindAndDelete removes the signature from the script code in legacy scripts only, at operation boundaries, repeatedly; an empty signature in CHECKMULTISIG removes every `OP_0` operation. | 06 section 6.2.1, 05 section 5.5.3 |
 | 23 | Legacy sighash serializes the script code with `OP_CODESEPARATOR`s removed; BIP143 does not. | 06 sections 6.2.2, 6.3 |
 | 24 | Any hash type byte is valid in legacy and BIP143 hashing, including 0 and undefined values. | 06 section 6.1 |
 | 25 | In tapscript, `OP_SUCCESSx` anywhere in a parsable prefix makes the script succeed before any limit is checked; a parse error before it fails. | 07 section 7.2 |
 | 26 | Tapscript `OP_IF` arguments must be empty or exactly `0x01`. | 05 section 5.6 |
-| 27 | Tapscript: empty public key fails; unknown public key types (not 32 bytes) succeed; non-empty signatures spend validation weight even for unknown key types. | 05 section 5.5.4 |
+| 27 | Tapscript: empty public key fails; unknown public key types (not 32 bytes) are not checked, giving true with a non-empty signature and false with an empty one; non-empty signatures spend validation weight even for unknown key types. | 05 section 5.5.4 |
 | 28 | Tapscript validation budget is the serialized size of the **whole** witness (including annex, script, control block) plus 50. | 05 section 5.8, 07 section 7.3 |
 | 29 | A 65-byte Schnorr signature with hash type 0 is invalid. | 05 section 5.5.2 |
 | 30 | `OP_CODESEPARATOR` positions count every operation, starting at 0. | 05 section 5.6 |
@@ -94,7 +94,7 @@ Every item below is a place where a natural implementation differs from Bitcoin 
 | 61 | Testnet4 (BIP94) retargets from the period's **first** block's bits and limits timestamps at period starts. | 09 sections 9.5, 9.6 |
 | 62 | Regtest allows minimum-difficulty blocks and never retargets. | 12 section 12.2 |
 | 63 | Median time past takes the upper median of fewer than 11 blocks near genesis. | 09 section 9.4 |
-| 64 | No checkpoints: Bitcoin Core v32.1 enforces none. (Which release removed them cannot be confirmed from the v32.1 source tree.) | 10 section 10.4 |
+| 64 | No checkpoints: Bitcoin Core v32.1 enforces none. | 10 section 10.4 |
 | 65 | Deployment heights can be overridden on every network except mainnet (testing). | 12 section 12.5 |
 
 ## Chain state

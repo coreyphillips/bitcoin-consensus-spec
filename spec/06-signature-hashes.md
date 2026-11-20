@@ -386,4 +386,5 @@ pub fn signature_hash_schnorr(
 
 - The legacy and BIP143 algorithms take the hash type as a signed 32-bit value because Bitcoin Core's function does; in consensus it always comes from one signature byte (0 to 255). Test vectors exercise the full 32-bit range, including negative values whose low bits still select the behaviour above.
 - A signature hash cache (Bitcoin Core keeps one per input, keyed by the hash type class and the script code) must be invisible: it may only reuse a prefix of the preimage that is byte-for-byte identical.
+- Taproot's `sha_single_output` depends only on the input, and Bitcoin Core computes it once per input (`ScriptExecutionData::m_output_hash`). The code above rehashes the output on every signature check. The hash is the same, but a tapscript can make thousands of `SIGHASH_SINGLE` checks against an output of hundreds of kilobytes, so a node should cache it as Core does.
 - Taproot's `sha_annex` covers the annex *including* its CompactSize length; the annex itself includes its leading `0x50` byte.
