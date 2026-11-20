@@ -14,7 +14,9 @@ body:
       label: Failing input
       description: >-
         The block, transaction or script as hex, or the `conformance/PROTOCOL.md` request line.
-        Give the network and any options (activation heights, `-test=bip94`). Attach a file if it is large.
+        Give the network and any options (activation heights, `-test=bip94`).
+        When the answer depends on chain state, give every block or request from `chain_reset` on.
+        Attach a file if it is large.
     validations:
       required: true
   - type: textarea

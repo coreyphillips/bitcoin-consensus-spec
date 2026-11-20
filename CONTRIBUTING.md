@@ -49,6 +49,8 @@ The files in `core/`, `qa-assets/` and `bip340/` are byte-identical to their ups
 
 Then put the test's SHA-256 in `conformance/recorder/pins.json`, which the recorder checks before it runs a test. Run `make -C conformance/recorder all CORE_SRC=/path/to/bitcoin-v32.1` with a fresh `WORK` directory, since recordings already in `WORK` are reused. The `image` stage builds `extra/` and `pins.json` into the image, and the `corpus` stage replaces every file in `VECTORS`. `make all` fails unless every normative check replays identically through a fresh v32.1 node. Commit the new corpus files and `REPORT.md`, and update the counts as for a vector.
 
+The mined scenarios in `conformance/vectors/chainwork`, `mtp` and `signet` (`generate_blocks.py`) come from a generator script instead. The script states each check's expected tip, and the file is kept only once it passes a replay through `recorder/core_chain_harness.py` (the command is in that directory's `README.md`). A new directory of them also goes in `corpus_suite_paths` in `conformance/runner/src/main.rs`.
+
 ## Adding a mutant
 
 A mutant is one entry in `conformance/mutation/mutants.json`:
