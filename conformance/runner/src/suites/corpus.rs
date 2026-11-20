@@ -264,6 +264,8 @@ pub struct FileResult {
     pub events: u64,
     pub checks: u64,
     pub normative: u64,
+    /// Normative checks that compare the chain work too.
+    pub chainwork: u64,
     pub l0_fail: u64,
     /// Normative checks that failed as `--known-failures` says (not in `l0_fail`).
     pub l0_known: u64,
@@ -609,6 +611,7 @@ pub fn replay_file(
                 }
                 if normative {
                     r.normative += 1;
+                    r.chainwork += u64::from(want_work.is_some());
                     if !matched && crate::known::take("corpus", &format!("{name} check {n}")) {
                         r.l0_known += 1;
                         if ctx.verbose {
@@ -795,8 +798,35 @@ pub fn run(
         "corpus file", "checks", "L0 normat.", "L0 other", "L1 tips", "L2 utxo", "errors", "time"
     ));
     let mut totals = FileResult::default();
+    let mut summary = Vec::new();
     for file in &files {
         let fr = replay_file(ctx, file, restart_shortcut, fail_on_tips);
+        // The directory says which kind of scenario a file is (blocks/ holds the recorded runs).
+        let dir = file
+            .parent()
+            .and_then(Path::file_name)
+            .map(|d| d.to_string_lossy().into_owned());
+        summary.push(json!({
+            "name": fr.name,
+            "dir": dir,
+            "events": fr.events,
+            "checks": fr.checks,
+            "normative": fr.normative,
+            "normative_failed": fr.l0_fail,
+            "normative_known": fr.l0_known,
+            "chainwork": fr.chainwork,
+            "other": fr.l0_other,
+            "other_failed": fr.l0_other_fail,
+            "tips": fr.l1,
+            "tips_failed": fr.l1_fail,
+            "tips_known": fr.l1_known,
+            "utxo": fr.l2,
+            "utxo_failed": fr.l2_fail,
+            "restarts": fr.restarts,
+            "restarts_skipped": fr.restarts_skipped,
+            "redelivered": fr.redelivered,
+            "errors": fr.errors.len(),
+        }));
         let frac = |pass: u64, all: u64| format!("{}/{}", pass, all);
         ctx.stats.details.push(format!(
             "{:<44} {:>7} {:>11} {:>11} {:>9} {:>9} {:>6} {:>7.1}s",
@@ -873,6 +903,9 @@ pub fn run(
             *totals.outcomes.entry(k).or_default() += v;
         }
     }
+    ctx.stats
+        .summary
+        .insert("files".into(), Value::Array(summary));
     ctx.stats.details.push(format!(
         "{:<44} {:>7} {:>11} {:>11} {:>9} {:>9}",
         format!("total ({} files, {} events)", files.len(), totals.events),

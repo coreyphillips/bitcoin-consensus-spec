@@ -35,7 +35,9 @@ jobs:
       # The README promises identical error identifiers, UTXO set hashes and
       # chain tip sets, which fail the run only with these two flags.
       - name: Conformance suite against the reference
-        run: ./target/release/bcs-conformance --impl ./target/release/reference-harness --fail-on-level2 --fail-on-tips
+        run: ./target/release/bcs-conformance --impl ./target/release/reference-harness --fail-on-level2 --fail-on-tips --json "$RUNNER_TEMP/conformance.json"
+      - name: Suite counts in README.md and RESULTS.md match the run
+        run: python3 .github/check_doc_numbers.py "$RUNNER_TEMP/conformance.json"
       # Fails when a mutant names no Appendix A item or a number Appendix A
       # does not have; the full audit runs in extended.yml.
       - name: Appendix A items without a mutant

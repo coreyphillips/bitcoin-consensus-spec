@@ -114,7 +114,8 @@ every suite marked `default` by `bcs-conformance suites`: the vector suites, `cu
 `headers-live`, `interop` and `peer-sync` need extra arguments and run only when named. Options: `--vectors DIR`
 (default `conformance/vectors`), `--derived DIR` (default `<vectors>/derived`), `--timeout SECS` per
 response (default 120; a harness that dies or stalls is restarted, at most 5 times),
-`--fail-on-level2`, `--fail-on-tips` (corpus level 1, below).
+`--fail-on-level2`, `--fail-on-tips` (corpus level 1, below), `--json FILE` (the table's counts and
+each corpus file's, as JSON).
 
 Output is one table row per suite: `cases` (checks performed), `passed`, `failed` (level 1),
 `level2`, `l2-checked`, `unsupp.`. Below the table come rows without a check in the chosen mode,
