@@ -158,9 +158,10 @@ impl<'a> Parser<'a> {
                 if text.is_empty() {
                     return Err(format!("unexpected character at {}", start));
                 }
-                // JSON forbids `+1`, `01` and `.5`, and Rust's number parsing accepts them.
+                // JSON forbids `+1`, `01`, `.5` and `1.`, and Rust's number parsing accepts them.
                 let int = text.strip_prefix('-').unwrap_or(text).as_bytes();
-                if !int.first().is_some_and(u8::is_ascii_digit) || (int[0] == b'0' && int.get(1).is_some_and(u8::is_ascii_digit)) {
+                let empty_frac = text.split_once('.').is_some_and(|(_, frac)| !frac.starts_with(|c: char| c.is_ascii_digit()));
+                if !int.first().is_some_and(u8::is_ascii_digit) || (int[0] == b'0' && int.get(1).is_some_and(u8::is_ascii_digit)) || empty_frac {
                     return Err(format!("bad number {text}"));
                 }
                 if let Ok(v) = text.parse::<i128>() {
