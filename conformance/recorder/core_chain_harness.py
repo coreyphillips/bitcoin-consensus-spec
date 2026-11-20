@@ -355,7 +355,9 @@ class Harness:
     def handle(self, req):
         op = req.get("op")
         if op == "info":
-            return {"name": "bitcoin-core-chain-harness", "version": core_version(), "spec_version": "v32.1-1", "ops": OPS}
+            # A harness that wraps Bitcoin Core reports the Core release, not a specification
+            # revision (PROTOCOL.md section 4.1).
+            return {"name": "bitcoin-core-chain-harness", "version": core_version(), "spec_version": "v32.1", "ops": OPS}
         if op == "chain_reset":
             network = req.get("network", "regtest")
             options = req.get("options") or {}

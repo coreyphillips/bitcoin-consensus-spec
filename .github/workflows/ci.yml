@@ -3,9 +3,20 @@ name: ci
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
 jobs:
+  spec-version:
+    runs-on: ubuntu-latest
+    steps:
+      # The check compares spec/ with the newest version tag, which a shallow checkout lacks.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Specification version consistent, and bumped after spec/ changes
+        run: python3 .github/check_spec_version.py
+
   reference:
     runs-on: ubuntu-latest
     steps:

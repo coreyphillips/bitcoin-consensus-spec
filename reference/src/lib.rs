@@ -7,3 +7,6 @@
 #![allow(dead_code)]
 
 include!(concat!(env!("OUT_DIR"), "/chapters.rs"));
+
+/// The specification version this crate was built from, as written in `spec/VERSION`.
+pub const SPEC_VERSION: &str = env!("BCS_SPEC_VERSION");

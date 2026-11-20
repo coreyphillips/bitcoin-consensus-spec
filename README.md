@@ -2,7 +2,7 @@
 
 An executable specification of Bitcoin's consensus rules, precise enough that a person or an AI system can build, from this document alone, a node that agrees with Bitcoin Core on every block.
 
-- **Pinned to Bitcoin Core v32.1** (commit `f0de87f040621468b956f01f526a43a010310501`). Specification version `v32.1-1`.
+- **Pinned to Bitcoin Core v32.1** (commit `f0de87f040621468b956f01f526a43a010310501`). Specification version `v32.1-3` (changes in `CHANGELOG.md`).
 - **Prose plus executable Rust.** Every chapter explains the rules and defines them in Rust code blocks. `reference/build.rs` extracts those blocks into a crate, so the document itself compiles, runs, and is tested against Bitcoin Core.
 - **Bitcoin Core is the ground truth.** Every rule names the Bitcoin Core function it mirrors, including the surprising ones. Appendix A lists 79 quirks that independent implementations have gotten wrong.
 - **Conformance suite.** A JSON-lines protocol lets any implementation, in any language, be tested against Bitcoin Core's own test vectors, recorded Bitcoin Core block scenarios, and live Bitcoin Core nodes. A live node can also be made to synchronize every recorded scenario from the runner itself, including the blocks Bitcoin Core rejects.
@@ -104,6 +104,8 @@ No test suite proves the absence of divergence. This specification and its suite
 ## Updating
 
 When Bitcoin Core changes consensus, a new specification version is cut against the new release: diff the consensus code between the two tags, update the affected chapters and Appendix A, regenerate the derived vectors with the oracle built from the new tag, and re-record the block corpus.
+
+`spec/VERSION` holds the specification version; `reference-harness` reports it, and this README and chapter 00 state it. The first change to `spec/` after a version tag moves `spec/VERSION` to the next revision and opens its entry in `CHANGELOG.md`; later changes add to that entry. Tag the revision with the same name. CI runs `.github/check_spec_version.py`, which fails when the stated versions disagree, when `spec/` has changed since the newest tag without a new revision, or when a tag names a different version than `spec/VERSION`.
 
 ## License
 

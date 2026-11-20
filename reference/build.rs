@@ -16,6 +16,16 @@ fn main() {
     let spec_dir = Path::new(&manifest).join("..").join("spec");
     println!("cargo:rerun-if-changed={}", spec_dir.display());
 
+    let version_file = spec_dir.join("VERSION");
+    println!("cargo:rerun-if-changed={}", version_file.display());
+    let version = fs::read_to_string(&version_file).expect("spec/VERSION");
+    let version = version.trim();
+    assert!(
+        !version.is_empty() && !version.contains(char::is_whitespace),
+        "spec/VERSION must hold one version, for example v32.1-3"
+    );
+    println!("cargo:rustc-env=BCS_SPEC_VERSION={version}");
+
     let mut chapters: Vec<_> = fs::read_dir(&spec_dir)
         .expect("spec directory")
         .filter_map(|e| e.ok())
