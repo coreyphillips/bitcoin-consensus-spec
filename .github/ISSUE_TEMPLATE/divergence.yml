@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        If a block or transaction on mainnet, testnet3, testnet4 or signet could trigger it, do not file it here: report it privately as SECURITY.md describes.
+        If a block, header or transaction on mainnet, testnet3, testnet4 or signet could trigger it, do not file it here: report it privately as SECURITY.md describes.
 
         Run `reference-harness` on the same input first (Appendix B section B.6). If the reference agrees with Bitcoin Core, the defect is in your implementation, not the specification.
   - type: textarea
@@ -16,6 +16,7 @@ body:
         The block, transaction or script as hex, or the `conformance/PROTOCOL.md` request line.
         Give the network and any options (activation heights, `-test=bip94`).
         When the answer depends on chain state, give every block or request from `chain_reset` on.
+        Public chain history can be named by its network and last block hash instead.
         Attach a file if it is large.
     validations:
       required: true

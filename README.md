@@ -99,7 +99,7 @@ Appendix B section B.5 contains a prompt for handing this repository to an AI sy
 
 In scope: everything that decides block and transaction validity and chain selection on mainnet, testnet3, testnet4, signet and regtest; the peer-to-peer subset needed to synchronize with Bitcoin Core. Out of scope: transaction relay policy and the mempool, mining, wallets, RPC, BIP324 encrypted transport.
 
-No test suite proves the absence of divergence. This specification and its suites are strong evidence, built from Bitcoin Core's own tests and code, not a proof. Report a disagreement with Bitcoin Core v32.1 as a defect (Appendix B section B.6), with the failing input. Use the issue template, or report it privately as `SECURITY.md` describes when a block or transaction on a public network could trigger it.
+No test suite proves the absence of divergence. This specification and its suites are strong evidence, built from Bitcoin Core's own tests and code, not a proof. Report a disagreement with Bitcoin Core v32.1 as a defect (Appendix B section B.6), with the failing input. Use the issue template, or report it privately as `SECURITY.md` describes when a block, header or transaction on a public network could trigger it.
 
 ## Updating
 

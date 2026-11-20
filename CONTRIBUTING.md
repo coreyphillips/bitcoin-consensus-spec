@@ -4,7 +4,7 @@ Every expectation in this repository is Bitcoin Core v32.1's answer: from Core's
 
 The exception is the constructed cases in `conformance/vectors/block-connect`. The oracle cannot run `ConnectBlock`, so their verdicts follow its source, as that directory's `README.md` explains.
 
-Report a disagreement with Bitcoin Core with an issue template, or privately as `SECURITY.md` describes when a block or transaction on a public network could trigger it.
+Report a disagreement with Bitcoin Core with an issue template, or privately as `SECURITY.md` describes when a block, header or transaction on a public network could trigger it.
 
 ## Before opening a pull request
 

@@ -2,4 +2,4 @@ blank_issues_enabled: true
 contact_links:
   - name: Divergence on a public network
     url: https://github.com/coreyphillips/bitcoin-consensus-spec/blob/main/SECURITY.md
-    about: A block or transaction on mainnet, testnet or signet that could trigger it is reported privately.
+    about: A block, header or transaction on mainnet, testnet or signet that could trigger it is reported privately.
