@@ -24,6 +24,7 @@
 //! as `<file> check <n> tips` and a file's errors as `<file> errors from event <n>`, `<n>` being
 //! the event whose replay recorded the first one. No entry waives the errors of a file with a
 //! defect: the file or a block sidecar cannot be read, or an event cannot be replayed as it stands.
+//! The events a stopped replay leaves are still read for defects, though not sent.
 
 use crate::check::{short_hash, shorten, Ctx};
 use crate::hex;
@@ -564,10 +565,22 @@ pub fn replay_file(
             // Every check left is counted at each of its levels and fails there, as a failed call
             // would: an entry waiving the file's errors must not pass the checks the stop leaves
             // unchecked. Each takes the entry that would waive it had it been replayed.
+            // Every chain event left is still built, though not sent, so that a defect past the
+            // stop, such as a missing sidecar, fails the file whatever the list waives. A restart
+            // before any reset is not looked for: whether it is one depends on the options the
+            // replay never reached.
             let reached = r.checks;
             for (i, ev) in events.iter().enumerate().skip(idx) {
-                if ev["type"] == "check" {
-                    skip_check(ctx, &mut r, i, ev, fail_on_tips, &mut printed);
+                match ev["type"].as_str().unwrap_or("") {
+                    "check" => skip_check(ctx, &mut r, i, ev, fail_on_tips, &mut printed),
+                    kind @ ("block" | "headers" | "invalidate") => {
+                        if let Err(e) = event_request(ev, &base) {
+                            r.push_defect(format!("event {i} {kind}: {e}"));
+                        }
+                    }
+                    "reset" | "restart" => {}
+                    "meta" => r.push_defect(format!("event {i}: a second meta event")),
+                    other => r.push_defect(format!("event {i}: unknown event type {other:?}")),
                 }
             }
             r.stopped_at = Some(idx);
@@ -1365,10 +1378,6 @@ done"#;
         );
         assert_eq!(r.first_error_event, Some(2), "{:?}", r.errors);
         assert_eq!(r.errors_location(), "late errors from event 2");
-        let waived = |r: &FileResult, list: &str| {
-            let mut k = crate::known::Known::parse(Path::new("k"), list, &["corpus"]).unwrap();
-            r.errors_waived(&mut |name| k.take("corpus", name))
-        };
         assert!(waived(&r, "corpus late errors"));
         assert!(waived(&r, "corpus late errors from event 2"));
         assert!(!waived(&r, "corpus late errors from event 1"));
@@ -1393,34 +1402,48 @@ done"#;
         assert_eq!(r.errors_location(), "last errors from event 0");
     }
 
-    #[test]
-    fn no_entry_waives_errors_the_file_caused() {
+    /// The regtest genesis block, and a block event that reads it from `blobs/genesis.gz`.
+    fn genesis_blob_event() -> (Vec<u8>, Value) {
         let raw = hex::decode(GENESIS).unwrap();
         let block = json!({"type": "block", "hash": GENESIS_HASH, "blob": "blobs/genesis.gz",
                            "sha256": hex::encode(&Sha256::digest(&raw)), "size": raw.len(),
                            "now": 1});
+        (raw, block)
+    }
+
+    /// Writes `blob` as the sidecar of `genesis_blob_event`, gzipped, then replays the file and
+    /// runs the suite over it.
+    fn with_blob(
+        name: &str,
+        events: &[Value],
+        blob: Option<&[u8]>,
+    ) -> (FileResult, crate::check::Stats) {
+        with_file(name, events, |ctx, path| {
+            let dir = path.parent().unwrap().join("blobs");
+            std::fs::create_dir_all(&dir).unwrap();
+            if let Some(bytes) = blob {
+                let file = std::fs::File::create(dir.join("genesis.gz")).unwrap();
+                let mut gz = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
+                gz.write_all(bytes).unwrap();
+                gz.finish().unwrap();
+            }
+            let r = replay_file(ctx, path, false, false);
+            run(ctx, &[path.to_path_buf()], false, false).unwrap();
+            (r, std::mem::take(&mut ctx.stats))
+        })
+    }
+
+    /// Whether `--known-failures` list `list` waives the errors of `r`.
+    fn waived(r: &FileResult, list: &str) -> bool {
+        let mut k = crate::known::Known::parse(Path::new("k"), list, &["corpus"]).unwrap();
+        r.errors_waived(&mut |name| k.take("corpus", name))
+    }
+
+    #[test]
+    fn no_entry_waives_errors_the_file_caused() {
+        let (raw, block) = genesis_blob_event();
         let reset = json!({"type": "reset", "network": "regtest"});
         let check = json!({"type": "check", "n": 1, "tip": "t", "height": 0});
-        // Writes `blob` as the block's sidecar, gzipped, before the replay.
-        let with_blob = |name: &str, events: &[Value], blob: Option<&[u8]>| {
-            with_file(name, events, |ctx, path| {
-                let dir = path.parent().unwrap().join("blobs");
-                std::fs::create_dir_all(&dir).unwrap();
-                if let Some(bytes) = blob {
-                    let file = std::fs::File::create(dir.join("genesis.gz")).unwrap();
-                    let mut gz = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
-                    gz.write_all(bytes).unwrap();
-                    gz.finish().unwrap();
-                }
-                let r = replay_file(ctx, path, false, false);
-                run(ctx, &[path.to_path_buf()], false, false).unwrap();
-                (r, std::mem::take(&mut ctx.stats))
-            })
-        };
-        let waived = |r: &FileResult, list: &str| {
-            let mut k = crate::known::Known::parse(Path::new("k"), list, &["corpus"]).unwrap();
-            r.errors_waived(&mut |name| k.take("corpus", name))
-        };
         let events = [reset.clone(), block, check.clone()];
 
         // The stub fails chain_process_block: with the sidecar there, the error is the harness's.
@@ -1459,6 +1482,53 @@ done"#;
             SHOWN_ERRORS + 2
         );
         assert!(stats.details.contains(&shown), "{:?}", stats.details);
+    }
+
+    #[test]
+    fn a_defect_past_a_stop_on_too_many_errors_fails_the_file() {
+        let (raw, block) = genesis_blob_event();
+        // The stub fails every invalidate, so the replay stops at the block after them.
+        let mut events = vec![
+            json!({"type": "reset", "network": "regtest"}),
+            json!({"type": "check", "n": 1, "tip": "t", "height": 0}),
+        ];
+        events.extend(
+            (0..=MAX_ERRORS).map(|_| json!({"type": "invalidate", "hash": "ab", "now": 7})),
+        );
+        let block_at = events.len();
+        events.extend([block, json!({"type": "nosuch"})]);
+
+        // With the sidecar there, the stop leaves only harness errors.
+        let (r, _) = with_blob("stop-intact", &events[..=block_at], Some(&raw));
+        assert_eq!(r.stopped_at, Some(block_at));
+        assert_eq!((r.errors.len(), r.defect), (MAX_ERRORS + 2, None));
+        assert!(waived(&r, "corpus stop-intact errors from event 2"));
+
+        let (r, stats) = with_blob("stop-missing", &events, None);
+        assert_eq!(r.stopped_at, Some(block_at));
+        assert_eq!(r.defect, Some(MAX_ERRORS + 1), "{:?}", r.errors);
+        let missing = format!("event {block_at} block: cannot open blob");
+        assert!(
+            r.errors[MAX_ERRORS + 1].starts_with(&missing),
+            "{:?}",
+            r.errors
+        );
+        assert_eq!(
+            r.errors[MAX_ERRORS + 2],
+            format!("event {}: unknown event type \"nosuch\"", block_at + 1)
+        );
+        // The stop still comes last, where the details look for it.
+        assert!(r.errors.last().unwrap().starts_with("too many errors"));
+        assert_eq!(r.errors_location(), "stop-missing errors from event 2");
+        assert!(!waived(&r, "corpus stop-missing errors from event 2"));
+        assert!(
+            stats
+                .details
+                .iter()
+                .any(|d| d.starts_with(&format!("    error: {missing}"))),
+            "{:?}",
+            stats.details
+        );
     }
 
     /// A reset and one normative check with a tip set (that the stub's `chain_tips` matches) and a

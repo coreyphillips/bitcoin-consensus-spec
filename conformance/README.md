@@ -319,7 +319,8 @@ force sends nothing. A `check` becomes `chain_tip`, plus `chain_tips` when it ca
   there, so an entry that waives the file's errors does not pass them. A normative one fails the
   run unless an entry names it `<file> check <n>`, a tip set with `--fail-on-tips` unless one names
   it `<file> check <n> tips`, and a UTXO check with `--fail-on-level2`. A non-normative one is
-  reported only.
+  reported only. The events it left are still read without being sent, so a block sidecar that is
+  missing past the stop fails the file whatever the list says.
 
 The details list every file with its results per level, the number of restarts and re-delivered
 events, and the harness's per-event outcomes (diagnostic). With `--verbose` the first normative
