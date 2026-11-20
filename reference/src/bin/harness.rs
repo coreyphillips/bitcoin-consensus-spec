@@ -645,7 +645,11 @@ fn respond(line: &[u8], chain: &mut Option<ChainState>) -> Fields {
         Ok(_) => return failure(Json::Null, "bad_request", "request is not a JSON object".into()),
         Err(e) => return failure(Json::Null, "bad_request", format!("request is not a JSON object: {e}")),
     };
-    let id = req.get("id").cloned().unwrap_or(Json::Null);
+    // Checked before anything runs, so that a request without a usable id cannot change the chain.
+    let id = match get_i64(&req, "id") {
+        Ok(id) => Json::Int(id.into()),
+        Err(BadRequest(message)) => return failure(Json::Null, "bad_request", message),
+    };
     let op = match get_str(&req, "op") {
         Ok(op) => op,
         Err(BadRequest(message)) => return failure(id, "bad_request", message),
