@@ -31,7 +31,7 @@ failure:  {"id": 7, "ok": false, "error": "unsupported_op", "message": "free tex
 | `error` | Meaning |
 |---|---|
 | `unsupported_op` | The implementation does not provide this operation. The runner reports the affected suite as not supported. |
-| `bad_request` | The request is malformed (missing field, bad hex). This always indicates a runner or harness bug. If the line is not a JSON object at all, the response's `id` is `null`. |
+| `bad_request` | The request is malformed (missing field, bad hex). This always indicates a runner or harness bug. If the line is not a JSON object at all, or its `id` is missing or not an integer (section 3), the response's `id` is `null` and the operation is not performed. |
 | `internal` | The implementation failed unexpectedly (panic, assertion). Counted as a test failure. |
 
 A consensus failure is **not** a protocol error. For example, a script that fails verification yields `{"ok": true, "valid": false, ...}`.

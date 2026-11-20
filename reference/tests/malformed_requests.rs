@@ -47,6 +47,14 @@ fn malformed_requests_get_bad_request() {
         (b"{\"id\":12,\"op\":\"info\",\"x\":\"\xff\"}".to_vec(), Json::Null, Some("bad_request")),
         (vec![b'['; 400_000], Json::Null, Some("bad_request")),
         (br#"{"id":14,"op":"info"}"#.to_vec(), Json::Int(14), None),
+        // Without an integer id nothing runs: the regtest chain from id 6 must survive these resets.
+        (br#"{"op":"chain_reset","network":"main"}"#.to_vec(), Json::Null, Some("bad_request")),
+        (br#"{"id":null,"op":"chain_reset","network":"main"}"#.to_vec(), Json::Null, Some("bad_request")),
+        (br#"{"id":"15","op":"chain_reset","network":"main"}"#.to_vec(), Json::Null, Some("bad_request")),
+        (br#"{"id":15.5,"op":"chain_reset","network":"main"}"#.to_vec(), Json::Null, Some("bad_request")),
+        (br#"{"id":9223372036854775808,"op":"chain_reset","network":"main"}"#.to_vec(), Json::Null, Some("bad_request")),
+        (br#"{"id":1e400,"op":"info"}"#.to_vec(), Json::Null, Some("bad_request")),
+        (br#"{"id":-16,"op":"chain_tip"}"#.to_vec(), Json::Int(-16), None),
     ];
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_reference-harness"))
@@ -65,6 +73,7 @@ fn malformed_requests_get_bad_request() {
     let text = String::from_utf8(output.stdout).unwrap();
     let responses: Vec<&str> = text.lines().collect();
     assert_eq!(responses.len(), cases.len(), "one response per request:\n{text}");
+    let mut by_id = std::collections::BTreeMap::new();
     for ((_, id, error), response) in cases.iter().zip(responses) {
         let fields = match parse_json(response) {
             Ok(Json::Obj(fields)) => fields,
@@ -75,5 +84,9 @@ fn malformed_requests_get_bad_request() {
         if let Some(error) = error {
             assert_eq!(fields.get("error"), Some(&Json::Str(error.to_string())), "{response}");
         }
+        if let Json::Int(id) = id {
+            by_id.insert(*id, fields);
+        }
     }
+    assert_eq!(by_id[&-16].get("tip"), by_id[&6].get("genesis"), "the chain changed after the regtest reset");
 }
