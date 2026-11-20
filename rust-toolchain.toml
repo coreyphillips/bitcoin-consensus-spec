@@ -1,0 +1,7 @@
+# The Rust release every workflow builds with, so that a new stable release
+# changes nothing until a commit moves this line. clippy and rustfmt are for
+# local use; CI runs neither.
+[toolchain]
+channel = "1.100.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]

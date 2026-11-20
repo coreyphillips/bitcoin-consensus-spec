@@ -8,6 +8,9 @@ name: core
 # change them or the code that produces them.
 # A separate workflow from extended.yml, so that such a pull request does not
 # also start the mutation audit and peer-sync.
+# In a public repository GitHub turns off scheduled runs after 60 days without
+# activity, so the weekly run can stop with no failure to notice. Re-enable
+# it from the Actions tab.
 on:
   schedule:
     - cron: "0 5 * * 1"
@@ -35,8 +38,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Rust, the release rust-toolchain.toml names
+        run: rustup toolchain install --no-self-update
       # build.rs refuses a checkout that is not at the pinned commit, so a
       # moved tag fails the build.
       - name: Bitcoin Core v32.1 source
@@ -72,8 +76,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Rust, the release rust-toolchain.toml names
+        run: rustup toolchain install --no-self-update
       - name: Bitcoin Core v32.1 from bitcoincore.org, checked against pins.json
         run: |
           bitcoind=$(sh .github/fetch-bitcoind.sh "$RUNNER_TEMP/core")
