@@ -595,10 +595,10 @@ fn print_report(
         } else {
             "-"
         };
-        // An enforced level 2 comparison is a check: a corpus may hash its UTXO set only at
-        // non-normative checks, which `cases` does not count.
-        let ran = checked_elsewhere.contains(suite) || (fail_on_level2 && s.l2_checked > 0);
-        let error = suite_error(s, ran);
+        let error = suite_error(
+            s,
+            ran_uncounted(suite, s, fail_on_level2, checked_elsewhere),
+        );
         if let (Some(e), 0) = (error, s.cases) {
             println!("{suite:<14} {mode:<8} {e}");
             any_failure = true;
@@ -642,7 +642,8 @@ fn print_report(
             }
         }
     }
-    if let Some((path, stale)) = known::stale(&finished(results)) {
+    if let Some((path, stale)) = known::stale(&finished(results, fail_on_level2, checked_elsewhere))
+    {
         let counts: Vec<String> = results
             .iter()
             .filter(|r| r.1.known > 0)
@@ -684,15 +685,29 @@ fn print_report(
     failed
 }
 
-/// The suites whose unused `--known-failures` entries are stale: those that ran without an error.
-/// A suite that stopped on one may not have reached the check an entry names, and the error
-/// already fails the run.
-fn finished<'a>(results: &[(&'a str, Stats, Duration)]) -> Vec<&'a str> {
+/// The suites whose unused `--known-failures` entries are stale: those `suite_error` passes. A
+/// suite that stopped on an error may not have reached the check an entry names, and one that ran
+/// no enforced check may have read a vector file cut short. Either already fails the run.
+fn finished<'a>(
+    results: &[(&'a str, Stats, Duration)],
+    fail_on_level2: bool,
+    checked_elsewhere: &[&str],
+) -> Vec<&'a str> {
     results
         .iter()
-        .filter(|r| r.1.error.is_none())
+        .filter(|(suite, s, _)| {
+            let ran = ran_uncounted(suite, s, fail_on_level2, checked_elsewhere);
+            suite_error(s, ran).is_none()
+        })
         .map(|r| r.0)
         .collect()
+}
+
+/// Whether a suite ran a check that `s.cases` does not count: one in another report of the same
+/// command, or an enforced level 2 comparison. A corpus may hash its UTXO set only at
+/// non-normative checks.
+fn ran_uncounted(suite: &str, s: &Stats, fail_on_level2: bool, checked_elsewhere: &[&str]) -> bool {
+    checked_elsewhere.contains(&suite) || (fail_on_level2 && s.l2_checked > 0)
 }
 
 /// Why a suite failed to run, if it did. A selected suite that ran no check fails: a wrong
@@ -890,7 +905,38 @@ mod tests {
             ("corpus", stopped, Duration::ZERO),
             ("custom", Stats::default(), Duration::ZERO),
         ];
-        assert_eq!(finished(&results), ["bip340", "custom"]);
+        assert_eq!(finished(&results, false, &[]), ["bip340"]);
+    }
+
+    #[test]
+    fn a_suite_that_ran_no_enforced_check_has_no_stale_entries() {
+        let mut ran = Stats::default();
+        ran.pass();
+        let waived = Stats {
+            cases: 1,
+            known: 1,
+            ..Default::default()
+        };
+        let results = [
+            // A header-only vector file.
+            ("bip340", Stats::default(), Duration::ZERO),
+            ("custom", ran, Duration::ZERO),
+            ("tx-invalid", waived, Duration::ZERO),
+        ];
+        assert_eq!(finished(&results, false, &[]), ["custom"]);
+
+        // A check that `cases` does not count is still a check.
+        assert_eq!(finished(&results, false, &["bip340"]), ["bip340", "custom"]);
+        let l2_only = [(
+            "corpus",
+            Stats {
+                l2_checked: 1,
+                ..Default::default()
+            },
+            Duration::ZERO,
+        )];
+        assert!(finished(&l2_only, false, &[]).is_empty());
+        assert_eq!(finished(&l2_only, true, &[]), ["corpus"]);
     }
 
     #[test]
