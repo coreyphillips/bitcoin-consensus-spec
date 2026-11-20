@@ -2,6 +2,8 @@
 
 Every expectation in this repository is Bitcoin Core v32.1's answer: from Core's own test files, from its consensus code compiled into `conformance/oracle-core`, or from its release binaries. A new test carries the answer a script got from Core. Never write an expected result by hand, and never change one to make the reference pass.
 
+The exception is the constructed cases in `conformance/vectors/block-connect`. The oracle cannot run `ConnectBlock`, so their verdicts follow its source, as that directory's `README.md` explains.
+
 Report a disagreement with Bitcoin Core with an issue template, or privately as `SECURITY.md` describes when a block or transaction on a public network could trigger it.
 
 ## Before opening a pull request
@@ -20,7 +22,7 @@ python3 -m unittest discover -s conformance/recorder
 
 These fail a pull request:
 
-- An em dash (U+2014) or an en dash (U+2013) anywhere in the repository. Use a comma, a colon or parentheses. To find them: `grep -rnI --exclude-dir=target --exclude-dir=.git -e "$(printf '\xe2\x80\x94')" -e "$(printf '\xe2\x80\x93')" .`
+- An em dash (U+2014) or an en dash (U+2013) anywhere in the repository. Use a comma, a colon or parentheses. To find them: `grep -rnI --exclude-dir=target --exclude-dir=.git -e "$(printf '\342\200\224')" -e "$(printf '\342\200\223')" .`
 - A suite count in `README.md` or `RESULTS.md` that differs from the run. `check_doc_numbers.py` prints the ones that do.
 - A change to `spec/` without the next specification revision (below).
 
@@ -45,7 +47,7 @@ The files in `core/`, `qa-assets/` and `bip340/` are byte-identical to their ups
 
 `conformance/vectors/blocks` is recorded from Bitcoin Core v32.1's functional tests by `conformance/recorder`, whose `README.md` lists the requirements. A new consensus case usually goes into `conformance/recorder/extra/feature_spec_pitfalls.py`, the corpus's own test, written in the style of Core's functional tests. To record one of Core's tests instead, add it to `SCENARIOS` in the recorder's `Makefile` and to `conformance/CORPUS.md` section 9.
 
-Then put the test's SHA-256 in `conformance/recorder/pins.json`, which the recorder checks before it runs a test. Run `make all CORE_SRC=/path/to/bitcoin-v32.1` with a fresh `WORK` directory, since recordings already in `WORK` are reused. The `image` stage builds `extra/` and `pins.json` into the image, and the `corpus` stage replaces every file in `VECTORS`. `make all` fails unless every normative check replays identically through a fresh v32.1 node. Commit the new corpus files and `REPORT.md`, and update the counts as for a vector.
+Then put the test's SHA-256 in `conformance/recorder/pins.json`, which the recorder checks before it runs a test. Run `make -C conformance/recorder all CORE_SRC=/path/to/bitcoin-v32.1` with a fresh `WORK` directory, since recordings already in `WORK` are reused. The `image` stage builds `extra/` and `pins.json` into the image, and the `corpus` stage replaces every file in `VECTORS`. `make all` fails unless every normative check replays identically through a fresh v32.1 node. Commit the new corpus files and `REPORT.md`, and update the counts as for a vector.
 
 ## Adding a mutant
 

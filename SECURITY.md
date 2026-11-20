@@ -10,6 +10,8 @@ Report privately a divergence that a block or transaction on mainnet, testnet3, 
 - what Bitcoin Core v32.1 does with it, and what the specification says (chapter and section);
 - the specification version, and any implementation you know follows the specification there.
 
+If the Security tab has no "Report a vulnerability" button, open an issue that asks for a private contact and says nothing about the problem.
+
 Appendix B section B.6 tells whether the specification is at fault: run `reference-harness` on the same input. If it agrees with Bitcoin Core, the defect is in the implementation, so report it to that implementation's maintainers instead. A bug in Bitcoin Core itself goes to Bitcoin Core (security@bitcoincore.org), not here.
 
 The fix lands as a new specification revision with a test that fails without it. The report is published once the maintainers of implementations known to follow the specification have been told.

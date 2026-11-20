@@ -15,7 +15,6 @@ body:
       description: >-
         The block, transaction or script as hex, or the `conformance/PROTOCOL.md` request line.
         Give the network and any options (activation heights, `-test=bip94`). Attach a file if it is large.
-      render: text
     validations:
       required: true
   - type: textarea
