@@ -7,7 +7,7 @@
 //!
 //! Blocks marked `text` are not compiled. Any other fence fails the build, because a block opened
 //! with `Rust`, `rs`, no info string, tildes or four backticks would otherwise drop out of the
-//! crate unnoticed.
+//! crate unnoticed. A fence inside a block quote fails the build for the same reason.
 
 use std::{env, fs, path::Path};
 
@@ -60,7 +60,8 @@ fn main() {
 
 /// Returns the normative Rust code of one chapter, with a comment pointing at the source line of
 /// every block so compiler messages can be traced back to the document. Fails on any fence it
-/// cannot classify as opening a `rust` block, opening a `text` block, or closing a block.
+/// cannot classify as opening a `rust` block, opening a `text` block, or closing a block, and on
+/// any fence that opens a block inside a block quote.
 ///
 /// `tests/spec_fences.rs` includes this file to test this function.
 pub(crate) fn extract(text: &str, file_name: &str) -> Result<String, String> {
@@ -72,8 +73,31 @@ pub(crate) fn extract(text: &str, file_name: &str) -> Result<String, String> {
         let number = index + 1;
         let at = format!("spec/{file_name}:{number}");
         let trimmed = line.trim_start();
-        if opened_at.is_none() && trimmed.starts_with("~~~") {
-            return Err(format!("{at}: open code blocks with three backticks, not tildes"));
+        if opened_at.is_none() {
+            // A fence in a block quote, even one in a list item, still opens a code block, but the
+            // checks below would not see it. Inside an open block the same line is only code.
+            // Indentation is ignored: one line cannot show whether four spaces after `>` start
+            // indented code or continue a list item, so quoted indented code that starts with
+            // backticks fails too.
+            let mut unquoted = trimmed;
+            let mut quoted = false;
+            loop {
+                if let Some(rest) = unquoted.strip_prefix('>') {
+                    quoted = true;
+                    unquoted = rest.trim_start();
+                } else if let Some(rest) = after_list_marker(unquoted) {
+                    unquoted = rest.trim_start();
+                } else {
+                    break;
+                }
+            }
+            let fence = unquoted.starts_with("```") || unquoted.starts_with("~~~");
+            if fence && quoted {
+                return Err(format!("{at}: code blocks must not be inside a block quote"));
+            }
+            if trimmed.starts_with("~~~") {
+                return Err(format!("{at}: open code blocks with three backticks, not tildes"));
+            }
         }
         let Some(rest) = trimmed.strip_prefix("```") else {
             if normative {
@@ -119,6 +143,18 @@ pub(crate) fn extract(text: &str, file_name: &str) -> Result<String, String> {
         return Err(format!("spec/{file_name}:{opened}: code block is never closed"));
     }
     Ok(out)
+}
+
+/// Returns what follows a list item marker (`-`, `*`, `+`, `1.` or `1)`), starting with the space
+/// or tab a marker needs.
+fn after_list_marker(line: &str) -> Option<&str> {
+    let digits = line.len() - line.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let rest = match digits {
+        0 => line.strip_prefix(['-', '*', '+'])?,
+        1..=9 => line[digits..].strip_prefix(['.', ')'])?,
+        _ => return None,
+    };
+    rest.starts_with([' ', '\t']).then_some(rest)
 }
 
 /// `05-script-execution` becomes `ch05_script_execution`; `A-quirks` becomes `appendix_a_quirks`.

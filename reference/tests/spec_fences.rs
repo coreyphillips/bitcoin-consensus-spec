@@ -27,6 +27,48 @@ fn a_mistyped_opening_fence_fails() {
 }
 
 #[test]
+fn a_fence_inside_a_block_quote_fails() {
+    for opening in [
+        "> ```rust",
+        "> ```Rust",
+        "> ```text",
+        ">```rust",
+        "> > ```rust",
+        "  >   ```rust",
+        "  >\t   ```rust",
+        "> ~~~rust",
+        "- > ```rust",
+        "1. > ```rust",
+        "> * ```rust",
+    ] {
+        let text = format!("> prose\n{opening}\n> fn a() {{}}\n> ```\n");
+        match extract(&text) {
+            Err(error) => {
+                assert!(error.starts_with("spec/99-test.md:2: "), "{opening}: {error}");
+                assert!(error.contains("block quote"), "{opening}: {error}");
+            }
+            Ok(code) => panic!("{opening} was accepted and gave {code:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_fence_in_a_quoted_list_continuation_fails() {
+    for marker in ["rust", "Rust"] {
+        let text = format!("> - An item\n>\n>     ```{marker}\n>     pub fn a() {{}}\n>     ```\n");
+        let error = extract(&text).unwrap_err();
+        assert!(error.starts_with("spec/99-test.md:3: "), "{marker}: {error}");
+        assert!(error.contains("block quote"), "{marker}: {error}");
+    }
+}
+
+#[test]
+fn quote_markers_inside_a_block_are_code() {
+    assert_eq!(extract("> prose\n```text\n> ```rust\n```\n").unwrap(), "");
+    assert_eq!(extract("```rust\n> ```\n```\n").unwrap(), "// spec/99-test.md:2\n> ```\n\n");
+}
+
+#[test]
 fn an_info_string_inside_a_block_fails() {
     let error = extract("```text\ndiagram\n```rust\nfn a() {}\n```\n").unwrap_err();
     assert!(error.starts_with("spec/99-test.md:3: "), "{error}");
