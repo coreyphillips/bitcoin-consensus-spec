@@ -166,14 +166,14 @@ An entry names one check by its whole name and waives one failure. `bip340 row 1
 suite's check names carry the input and the flags, so each of a row's failures takes its own line.
 A failure the file names is printed as `KNOWN` with `--verbose`, counted in `cases` but not in
 `failed`, and does not fail the run; the line below the table counts them per suite. Every other
-failure fails the run as before, and so does a corpus file the runner cannot read, whatever the
-list says. An entry that names no failure, in a suite that ran, is printed as `STALE` and fails the
+failure fails the run as before, and so does a corpus file the runner cannot read or replay as it
+stands, such as one whose block sidecar is missing, whatever the list says. An entry that names no failure, in a suite that ran, is printed as `STALE` and fails the
 run, so the list shrinks as the implementation is fixed and never hides a check that passes. When
 the entry is the start of a name that failed, the `STALE` line shows that name. Entries of suites
 that did not run are ignored, so one file can serve runs that select different suites. So are
 those of a suite that stopped on an error, such as a `--corpus` path that does not exist: the
 error fails the run, and the entries are checked on the next run that gets past it. The same holds
-for the entries naming a corpus file the runner cannot read, such as one cut short.
+for the entries naming a corpus file the runner cannot read or replay, such as one cut short.
 
 ## Generating derived vectors
 
