@@ -289,6 +289,12 @@ class Builder:
                 e = json.loads(line)
                 if e["ev"] == "run_start":
                     self.run_start = e
+                elif e["ev"] == "unsupported_rpc":
+                    # A call the recorder could not attribute to a node may have been to this one.
+                    if e.get("node") in (node, None) and e.get("ok", True):
+                        raise RuntimeError("seq %d: %s changed the chain in a way the corpus cannot express"
+                                           % (e["seq"], e["method"]))
+                    continue
                 elif e["ev"] == "run_end":
                     self.run_end = e
                 elif e.get("node") != node and e["ev"] not in ("node_start", "conn_open"):
@@ -530,10 +536,8 @@ class Builder:
                                       {"type": "invalidate", "now": now, "hash": e["hash"]}))
                 elif m in ("reconsiderblock", "preciousblock"):
                     if e["ok"]:
-                        self.warn("%s used; not part of PROTOCOL.md v1" % m)
-                        items.append((segment_of[e["seq"]], pos, e["seq"], 0,
-                                      {"type": "reconsider" if m == "reconsiderblock" else "precious",
-                                       "now": now, "hash": e["hash"]}))
+                        raise RuntimeError("session %d seq %d: format 1 has no event for %s (CORPUS.md section 9)"
+                                           % (sid, e["seq"], m))
 
             # Blocks and headers that reached the node another way.
             for e in sess_raw:
@@ -726,6 +730,8 @@ def main():
                        "checks": len(checks), "normative_checks": sum(1 for c in checks if c["normative"])},
             "notes": sorted(set(b.warnings)),
         }
+        if rs.get("unpinned"):
+            meta["recorder"]["unpinned"] = rs["unpinned"]
         path = os.path.join(a.out_dir, name + ".jsonl.gz")
         write_corpus(path, meta, events)
         summary = {"scenario": name, "file": os.path.basename(path), "bytes": os.path.getsize(path),
