@@ -373,7 +373,7 @@ The runner skips, as a stated rule, every scenario that needs network options wh
 
 Required behavior:
 
-1. Start from an empty data directory, apply the network options, connect only to `{peer}` using the version 1 transport (specification chapter 14), and synchronize. When the runner is given `--v2transport`, the peer also accepts the BIP324 version 2 transport, and the node may use either.
+1. Start from an empty data directory, apply the network options, connect only to `{peer}` using the version 1 transport (specification chapter 14), and synchronize. When the runner is given `--v2transport`, the peer also accepts the BIP324 version 2 transport, and the node may use either. A chain fails when the node never completes the version handshake with the peer.
 2. When the active tip equals `{stop_at}`, write one line to standard output and exit with status 0:
    `{"event":"stopped","tip":hash,"height":integer,"hash_serialized_3":hash}`
    `hash_serialized_3` (specification chapter 15) may be left out by a node that keeps no UTXO set. The runner then reports the chain at level 2 (UTXO hash not compared), which fails the run only with `--fail-on-level2`. When present, it must equal Bitcoin Core's.

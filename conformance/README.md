@@ -372,7 +372,10 @@ counted in `level2`/`l2-checked` as not compared, which fails the run only with
 `--fail-on-level2`. Without a whitelist, bitcoind disconnects a node that misbehaves; in addition,
 any `Misbehaving` line in bitcoind's debug log fails the chain, even if the sync completed. The
 detail line of each chain shows the transport of the node's connections (`v1`, `v2`, or both), read
-from bitcoind's `New inbound peer connected: transport: ...` log lines.
+from bitcoind's `New inbound peer connected: transport: ...` log lines, which bitcoind writes when
+the version handshake completes. A chain without such a line fails (`transport none`): the node's
+`stopped` line cannot be trusted when it never talked to bitcoind, since `{stop_at}` is the expected
+tip.
 
 `--v2transport` starts `bitcoind` with `-v2transport=1` instead, for nodes that speak only the
 BIP324 version 2 transport (which this specification does not define). bitcoind then still accepts

@@ -21,8 +21,9 @@
 //!
 //! `{options}` in the node command (PROTOCOL.md section 5) becomes the scenario's `reset` options as
 //! a single shell-quoted JSON object (the `options` of `chain_reset`). A `Misbehaving` line in
-//! bitcoind's debug log fails the chain. The transport of the node's connections, from the same
-//! log, is shown with each chain.
+//! bitcoind's debug log fails the chain, and so does a log in which the node never completed a
+//! version handshake. The transport of the node's connections, from the same log, is shown with
+//! each chain.
 
 use crate::bitcoind::{free_ports, Bitcoind};
 use crate::check::Stats;
@@ -467,17 +468,20 @@ fn run_chain(
     core.stop();
 
     let mut problems = outcome.problems.clone();
-    // Any misbehaviour bitcoind saw from the node fails the chain, even if the sync completed.
     let debug_log = core_dir.join("regtest/debug.log");
-    let log = std::fs::read_to_string(&debug_log).unwrap_or_default();
-    let misbehaving: Vec<&str> = log.lines().filter(|l| l.contains("Misbehaving")).collect();
-    if !misbehaving.is_empty() {
-        problems.push(format!(
-            "bitcoind logged {} Misbehaving line(s), first: {}",
-            misbehaving.len(),
-            misbehaving[0].trim()
-        ));
-    }
+    let log = match std::fs::read_to_string(&debug_log) {
+        Ok(log) => {
+            problems.extend(log_problems(&log));
+            log
+        }
+        Err(e) => {
+            problems.push(format!(
+                "cannot read bitcoind's debug log {}: {e}",
+                debug_log.display()
+            ));
+            String::new()
+        }
+    };
     let transport = transports(&log);
     let mut utxo_reported = None;
     match &outcome.stopped {
@@ -539,8 +543,34 @@ fn run_chain(
     })
 }
 
+/// What bitcoind's debug log holds against the node. Any misbehaviour bitcoind saw fails the chain,
+/// even if the sync completed. So does a node that never completed a handshake with bitcoind: it
+/// cannot have synchronized from it, whatever its stopped line says, and `{stop_at}` hands it the
+/// expected tip.
+fn log_problems(log: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    let misbehaving: Vec<&str> = log.lines().filter(|l| l.contains("Misbehaving")).collect();
+    if !misbehaving.is_empty() {
+        problems.push(format!(
+            "bitcoind logged {} Misbehaving line(s), first: {}",
+            misbehaving.len(),
+            misbehaving[0].trim()
+        ));
+    }
+    if transports(log) == "none" {
+        problems.push(
+            "the node completed no handshake with bitcoind (no `peer connected` line in its \
+             debug log)"
+                .into(),
+        );
+    }
+    problems
+}
+
 /// The transports of the node's connections, from bitcoind's `-debug=net` lines
 /// `New inbound peer connected: transport: v2, ...`, joined with `+`; `none` without a connection.
+/// bitcoind logs that line when it receives the node's `verack`, so a connection that never
+/// completed the version handshake does not count.
 fn transports(log: &str) -> String {
     let seen: BTreeSet<&str> = log
         .lines()
@@ -706,6 +736,36 @@ mod tests {
                    2026-11-09T03:09:34Z [net] New inbound peer connected: transport: v2, version: 70016, peer=2\n";
         assert_eq!(transports(log), "v1+v2");
         assert_eq!(transports("no connections\n"), "none");
+    }
+
+    /// A node that never completed a handshake with bitcoind fails, even with a stopped line that
+    /// matches: `{stop_at}` is the expected tip.
+    #[test]
+    fn a_node_without_a_handshake_fails() {
+        let connected = "2026-11-09T03:09:33Z [net] Added connection peer=0\n\
+                         2026-11-09T03:09:33Z [net] New inbound peer connected: transport: v1, version: 70016, peer=0\n";
+        assert!(log_problems(connected).is_empty());
+
+        // Connected, but sent no version and verack.
+        let no_handshake = "2026-11-09T03:09:33Z [net] Added connection peer=0\n\
+                            2026-11-09T03:09:35Z [net] disconnecting peer=0\n";
+        for log in ["", no_handshake] {
+            assert_eq!(
+                log_problems(log),
+                ["the node completed no handshake with bitcoind (no `peer connected` line in its debug log)"]
+            );
+        }
+
+        let misbehaving = format!(
+            "{connected}2026-11-09T03:09:34Z [net] Misbehaving: peer=0: invalid header received\n"
+        );
+        let problems = log_problems(&misbehaving);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].starts_with("bitcoind logged 1 Misbehaving line(s), first: "),
+            "{}",
+            problems[0]
+        );
     }
 
     #[test]

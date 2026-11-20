@@ -44,9 +44,10 @@ jobs:
           echo "BITCOIND=$bitcoind" >> "$GITHUB_ENV"
       - name: Build the reference and the runner
         run: cargo build --release
+      # The reference node keeps a UTXO set, so a missing hash_serialized_3 is a regression.
       - name: Interop, the reference node next to bitcoind
         run: |
-          ./target/release/bcs-conformance interop --bitcoind "$BITCOIND" \
+          ./target/release/bcs-conformance interop --bitcoind "$BITCOIND" --fail-on-level2 \
             --node "$PWD/target/release/reference-node --network {network} --connect {peer} --stop-at {stop_at} --options {options}"
 
   peer-sync:
