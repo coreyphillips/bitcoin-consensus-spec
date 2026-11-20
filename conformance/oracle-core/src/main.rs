@@ -103,7 +103,7 @@ fn handle_line(line: &str) -> String {
     };
     let id = obj.get("id").cloned().unwrap_or(Value::Null);
     if !id.is_i64() && !id.is_u64() {
-        return failure(&id, Failure::BadRequest("missing or non-integer id".into()));
+        return failure(&Value::Null, Failure::BadRequest("missing or non-integer id".into()));
     }
     let Some(op) = obj.get("op").and_then(Value::as_str) else {
         return failure(&id, Failure::BadRequest("missing op".into()));

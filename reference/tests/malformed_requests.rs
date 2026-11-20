@@ -54,6 +54,8 @@ fn malformed_requests_get_bad_request() {
         (br#"{"id":15.5,"op":"chain_reset","network":"main"}"#.to_vec(), Json::Null, Some("bad_request")),
         (br#"{"id":9223372036854775808,"op":"chain_reset","network":"main"}"#.to_vec(), Json::Null, Some("bad_request")),
         (br#"{"id":1e400,"op":"info"}"#.to_vec(), Json::Null, Some("bad_request")),
+        (br#"{"id":01,"op":"chain_reset","network":"main"}"#.to_vec(), Json::Null, Some("bad_request")),
+        (br#"{"id":+1,"op":"chain_reset","network":"main"}"#.to_vec(), Json::Null, Some("bad_request")),
         (br#"{"id":-16,"op":"chain_tip"}"#.to_vec(), Json::Int(-16), None),
     ];
 
