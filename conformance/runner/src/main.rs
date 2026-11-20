@@ -56,6 +56,8 @@ RUN OPTIONS:
   --vectors DIR       Vector directory (default: conformance/vectors)
   --derived DIR       Derived vector directory (default: <vectors>/derived)
   --timeout SECS      Seconds to wait for each harness response (default: 120)
+  --json FILE         Also write the counts of the table to FILE as JSON, with each corpus file's
+                      counts (.github/check_doc_numbers.py compares them with the documents)
 
 CORPUS OPTIONS:
   --corpus PATH       Corpus file or directory, repeatable (default: <vectors>/blocks, and for
@@ -112,6 +114,7 @@ struct Options {
     fail_on_level2: bool,
     fail_on_tips: bool,
     known_failures: Option<PathBuf>,
+    json: Option<PathBuf>,
     vectors: Option<PathBuf>,
     derived: Option<PathBuf>,
     timeout: Duration,
@@ -154,6 +157,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         fail_on_level2: false,
         fail_on_tips: false,
         known_failures: None,
+        json: None,
         vectors: None,
         derived: None,
         timeout: Duration::from_secs(120),
@@ -212,6 +216,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--fail-on-level2" => o.fail_on_level2 = true,
             "--fail-on-tips" => o.fail_on_tips = true,
             "--known-failures" => o.known_failures = Some(PathBuf::from(value(&mut i, a)?)),
+            "--json" => o.json = Some(PathBuf::from(value(&mut i, a)?)),
             "--vectors" => o.vectors = Some(PathBuf::from(value(&mut i, a)?)),
             "--derived" => o.derived = Some(PathBuf::from(value(&mut i, a)?)),
             "--timeout" => o.timeout = secs(value(&mut i, a)?, a)?,
@@ -548,14 +553,17 @@ fn cmd_run(opts: &Options) -> ExitCode {
     }
     let restarts = harness.as_ref().map_or(0, |h| h.restarts());
     drop(harness);
-    let failed = print_report(
-        &results,
-        if opts.raw { "raw" } else { "derived" },
-        opts.fail_on_level2,
-        &[],
-    );
+    let mode_name = if opts.raw { "raw" } else { "derived" };
+    let failed = print_report(&results, mode_name, opts.fail_on_level2, &[]);
     if restarts > 0 {
         println!("note: the harness died and was restarted {restarts} time(s)");
+    }
+    if let Some(path) = &opts.json {
+        let text = summary(&results, mode_name, opts.fail_on_level2, failed).to_string() + "\n";
+        if let Err(e) = std::fs::write(path, text) {
+            eprintln!("bcs-conformance: cannot write {}: {e}", path.display());
+            return ExitCode::FAILURE;
+        }
     }
     if failed {
         if !opts.verbose {
@@ -683,6 +691,40 @@ fn print_report(
     println!();
     println!("{line}");
     failed
+}
+
+/// The `--json` summary of a run: the report table's counts and error for each suite, under the
+/// suite's name, with the suite's own `summary` fields.
+fn summary(
+    results: &[(&str, Stats, Duration)],
+    mode: &str,
+    fail_on_level2: bool,
+    failed: bool,
+) -> Value {
+    let mut suites = serde_json::Map::new();
+    for (suite, s, t) in results {
+        let mut entry = s.summary.clone();
+        let error = suite_error(s, ran_uncounted(suite, s, fail_on_level2, &[]));
+        for (key, value) in [
+            ("cases", json!(s.cases)),
+            ("passed", json!(s.passed)),
+            ("failed", json!(s.failed)),
+            ("known", json!(s.known)),
+            ("level2", json!(s.l2_mismatches)),
+            ("l2_checked", json!(s.l2_checked)),
+            ("unsupported", json!(s.unsupported)),
+            ("error", json!(error)),
+            ("seconds", json!(t.as_secs_f64())),
+        ] {
+            entry.insert(key.into(), value);
+        }
+        suites.insert(suite.to_string(), Value::Object(entry));
+    }
+    json!({
+        "result": if failed { "FAIL" } else { "PASS" },
+        "mode": mode,
+        "suites": suites,
+    })
 }
 
 /// The suites whose unused `--known-failures` entries are stale: those `suite_error` passes. A
@@ -881,9 +923,33 @@ fn cmd_derive(opts: &Options) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{finished, outcome, print_report, suite_error};
+    use super::{finished, outcome, print_report, suite_error, summary};
     use crate::check::Stats;
+    use serde_json::json;
     use std::time::Duration;
+
+    #[test]
+    fn the_json_summary_has_the_table_and_the_suites_own_fields() {
+        let mut ran = Stats::default();
+        ran.pass();
+        ran.pass();
+        ran.summary.insert("files".into(), json!([{"name": "a"}]));
+        let results = [
+            ("corpus", ran, Duration::from_secs(2)),
+            ("custom", Stats::default(), Duration::ZERO),
+        ];
+        let v = summary(&results, "derived", false, true);
+        assert_eq!(v["result"], "FAIL");
+        assert_eq!(v["mode"], "derived");
+        let corpus = &v["suites"]["corpus"];
+        assert_eq!(corpus["cases"], 2);
+        assert_eq!(corpus["passed"], 2);
+        assert_eq!(corpus["failed"], 0);
+        assert_eq!(corpus["error"], serde_json::Value::Null);
+        assert_eq!(corpus["seconds"], 2.0);
+        assert_eq!(corpus["files"][0]["name"], "a");
+        assert_eq!(v["suites"]["custom"]["error"], "ran no enforced check");
+    }
 
     #[test]
     fn only_a_suite_that_ran_without_an_error_has_stale_entries() {

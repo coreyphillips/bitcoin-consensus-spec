@@ -180,6 +180,8 @@ pub struct Stats {
     pub error: Option<String>,
     /// Extra report lines printed after the summary table (per-file or per-chain detail).
     pub details: Vec<String>,
+    /// Suite-specific fields of the `--json` summary, next to the counters above.
+    pub summary: Map<String, Value>,
 }
 
 impl Stats {

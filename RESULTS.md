@@ -1,6 +1,6 @@
 # Results
 
-What has been tested, how, and what was found. Everything here is against Bitcoin Core v32.1 (commit `f0de87f040621468b956f01f526a43a010310501`). Numbers are copied from the tools' output.
+What has been tested, how, and what was found. Everything here is against Bitcoin Core v32.1 (commit `f0de87f040621468b956f01f526a43a010310501`). Numbers are copied from the tools' output. CI checks the counts of section 1's default suites, here and in `README.md`, against the runner's `--json` summary (`.github/check_doc_numbers.py`).
 
 ## 1. The reference
 

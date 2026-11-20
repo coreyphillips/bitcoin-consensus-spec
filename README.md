@@ -22,7 +22,7 @@ The reference (the specification's own code) passes:
 | Bitcoin Core `sighash.json` | 1,000 | pass |
 | BIP341 wallet vectors, BIP340 vectors | 26 / 19 | pass |
 | Bitcoin Core qa-assets `script_assets_test.json` (taproot and more), 64 flag combinations | 239,168 | pass, identical error codes |
-| Edge cases found by mutation testing and by reviewing other implementations, expectations from Bitcoin Core's own code | 211 | pass |
+| Edge cases found by mutation testing and by reviewing other implementations, expectations from Bitcoin Core's own code | 493 | pass |
 | Block corpus: 22 per-node files from 14 recorded runs of Bitcoin Core's functional tests and this project's own test (17,249 events) | 5,315 normative tip checks, 1,271 chain tip sets, 2,306 UTXO set hashes | identical |
 | Live interop: the reference node synchronizes each scenario's chain from Bitcoin Core v32.1 over P2P, with no whitelist | tip, height and UTXO set hash for 21 chains (2026-11-12) | identical, no misbehaviour logged |
 | Mainnet and testnet4 header chains from public peers, fully validated | every header | identical tip and chain work |
