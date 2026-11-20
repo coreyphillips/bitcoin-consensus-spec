@@ -1,0 +1,48 @@
+name: Disagreement with Bitcoin Core
+description: An input on which the specification or its reference disagrees with Bitcoin Core v32.1.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If a block, header or transaction on mainnet, testnet3, testnet4 or signet could trigger it, do not file it here: report it privately as SECURITY.md describes.
+
+        Run `reference-harness` on the same input first (Appendix B section B.6). If the reference agrees with Bitcoin Core, the defect is in your implementation, not the specification.
+  - type: textarea
+    id: input
+    attributes:
+      label: Failing input
+      description: >-
+        The block, transaction or script as hex, or the `conformance/PROTOCOL.md` request line.
+        Give the network and any options (activation heights, `-test=bip94`).
+        When the answer depends on chain state, give every block or request from `chain_reset` on.
+        Public chain history can be named by its network and last block hash instead.
+        Attach a file if it is large.
+    validations:
+      required: true
+  - type: textarea
+    id: core
+    attributes:
+      label: What Bitcoin Core v32.1 does
+      description: The verdict and error, and how you got them (an RPC call, a functional test, `oracle-core-harness`).
+    validations:
+      required: true
+  - type: textarea
+    id: reference
+    attributes:
+      label: What the reference does
+      description: The `reference-harness` answer to the same input, or what `reference-node` did.
+    validations:
+      required: true
+  - type: input
+    id: section
+    attributes:
+      label: Chapter and section
+      description: Where the specification states the rule, if you know (for example, 08 section 8.6).
+  - type: input
+    id: version
+    attributes:
+      label: Specification version
+      description: "`spec/VERSION`, or `spec_version` in the harness's `info` answer, and the commit if it is not a tag."
+    validations:
+      required: true

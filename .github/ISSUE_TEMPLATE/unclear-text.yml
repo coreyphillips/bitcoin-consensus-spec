@@ -1,0 +1,29 @@
+name: Unclear or wrong text
+description: A passage that admits more than one reading, a wrong cross-reference, or prose that does not match the code beside it.
+labels: [documentation]
+body:
+  - type: input
+    id: section
+    attributes:
+      label: Chapter and section
+      description: For example, 14 section 14.4.
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What the text says, and what is wrong or unclear
+    validations:
+      required: true
+  - type: textarea
+    id: assumption
+    attributes:
+      label: What you assumed
+      description: If you built against it, what you assumed and which test confirmed or refuted it.
+  - type: input
+    id: version
+    attributes:
+      label: Specification version
+      description: "`spec/VERSION`, and the commit if it is not a tag."
+    validations:
+      required: true
