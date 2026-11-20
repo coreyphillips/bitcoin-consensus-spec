@@ -312,6 +312,9 @@ force sends nothing. A `check` becomes `chain_tip`, plus `chain_tips` when it ca
   is then counted as not compared, and the details say how many.
 - A `chain_tips` or `utxo_hash` call that fails is a harness error and also fails its level 1 or
   level 2 comparison, so an entry that waives the file's errors does not waive the comparison.
+- A file's replay stops after more than 20 errors. The details show where it stopped and how many
+  checks it left unreplayed. Each UTXO check it left is counted at level 2 as not compared, so
+  `--fail-on-level2` fails even when an entry waives the file's errors.
 
 The details list every file with its results per level, the number of restarts and re-delivered
 events, and the harness's per-event outcomes (diagnostic). With `--verbose` the first normative

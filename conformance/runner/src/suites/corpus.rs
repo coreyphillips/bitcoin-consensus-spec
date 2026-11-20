@@ -41,6 +41,10 @@ pub const FORMAT_VERSION: u64 = 1;
 const DIAGNOSTIC_EVENTS: usize = 40;
 /// How many further mismatches per file and level are printed with `--verbose`.
 const MAX_MISMATCH_LINES: usize = 20;
+/// A file's replay stops once it has recorded more errors than this.
+const MAX_ERRORS: usize = 20;
+/// How many of a file's errors the details list, besides the one saying the replay stopped.
+const SHOWN_ERRORS: usize = 5;
 
 /// Every `*.jsonl.gz` file in the given directories (sorted by name) and every file given
 /// directly. Two files with the same name (`file_name`) are refused, the same file selected twice
@@ -279,10 +283,17 @@ pub struct FileResult {
     /// Level 2 checks not compared because the harness does not list `utxo_hash` (also counted
     /// in `l2_fail`).
     pub l2_uncompared: u64,
+    /// Level 2 checks after the replay stopped on too many errors (also counted in `l2` and
+    /// `l2_fail`).
+    pub l2_skipped: u64,
     pub restarts: u64,
     pub restarts_skipped: u64,
     pub redelivered: u64,
+    /// The last one says so when the replay stopped on too many errors.
     pub errors: Vec<String>,
+    /// The 0-based index of the first event the replay did not reach after it stopped on too many
+    /// errors.
+    pub stopped_at: Option<usize>,
     /// The 0-based index of the event whose replay recorded the first error; none for a file
     /// that could not be read.
     pub first_error_event: Option<usize>,
@@ -441,8 +452,20 @@ pub fn replay_file(
         if let Some(prev) = idx.checked_sub(1) {
             r.note_first_error(prev);
         }
-        if r.errors.len() > 20 {
-            r.errors.push("too many errors, replay stopped".into());
+        if r.errors.len() > MAX_ERRORS {
+            let rest = || events[idx..].iter().filter(|e| e["type"] == "check");
+            let utxo = rest().filter(|e| e.get("utxo").is_some()).count() as u64;
+            // Mismatches, as for a failed utxo_hash call: with --fail-on-level2, an entry waiving
+            // the file's errors must not pass the hashes the stop leaves unchecked.
+            r.l2 += utxo;
+            r.l2_fail += utxo;
+            r.l2_skipped = utxo;
+            r.stopped_at = Some(idx);
+            r.errors.push(format!(
+                "too many errors, replay stopped at event {idx}: {} checks not replayed, \
+                 {utxo} of them with a UTXO hash",
+                rest().count()
+            ));
             break;
         }
         let kind = ev["type"].as_str().unwrap_or("");
@@ -786,7 +809,12 @@ pub fn run(
             fr.errors.len(),
             fr.seconds
         ));
-        for e in fr.errors.iter().take(5) {
+        // The stop comes last, past the errors shown, and says which checks never ran.
+        let stop = fr
+            .stopped_at
+            .and(fr.errors.last())
+            .filter(|_| fr.errors.len() > SHOWN_ERRORS);
+        for e in fr.errors.iter().take(SHOWN_ERRORS).chain(stop) {
             ctx.stats.details.push(format!("    error: {e}"));
             if ctx.verbose {
                 println!("ERROR    [corpus] {}: {e}", fr.name);
@@ -836,6 +864,7 @@ pub fn run(
         totals.l2 += fr.l2;
         totals.l2_fail += fr.l2_fail;
         totals.l2_uncompared += fr.l2_uncompared;
+        totals.l2_skipped += fr.l2_skipped;
         totals.restarts += fr.restarts;
         totals.restarts_skipped += fr.restarts_skipped;
         totals.redelivered += fr.redelivered;
@@ -882,6 +911,12 @@ pub fn run(
         ctx.stats.details.push(format!(
             "level 2: {} UTXO set hashes not compared (the harness does not list utxo_hash, PROTOCOL.md section 4.13)",
             totals.l2_uncompared
+        ));
+    }
+    if totals.l2_skipped > 0 {
+        ctx.stats.details.push(format!(
+            "level 2: {} UTXO set hashes not compared (a replay stopped on too many errors before them)",
+            totals.l2_skipped
         ));
     }
     if totals.l0_other_fail > 0 {
@@ -1203,6 +1238,56 @@ done"#;
             .unwrap();
         let cols: Vec<&str> = row.split_whitespace().collect();
         assert_eq!(cols[4..7], ["0/1", "0/1", "2"], "{row}");
+    }
+
+    #[test]
+    fn utxo_checks_after_a_stop_on_too_many_errors_are_mismatches() {
+        // chain_tips fails, so every check records one error; utxo_hash matches.
+        let script = stub_with(
+            r#"*'"op":"chain_tips"'*)"#,
+            r#"*'"op":"utxo_hash"'*) printf '{"id":%s,"ok":true,"hash_serialized_3":"ab","txouts":1}\n' "$id";;
+    *'"op":"no_such_op"'*)"#,
+        );
+        let [reset, check] = tips_and_utxo_check();
+        let mut events = vec![reset];
+        events.extend((0..MAX_ERRORS + 4).map(|_| check.clone()));
+        // A check without a UTXO hash is not replayed either, but is no level 2 check.
+        events.push(json!({"type": "check", "n": 2, "tip": "t", "height": 0}));
+        let (r, stats) = with_stub("stopped", &events, &script, |ctx, path| {
+            let r = replay_file(ctx, path, false, false);
+            run(ctx, &[path.to_path_buf()], false, false).unwrap();
+            (r, std::mem::take(&mut ctx.stats))
+        });
+        // The check at event MAX_ERRORS + 1 recorded the last error before the stop.
+        let stopped_at = MAX_ERRORS + 2;
+        assert_eq!(r.stopped_at, Some(stopped_at));
+        assert_eq!(r.checks, MAX_ERRORS as u64 + 1);
+        assert_eq!(
+            (r.l2, r.l2_fail, r.l2_skipped),
+            (MAX_ERRORS as u64 + 4, 3, 3)
+        );
+        // So --fail-on-level2 fails the run even when an entry waives the file's errors.
+        assert_eq!(stats.l2_mismatches, 3);
+        let stop = format!(
+            "    error: too many errors, replay stopped at event {stopped_at}: \
+             4 checks not replayed, 3 of them with a UTXO hash"
+        );
+        assert!(stats.details.contains(&stop), "{:?}", stats.details);
+        assert!(stats
+            .details
+            .iter()
+            .any(|d| d.starts_with("level 2: 3 UTXO set hashes not compared")));
+        let row = stats
+            .details
+            .iter()
+            .find(|d| d.starts_with("stopped"))
+            .unwrap();
+        let cols: Vec<&str> = row.split_whitespace().collect();
+        assert_eq!(
+            cols[5],
+            format!("{}/{}", MAX_ERRORS + 1, MAX_ERRORS + 4),
+            "{row}"
+        );
     }
 
     #[test]
