@@ -6,8 +6,8 @@
 //! whole, whatever it contains. An entry equals one name and waives one failure: `row 15` names
 //! `row 15 (message of size 0 ...)`, and `tx-invalid row 7` names none of that row's failures, each
 //! of which is named with its input and flags. An entry that waives no failure, in a suite that
-//! ran, fails the run, so the list cannot outlive the failures it describes or stand for several
-//! of them.
+//! ran without an error, fails the run, so the list cannot outlive the failures it describes or
+//! stand for several of them.
 //!
 //! The corpus suite names a level 0 failure by its check (`<file> check <n>`), a tip set that
 //! differs as `<file> check <n> tips`, and the replay errors of a file, which fail that file once,

@@ -51,8 +51,8 @@ RUN OPTIONS:
   --known-failures FILE
                       Checks the implementation is known to fail, one \"<suite> <location>\" per
                       line (# starts a comment line). A failure the file names is counted as
-                      known, not failed; an entry that names no failure, in a suite that ran,
-                      fails the run
+                      known, not failed; an entry that names no failure, in a suite that ran
+                      without an error, fails the run
   --vectors DIR       Vector directory (default: conformance/vectors)
   --derived DIR       Derived vector directory (default: <vectors>/derived)
   --timeout SECS      Seconds to wait for each harness response (default: 120)
@@ -570,9 +570,9 @@ fn cmd_run(opts: &Options) -> ExitCode {
 /// Prints the per-suite table, each suite's detail lines and the `RESULT:` line. Returns true
 /// when any suite failed at level 1 (level 0 for the corpus), could not run, ran no check, has
 /// checks the harness does not support, when a `--known-failures` entry of a suite that ran
-/// named no failure, or when `fail_on_level2` is set and any level 2 check differed. A suite in
-/// `checked_elsewhere` ran a check in another report of the same command and is not failed for
-/// running none here.
+/// without an error named no failure, or when `fail_on_level2` is set and any level 2 check
+/// differed. A suite in `checked_elsewhere` ran a check in another report of the same command and
+/// is not failed for running none here.
 fn print_report(
     results: &[(&str, Stats, Duration)],
     mode: &str,
@@ -642,8 +642,7 @@ fn print_report(
             }
         }
     }
-    let ran: Vec<&str> = results.iter().map(|r| r.0).collect();
-    if let Some((path, stale)) = known::stale(&ran) {
+    if let Some((path, stale)) = known::stale(&finished(results)) {
         let counts: Vec<String> = results
             .iter()
             .filter(|r| r.1.known > 0)
@@ -683,6 +682,17 @@ fn print_report(
     println!();
     println!("{line}");
     failed
+}
+
+/// The suites whose unused `--known-failures` entries are stale: those that ran without an error.
+/// A suite that stopped on one may not have reached the check an entry names, and the error
+/// already fails the run.
+fn finished<'a>(results: &[(&'a str, Stats, Duration)]) -> Vec<&'a str> {
+    results
+        .iter()
+        .filter(|r| r.1.error.is_none())
+        .map(|r| r.0)
+        .collect()
 }
 
 /// Why a suite failed to run, if it did. A selected suite that ran no check fails: a wrong
@@ -856,9 +866,32 @@ fn cmd_derive(opts: &Options) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{outcome, print_report, suite_error};
+    use super::{finished, outcome, print_report, suite_error};
     use crate::check::Stats;
     use std::time::Duration;
+
+    #[test]
+    fn only_a_suite_that_ran_without_an_error_has_stale_entries() {
+        let mut ran = Stats::default();
+        ran.pass();
+        let mut stopped = Stats::default();
+        stopped.pass();
+        stopped.error = Some("lost the harness".into());
+        let results = [
+            ("bip340", ran, Duration::ZERO),
+            (
+                "interop",
+                Stats {
+                    error: Some("--corpus missing-corpus does not exist".into()),
+                    ..Default::default()
+                },
+                Duration::ZERO,
+            ),
+            ("corpus", stopped, Duration::ZERO),
+            ("custom", Stats::default(), Duration::ZERO),
+        ];
+        assert_eq!(finished(&results), ["bip340", "custom"]);
+    }
 
     #[test]
     fn a_suite_that_ran_no_check_fails() {
