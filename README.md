@@ -66,6 +66,8 @@ Every expectation above comes from Bitcoin Core v32.1 itself: the "derived" vect
 
 Requirements: a Rust toolchain on Linux, macOS or another Unix-like system (WSL on Windows). The test runner starts harnesses and nodes with `sh` and stops them with Unix signals, so it does not build for Windows. The reference has no dependencies outside the Rust standard library; the test runner uses a few crates from crates.io (JSON, gzip, SHA-256, libsecp256k1, BIP324). The live suites also need network access to Bitcoin Core peers, and `interop` and `peer-sync` need a `bitcoind` v32.1 binary.
 
+Cargo resolves the whole workspace before it builds any part of it, so even the first command below needs access to the crates.io index, although it builds only the reference. To build the reference with no registry access, copy `reference/` and `spec/` into a new directory outside this checkout and run `cargo test --config profile.dev.opt-level=2` in the copy of `reference/`. That option restores the workspace's optimization level, without which the peer-to-peer tests time out.
+
 ```sh
 # Build the specification's code and run its known-answer tests.
 cargo test -p bitcoin-consensus-spec
