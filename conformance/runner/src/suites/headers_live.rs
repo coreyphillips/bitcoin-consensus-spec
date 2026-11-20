@@ -7,6 +7,10 @@
 //! `best_header` is the last header the peer sent, and the peer sent at least one header and a
 //! chain at least as high as the start height it announced in `version`. It reports the height and
 //! the chain work of that header (computed by the runner from the headers' `nBits`).
+//!
+//! A connection that replaces a failed one asks for the headers after the parent of the last header
+//! received, so the new peer sends that header again or its own chain from an earlier fork. One that
+//! sends no header has neither, and is replaced in turn.
 
 use crate::check::Ctx;
 use crate::hex;
@@ -67,6 +71,15 @@ fn short_download(height: usize, start_height: i32) -> Option<String> {
 }
 
 pub fn run(ctx: &mut Ctx, cfg: &Config) -> Result<(), String> {
+    run_with(ctx, cfg, resolve)
+}
+
+/// `run`, with the peer's addresses given by `resolve` (the tests' local peers).
+fn run_with(
+    ctx: &mut Ctx,
+    cfg: &Config,
+    resolve: impl Fn(&str, u16) -> Result<Vec<SocketAddr>, String>,
+) -> Result<(), String> {
     let net =
         p2p::network(&cfg.network).ok_or_else(|| format!("unknown network {}", cfg.network))?;
     for op in ["chain_reset", "chain_process_headers"] {
@@ -131,7 +144,12 @@ pub fn run(ctx: &mut Ctx, cfg: &Config) -> Result<(), String> {
         );
         start_height = peer.start_height;
         eprintln!("headers-live: connected to {peer_text}");
-        if let Err(e) = peer.request_headers(&p2p::locator(&hashes)) {
+        // The headers kept from an earlier connection are only this peer's chain once it sends
+        // the last of them again, or headers that replace it. An empty answer to a locator that
+        // starts at that header would also come from a peer whose chain ends below it.
+        let mut unconfirmed = hashes.len() > 1;
+        let from = &hashes[..hashes.len() - usize::from(unconfirmed)];
+        if let Err(e) = peer.request_headers(&p2p::locator(from)) {
             last_error = format!("{addr}: {e}");
             continue;
         }
@@ -145,10 +163,21 @@ pub fn run(ctx: &mut Ctx, cfg: &Config) -> Result<(), String> {
                     continue 'connections;
                 }
             };
+            if headers.is_empty() && unconfirmed {
+                let height = hashes.len() - 1;
+                last_error = format!(
+                    "{addr}: the peer sent no header after height {}, so its chain does not reach \
+                     the header at height {height} received from an earlier connection",
+                    height - 1
+                );
+                eprintln!("headers-live: {last_error}; reconnecting");
+                continue 'connections;
+            }
             if headers.is_empty() {
                 synced = true;
                 break;
             }
+            unconfirmed = false;
             // Connect the message to the chain received so far (a peer that reorganized may
             // continue from an earlier block).
             let first_prev = p2p::header_prev(&headers[0]);
@@ -291,7 +320,184 @@ pub fn run(ctx: &mut Ctx, cfg: &Config) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::short_download;
+    use super::{run_with, short_download, Config};
+    use crate::check::{Ctx, Stats};
+    use crate::harness::Harness;
+    use crate::hex;
+    use crate::p2p::{self, MAX_HEADERS_RESULTS};
+    use crate::tx::{sha256d, write_compact_size};
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpListener, TcpStream};
+    use std::time::Duration;
+
+    fn send(s: &mut TcpStream, command: &str, payload: &[u8]) -> std::io::Result<()> {
+        let mut m = p2p::network("regtest").unwrap().magic.to_vec();
+        let mut name = [0u8; 12];
+        name[..command.len()].copy_from_slice(command.as_bytes());
+        m.extend_from_slice(&name);
+        m.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        m.extend_from_slice(&sha256d(payload)[..4]);
+        m.extend_from_slice(payload);
+        s.write_all(&m)
+    }
+
+    fn recv(s: &mut TcpStream) -> std::io::Result<(String, Vec<u8>)> {
+        let mut head = [0u8; 24];
+        s.read_exact(&mut head)?;
+        let mut payload = vec![0; u32::from_le_bytes(head[16..20].try_into().unwrap()) as usize];
+        s.read_exact(&mut payload)?;
+        let end = head[4..16].iter().position(|&b| b == 0).unwrap_or(12);
+        Ok((String::from_utf8_lossy(&head[4..4 + end]).into(), payload))
+    }
+
+    /// Serves one connection as a peer whose chain is `hashes`/`headers` up to `tip`. It
+    /// announces `tip` as its start height, answers `answers` `getheaders` as Core does (the
+    /// headers after the first locator entry it has) and closes the connection at the next one.
+    fn serve(
+        listener: TcpListener,
+        (tip, answers): (usize, usize),
+        hashes: &[[u8; 32]],
+        headers: &[[u8; 80]],
+    ) -> std::io::Result<()> {
+        let (mut s, _) = listener.accept()?;
+        drop(listener);
+        recv(&mut s)?;
+        send(&mut s, "version", &p2p::version_payload(0, tip as i32))?;
+        send(&mut s, "verack", &[])?;
+        let mut answered = 0;
+        loop {
+            let (command, payload) = recv(&mut s)?;
+            if command != "getheaders" {
+                continue;
+            }
+            if answered == answers {
+                return Ok(());
+            }
+            answered += 1;
+            let mut pos = 4;
+            let n = p2p::read_compact_size(&payload, &mut pos)? as usize;
+            let fork = (0..n)
+                .map(|i| &payload[pos + 32 * i..pos + 32 * (i + 1)])
+                .find_map(|h| hashes[..=tip].iter().position(|x| x == h))
+                .unwrap_or(0);
+            let sent = &headers[fork + 1..=tip.min(fork + MAX_HEADERS_RESULTS)];
+            let mut reply = Vec::new();
+            write_compact_size(&mut reply, sent.len() as u64);
+            for h in sent {
+                reply.extend_from_slice(h);
+                reply.push(0);
+            }
+            send(&mut s, "headers", &reply)?;
+        }
+    }
+
+    /// Runs the suite against `peers` (each `(tip, answers)` as in `serve`), each on its own local
+    /// address and each accepting one connection, tried in turn. The stub harness accepts every message and reports the header at
+    /// height `best` as its best header. Returns the statistics and the peers' addresses.
+    fn download(
+        name: &str,
+        peers: &[(usize, usize)],
+        max_reconnects: u32,
+        best: usize,
+    ) -> (Stats, Vec<SocketAddr>) {
+        let net = p2p::network("regtest").unwrap();
+        let tip = peers.iter().map(|p| p.0).max().unwrap();
+        let mut hashes = vec![hex::decode32(net.genesis).unwrap()];
+        hashes[0].reverse();
+        let mut headers = vec![[0u8; 80]];
+        for height in 1..=tip {
+            let mut h = [0u8; 80];
+            h[0] = 4;
+            h[4..36].copy_from_slice(&hashes[height - 1]);
+            h[72..76].copy_from_slice(&net.genesis_bits.to_le_bytes());
+            h[76..80].copy_from_slice(&(height as u32).to_le_bytes());
+            hashes.push(p2p::header_hash(&h));
+            headers.push(h);
+        }
+        let mut addrs = Vec::new();
+        for &peer in peers {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            addrs.push(listener.local_addr().unwrap());
+            let (hashes, headers) = (hashes.clone(), headers.clone());
+            std::thread::spawn(move || serve(listener, peer, &hashes, &headers));
+        }
+
+        let dir = std::env::temp_dir().join(format!(
+            "bcs-headers-live-test-{}-{name}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stub = dir.join("harness.sh");
+        let reply = |op: &str, fields: &str| {
+            format!("    *'\"op\":\"{op}\"'*) printf '{{\"id\":%s,\"ok\":true,{fields}}}\\n' \"$id\";;\n")
+        };
+        let script = format!(
+            "while IFS= read -r line; do\n  id=${{line#*'\"id\":'}}; id=${{id%%[,\\}}]*}}\n  case \"$line\" in\n{}{}{}  esac\ndone\n",
+            reply(
+                "info",
+                r#""name":"stub","version":"0","spec_version":"0","ops":["info","chain_reset","chain_process_headers"]"#
+            ),
+            reply("chain_reset", &format!(r#""genesis":"{}""#, net.genesis)),
+            reply(
+                "chain_process_headers",
+                &format!(
+                    r#""result":"accepted","best_header":"{}""#,
+                    hex::encode_reversed(&hashes[best])
+                )
+            ),
+        );
+        std::fs::write(&stub, script).unwrap();
+        let mut harness =
+            Harness::start(&format!("sh '{}'", stub.display()), Duration::from_secs(10)).unwrap();
+        let mut ctx = Ctx::new(&mut harness, "headers-live", false);
+        let cfg = Config {
+            peer: "peers".into(),
+            network: "regtest".into(),
+            response_timeout: Duration::from_secs(10),
+            max_reconnects,
+        };
+        let listed = addrs.clone();
+        run_with(&mut ctx, &cfg, |_, _| Ok(listed.clone())).unwrap();
+        let stats = std::mem::take(&mut ctx.stats);
+        let _ = std::fs::remove_dir_all(&dir);
+        (stats, addrs)
+    }
+
+    /// The first peer announces 2,001, sends 2,000 headers and leaves; the second has 1,999 blocks
+    /// and so has nothing after the parent of the header at 2,000.
+    #[test]
+    fn a_replacement_peer_without_the_last_header_does_not_end_the_download() {
+        let peers = [(2001, 1), (1999, usize::MAX)];
+        let (stats, _) = download("short-replacement", &peers, 1, 2000);
+        // chain_reset and the first message pass; the download fails.
+        assert_eq!((stats.passed, stats.failed), (2, 1), "{stats:?}");
+        assert!(stats.details.is_empty(), "{stats:?}");
+    }
+
+    #[test]
+    fn a_replacement_peer_that_sends_the_last_header_again_ends_the_download() {
+        for tip in [2000, 2001] {
+            let peers = [(2001, 1), (tip, usize::MAX)];
+            let (stats, addrs) = download(&format!("replacement-{tip}"), &peers, 1, tip);
+            assert_eq!((stats.passed, stats.failed), (5, 0), "{stats:?}");
+            assert!(
+                stats.details[0].contains(&addrs[1].to_string()),
+                "{stats:?}"
+            );
+            assert!(
+                stats.details[1].starts_with(&format!("headers-live: {tip} headers in 2 messages")),
+                "{stats:?}"
+            );
+        }
+    }
+
+    /// A chain of exactly 2,000 headers ends with an empty answer to the next `getheaders`.
+    #[test]
+    fn an_empty_answer_after_a_full_message_on_the_same_connection_ends_the_download() {
+        let (stats, _) = download("same-connection", &[(2000, usize::MAX)], 0, 2000);
+        assert_eq!((stats.passed, stats.failed), (4, 0), "{stats:?}");
+        assert!(stats.details[1].contains("at height 2000"), "{stats:?}");
+    }
 
     #[test]
     fn a_download_with_no_header_fails() {

@@ -342,8 +342,11 @@ no header, which fails that check. The details report the peer, the height, the 
 `--peer HOST[:PORT]` (default port of the network); a name is resolved and its addresses are tried
 in turn. `--network` is `main` (default), `testnet3`, `testnet4`, `signet` (default challenge) or
 `regtest`. A connection that fails or stalls for `--peer-timeout` seconds (default 120) is replaced,
-at most 8 times, and the download resumes where it stopped. Headers that do not connect to the chain
-received so far, or a discontinuous `headers` message, fail the suite.
+at most 8 times, and the download resumes where it stopped. The new connection asks for the headers
+after the parent of the last header received, so the peer must send that header again (or its own
+chain from an earlier fork). A peer that answers with no header is replaced in turn, and the suite
+fails once no replacement is left. Headers that do not connect to the chain received so far, or a
+discontinuous `headers` message, fail the suite.
 
 ## Interop suite
 
