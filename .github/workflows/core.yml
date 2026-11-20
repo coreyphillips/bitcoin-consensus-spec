@@ -43,6 +43,11 @@ jobs:
         run: git clone --quiet --depth 1 --branch v32.1 https://github.com/bitcoin/bitcoin.git "$RUNNER_TEMP/bitcoin-core"
       - name: Build the oracle from Core's source
         run: BITCOIN_CORE_SRC="$RUNNER_TEMP/bitcoin-core" cargo build --release --manifest-path conformance/oracle-core/Cargo.toml
+      - name: The vendored Core vectors are Core's own files
+        run: |
+          for f in conformance/vectors/core/*; do
+            cmp "$f" "$RUNNER_TEMP/bitcoin-core/src/test/data/$(basename "$f")"
+          done
       - name: Build the runner
         run: cargo build --release -p conformance-runner
       - name: Regenerate the derived vectors
