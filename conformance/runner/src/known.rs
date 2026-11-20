@@ -14,6 +14,7 @@
 //! as `<file> errors from event <n>`: `<n>` is the event whose replay recorded the first error, so
 //! an earlier error does not pass as known. `<file> errors` names them wherever they start.
 //! `<file>` is the file name alone, which is why `corpus_files` refuses two files that share it.
+//! The entries naming a file the suite could not read are not stale: none of its checks ran.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -24,6 +25,8 @@ struct Entry {
     location: String,
     line: usize,
     used: bool,
+    /// The entry names a check the suite could not run, so it is not stale.
+    unreached: bool,
     /// The name of a failure that is close to this entry, which the entry does not name.
     hint: Option<String>,
 }
@@ -80,6 +83,7 @@ impl Known {
                 location: location.to_string(),
                 line: i + 1,
                 used: false,
+                unreached: false,
                 hint: None,
             });
         }
@@ -114,11 +118,23 @@ impl Known {
         false
     }
 
-    /// Entries of the suites in `ran` that named no failure.
+    /// Keeps the unused entries of `suite` that `names` accepts out of `stale`. They name checks
+    /// the suite could not run, which may still fail once it can.
+    pub fn unreached(&mut self, suite: &str, names: impl Fn(&str) -> bool) {
+        for e in self
+            .entries
+            .iter_mut()
+            .filter(|e| e.suite == suite && !e.used)
+        {
+            e.unreached |= names(&e.location);
+        }
+    }
+
+    /// Entries of the suites in `ran` that named no failure, apart from the unreached ones.
     pub fn stale(&self, ran: &[&str]) -> Vec<Stale> {
         self.entries
             .iter()
-            .filter(|e| !e.used && ran.contains(&e.suite.as_str()))
+            .filter(|e| !e.used && !e.unreached && ran.contains(&e.suite.as_str()))
             .map(|e| Stale {
                 suite: e.suite.clone(),
                 location: e.location.clone(),
@@ -156,6 +172,13 @@ pub fn take(suite: &str, name: &str) -> bool {
     KNOWN
         .get()
         .is_some_and(|k| k.lock().unwrap().take(suite, name))
+}
+
+/// `Known::unreached` on the run's list. Does nothing without `--known-failures`.
+pub fn unreached(suite: &str, names: impl Fn(&str) -> bool) {
+    if let Some(k) = KNOWN.get() {
+        k.lock().unwrap().unreached(suite, names);
+    }
 }
 
 /// The list's path and its stale entries, or `None` without `--known-failures`.
@@ -320,6 +343,20 @@ mod tests {
             ("corpus", "mining_basic.node0 errors", 2)
         );
         assert!(k.stale(&["bip340", "interop"]).is_empty());
+    }
+
+    #[test]
+    fn an_unreached_entry_is_not_stale() {
+        let mut k = known(
+            "corpus genesis check 2\n\
+             corpus genesis errors\n\
+             corpus other check 2\n\
+             custom genesis check 2\n",
+        )
+        .unwrap();
+        k.unreached("corpus", |e| e.starts_with("genesis "));
+        let stale: Vec<_> = k.stale(SUITES).iter().map(|s| s.line).collect();
+        assert_eq!(stale, [3, 4]);
     }
 
     #[test]

@@ -92,6 +92,16 @@ pub fn file_name(path: &Path) -> String {
         .to_string()
 }
 
+/// Whether `--known-failures` corpus entry `entry` names a check or the errors of file `file`.
+fn names_file(file: &str, entry: &str) -> bool {
+    entry
+        .strip_prefix(file)
+        .and_then(|rest| rest.strip_prefix(' '))
+        .is_some_and(|rest| {
+            rest.starts_with("check ") || rest == "errors" || rest.starts_with("errors from event ")
+        })
+}
+
 /// Reads one corpus file: the `meta` event and every following event.
 pub fn read_events(path: &Path) -> Result<(Value, Vec<Value>), String> {
     let file =
@@ -515,6 +525,9 @@ pub fn replay_file(
     let (_meta, events) = match read_events(path) {
         Ok(x) => x,
         Err(e) => {
+            // The error fails the run. The entries naming this file may still be needed once
+            // it is restored, so they are not reported stale.
+            crate::known::unreached("corpus", |entry| names_file(&name, entry));
             r.errors.push(e);
             return r;
         }
@@ -1565,6 +1578,29 @@ done"#;
         assert!(check_counts(&meta(full), &[]).is_err());
         assert!(check_counts(&meta(json!({"events": "4"})), &events).is_err());
         assert!(check_counts(&meta(json!([4])), &events).is_err());
+    }
+
+    #[test]
+    fn the_entries_of_a_file_name_its_checks_and_errors() {
+        for entry in [
+            "genesis check 2",
+            "genesis check 2 tips",
+            "genesis errors",
+            "genesis errors from event 4",
+        ] {
+            assert!(names_file("genesis", entry), "{entry}");
+        }
+        for entry in [
+            "genesis2 check 2",
+            "genesis.node0 check 2",
+            "genesis errors2",
+            "gen check 2",
+        ] {
+            assert!(!names_file("genesis", entry), "{entry}");
+        }
+        // A file name may hold a space.
+        assert!(names_file("a b", "a b check 1"));
+        assert!(!names_file("a", "a b check 1"));
     }
 
     #[test]

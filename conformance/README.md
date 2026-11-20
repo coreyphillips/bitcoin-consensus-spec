@@ -172,7 +172,8 @@ run, so the list shrinks as the implementation is fixed and never hides a check 
 the entry is the start of a name that failed, the `STALE` line shows that name. Entries of suites
 that did not run are ignored, so one file can serve runs that select different suites. So are
 those of a suite that stopped on an error, such as a `--corpus` path that does not exist: the
-error fails the run, and the entries are checked on the next run that gets past it.
+error fails the run, and the entries are checked on the next run that gets past it. The same holds
+for the entries naming a corpus file the runner cannot read, such as one cut short.
 
 ## Generating derived vectors
 
