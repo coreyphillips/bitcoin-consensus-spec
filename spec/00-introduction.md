@@ -74,7 +74,9 @@ The repository's `conformance/` directory contains a test runner, the test vecto
 |---|---|---|
 | Script | Chapters 02 to 08 for single transactions | `script-tests`, `tx-valid`, `tx-invalid`, `sighash`, `bip341`, `bip340`, `script-assets`, `custom` |
 | Chain | Chapters 09 to 13 and 15 | `pow`, `signet`, `params`, `block-connect`, `corpus`, `headers-live` |
-| Network | Chapter 14 | `interop` |
+| Network | Chapter 14 | `interop`, `peer-sync` |
+
+`peer-sync` is the only suite that sends a node the blocks Bitcoin Core rejects through the node's own synchronization, where a node may validate several blocks at once (Appendix B section B.4). The reference's node (chapter 14 section 14.5) stops at the first invalid block by design, so that suite is checked with Bitcoin Core v32.1 as the node.
 
 Separately from the classes, the runner grades how closely each result matches. A suite passes when every verdict matches (for the block corpus, every active tip). Differences in error identifiers, and in the corpus' UTXO set hashes, are counted as a further match *level* and fail the run only with `--fail-on-level2`; differences in the corpus' chain tips are only reported (`conformance/README.md`).
 

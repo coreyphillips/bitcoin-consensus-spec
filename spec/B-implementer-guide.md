@@ -18,7 +18,7 @@ Everything else (multiple peers, mempool, RPC, wallets, indexes) is optional and
 1. Read chapters 00 and 01 fully, then each chapter in order, translating its code. Keep the structure of the reference while doing so; optimize later.
 2. Build the harness early. Run `bcs-conformance --impl "<your harness>"` after each chapter: the suites of the script class (chapter 00 section 0.5) need chapters 02 to 08, those of the chain and network classes need everything.
 3. Only when every suite passes, restructure for performance (section B.4), re-running the suite after every change.
-4. Run the live tests: regtest interop against Bitcoin Core, then the header chains of testnet4 and mainnet, then a full synchronization of testnet4 and mainnet, comparing the UTXO set fingerprint (chapter 15) with Bitcoin Core's published values.
+4. Run the live tests: regtest interop against Bitcoin Core, then `peer-sync`, then the header chains of testnet4 and mainnet, then a full synchronization of testnet4 and mainnet, comparing the UTXO set fingerprint (chapter 15) with Bitcoin Core's published values. `peer-sync` is the only one that sends the node invalid blocks. It serves every recorded block Bitcoin Core rejects through the node's own synchronization, and the node must keep running after each one (`conformance/PROTOCOL.md` section 5.1).
 
 ## B.3 Cryptography in production
 
@@ -75,9 +75,14 @@ Rules:
    Re-run the full suite after every optimization.
 5. When everything passes, run the interop suite against Bitcoin Core on regtest:
    `bcs-conformance interop --bitcoind <path to bitcoind> --node "<node command using
-   {network} {peer} {stop_at} {options}>"`. Then synchronize testnet4 and mainnet, stopping
-   at each block hash listed in chapter 15, and compare your UTXO set fingerprint with the
-   value listed there.
+   {network} {peer} {stop_at} {options}>"`. Then run the peer-sync suite, which serves your
+   node every recorded block Bitcoin Core rejects through the node's own synchronization:
+   `bcs-conformance peer-sync --bitcoind <path to bitcoind> --sync-node "<node command
+   using {network} {datadir} {peer} {options}>"`. Its node contract is section 5.1 of
+   conformance/PROTOCOL.md: the node keeps running after an invalid block, answers tip
+   requests on standard input, and stops when told to. Then synchronize testnet4 and
+   mainnet, stopping at each block hash listed in chapter 15, and compare your UTXO set
+   fingerprint with the value listed there.
 6. Record every place the specification was unclear in SPEC_FEEDBACK.md, with the chapter and
    section, what you assumed, and how a test confirmed or refuted the assumption.
 ```
