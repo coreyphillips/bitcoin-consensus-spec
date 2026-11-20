@@ -2,8 +2,8 @@
 """Checks that the specification version is stated consistently and moves with the text.
 
 spec/VERSION is the one source. README.md and chapter 00 must state the same version, and
-CHANGELOG.md must have an entry for it. Compared with the newest v<core-release>-<revision> tag,
-spec/VERSION must not be older, must be the next version if spec/ has changed since that tag, and
+CHANGELOG.md must have an entry for it. Compared with the newest v<core-release>-<revision> tag
+before HEAD, spec/VERSION must not be older, must be the next version if spec/ has changed since that tag, and
 must equal any version tag on HEAD (as committed there).
 
 Needs the repository's tags: in GitHub Actions, check out with fetch-depth: 0.
@@ -59,7 +59,8 @@ def check():
     if version not in entries:
         errors.append(f"CHANGELOG.md has no '## {version}' entry")
 
-    tags = [tag for tag in git("tag", "--list", "v*").split() if parse(tag)]
+    # A tag on HEAD is the release being checked, so it must follow the newest tag before HEAD.
+    tags = [tag for tag in git("tag", "--no-contains", "HEAD", "--list", "v*").split() if parse(tag)]
     if not tags:
         return errors + ["no version tags found; fetch them (in GitHub Actions, fetch-depth: 0)"]
     latest = max(tags, key=parse)
