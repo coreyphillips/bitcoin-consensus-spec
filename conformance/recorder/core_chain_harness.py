@@ -32,6 +32,7 @@ import base64
 import http.client
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -355,7 +356,12 @@ class Harness:
     def handle(self, req):
         op = req.get("op")
         if op == "info":
-            return {"name": "bitcoin-core-chain-harness", "version": core_version(), "spec_version": "v32.1-1", "ops": OPS}
+            # A harness that wraps Bitcoin Core reports the Core release, not a specification
+            # revision (PROTOCOL.md section 4.1): "v32.1.0" is release v32.1.
+            version = core_version()
+            release = re.search(r"\bv\d+\.\d+", version)
+            return {"name": "bitcoin-core-chain-harness", "version": version,
+                    "spec_version": release.group(0) if release else version, "ops": OPS}
         if op == "chain_reset":
             network = req.get("network", "regtest")
             options = req.get("options") or {}

@@ -10,11 +10,11 @@ Bitcoin has no consensus document that predates its software. The rules are what
 |---|---|
 | Bitcoin Core release | v32.1 |
 | Source commit | `f0de87f040621468b956f01f526a43a010310501` |
-| Specification version | `v32.1-1` |
+| Specification version | `v32.1-3` |
 
 Every rule in this document was derived from that source code. Each normative definition names the Bitcoin Core function it mirrors (for example "Core: `CheckTransaction`, `src/consensus/tx_check.cpp`") so that any statement can be audited against the code. Where Bitcoin Core behaves in a surprising way, this specification reproduces the surprise and says so; a consensus specification must describe what the network does, not what would have been cleaner.
 
-When Bitcoin Core changes consensus (for example through a soft fork), a new specification version is released against the new Bitcoin Core release. Version numbers have the form `v<core-release>-<revision>`; the revision counts corrections and clarifications of this document that do not correspond to any change in Bitcoin Core.
+When Bitcoin Core changes consensus (for example through a soft fork), a new specification version is released against the new Bitcoin Core release. Version numbers have the form `v<core-release>-<revision>`; the revision counts corrections and clarifications of this document that do not correspond to any change in Bitcoin Core. `CHANGELOG.md`, at the root of the repository, lists what each revision changed.
 
 ## 0.2 How to read this document
 

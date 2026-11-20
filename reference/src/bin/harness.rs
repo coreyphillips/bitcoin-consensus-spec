@@ -265,7 +265,7 @@ fn handle(op: &str, req: &Fields, chain: &mut Option<ChainState>) -> Result<Opti
         "info" => obj(vec![
             ("name", Json::Str("bitcoin-consensus-spec reference".into())),
             ("version", Json::Str(env!("CARGO_PKG_VERSION").into())),
-            ("spec_version", Json::Str("v32.1-1".into())),
+            ("spec_version", Json::Str(SPEC_VERSION.into())),
             ("ops", Json::Arr(OPS.iter().map(|s| Json::Str(s.to_string())).collect())),
         ]),
         "script_verify" => {
