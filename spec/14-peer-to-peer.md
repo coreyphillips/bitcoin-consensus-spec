@@ -13,7 +13,7 @@ magic:4 | command:12 | length:u32 | checksum:4 | payload:length
 ```
 
 - `magic` is the network's message start (chapter 12). A message with the wrong magic means the peer is on another network; disconnect.
-- `command` is an ASCII name, padded with zero bytes to 12 bytes. Bitcoin Core drops a message whose command field is malformed (a non-zero byte after a zero byte, or non-printable characters).
+- `command` is an ASCII name, padded with zero bytes to 12 bytes. Bitcoin Core drops a message whose command field is malformed and keeps the connection. A field is malformed if a byte before the first zero byte is outside 0x20 to 0x7E, or if a non-zero byte follows a zero byte. Core checks this when the payload has arrived, together with the checksum (Core: `CMessageHeader::IsMessageTypeValid`, `src/protocol.cpp`).
 - `checksum` is the first 4 bytes of `sha256d(payload)`. Bitcoin Core drops a message with a wrong checksum and keeps the connection.
 - `length` must not exceed 4,000,000 (Core: `MAX_PROTOCOL_MESSAGE_LENGTH`). Bitcoin Core checks the magic and the length as soon as the 24-byte header has arrived, before reading any payload, and disconnects a peer that sends the wrong magic or an oversized length. A receiver MUST do the same, or a peer can make it buffer gigabytes.
 
@@ -45,7 +45,8 @@ pub fn encode_message(magic: [u8; 4], command: &str, payload: &[u8]) -> Vec<u8> 
 }
 
 /// Checks a 24-byte message header as soon as it has arrived, before the payload is read.
-/// Returns the command and the payload length. Core: `V1Transport::ProcessReceivedHeaderBytes`.
+/// Returns the command and the payload length. The command field is checked later, by
+/// `decode_frame`. Core: `V1Transport::ProcessReceivedHeaderBytes`.
 pub fn check_frame_header(header: &[u8], magic: [u8; 4]) -> std::io::Result<(String, usize)> {
     use std::io::{Error, ErrorKind};
     assert!(header.len() >= 24);
@@ -60,12 +61,19 @@ pub fn check_frame_header(header: &[u8], magic: [u8; 4]) -> std::io::Result<(Str
     Ok((String::from_utf8_lossy(&header[4..4 + name_end]).to_string(), length))
 }
 
-/// Decodes one complete frame. `Ok(None)` means the checksum was wrong and the message must be
-/// dropped (the connection stays open).
+/// Whether a 12-byte command field is well formed: printable ASCII up to the first zero byte, and
+/// only zero bytes after it. Core: `CMessageHeader::IsMessageTypeValid`.
+pub fn command_field_valid(field: &[u8]) -> bool {
+    let end = field.iter().position(|&b| b == 0).unwrap_or(field.len());
+    field[..end].iter().all(|b| (0x20..=0x7e).contains(b)) && field[end..].iter().all(|&b| b == 0)
+}
+
+/// Decodes one complete frame. `Ok(None)` means the checksum or the command field was wrong and the
+/// message must be dropped (the connection stays open). Core: `V1Transport::GetReceivedMessage`.
 pub fn decode_frame(frame: &[u8], magic: [u8; 4]) -> std::io::Result<Option<Message>> {
     let (command, length) = check_frame_header(frame, magic)?;
     let payload = &frame[24..24 + length];
-    if sha256d(payload)[..4] != frame[20..24] {
+    if sha256d(payload)[..4] != frame[20..24] || !command_field_valid(&frame[4..16]) {
         return Ok(None);
     }
     Ok(Some(Message { command, payload: payload.to_vec() }))
@@ -86,7 +94,8 @@ Rules Bitcoin Core v32.1 enforces (Core: `PeerManagerImpl::ProcessMessage`, `src
 - A `feature` message (protocol version 70017) from a peer whose negotiated version is below 70017, or with a malformed payload, causes a disconnect. A node that advertises 70016 MUST NOT send `feature`.
 - The handshake must complete within 60 seconds. A connection on which nothing has been sent or received for 20 minutes is closed.
 - `ping` must be answered with `pong` echoing the 8-byte nonce. Bitcoin Core pings every two minutes and disconnects a peer that has not answered for 20 minutes.
-- *Misbehaviour* (for example a `headers` message with more than 2,000 headers, an `inv` or `getdata` with more than 50,000 entries, headers with invalid proof of work, or a locator with more than 101 hashes) makes Bitcoin Core disconnect the peer and *discourage* its address (lower priority for future connections). Peers with the `noban` permission are only logged; peers on the local machine are disconnected but not discouraged.
+- *Misbehaviour* (for example a `headers` message with more than 2,000 headers, an `inv` or `getdata` with more than 50,000 entries, or headers with invalid proof of work) makes Bitcoin Core disconnect the peer and *discourage* its address (lower priority for future connections). Peers with the `noban` permission are only logged; peers on the local machine are disconnected but not discouraged.
+- A `getheaders` or `getblocks` whose locator has more than 101 hashes is not misbehaviour. Bitcoin Core disconnects the peer, even one with `noban`, and does not discourage its address.
 
 The `version` payload is:
 
@@ -717,7 +726,7 @@ Default ports are in chapter 12. Peer discovery is not part of consensus; any so
 
 ## 14.7 Tests
 
-Three tests play a peer that never lets the synchronization finish on its own: one that never answers `getheaders`, one that answers every `getheaders` with the same 2,000 headers, and one that stops reading. `sync_from_peer` must return once its idle limit has passed. One plays an honest peer whose chain forks 2,100 headers below the node's best header and has more work: the node must end with the peer's tip as its best header. Another plays a peer that extends its chain after the node has asked from that chain's last header, then announces it with an `inv`: the node must follow the batch that again ends at that header. Two more play a peer that sends a header before the handshake completes: one sends it before its `verack`, the other sends `verack` and the header before its `version`. The node must take neither header. The last two serve headers from a chain of 2,001 connected blocks, with a side branch and two headers past the active tip. One calls `answer_getheaders` for each rule of section 14.3. The other plays a peer that sends `getheaders` to the node, including one that gets no answer and one that cannot be decoded, and checks the bytes of every `headers` message the node sends back.
+Three tests play a peer that never lets the synchronization finish on its own: one that never answers `getheaders`, one that answers every `getheaders` with the same 2,000 headers, and one that stops reading. `sync_from_peer` must return once its idle limit has passed. One plays an honest peer whose chain forks 2,100 headers below the node's best header and has more work: the node must end with the peer's tip as its best header. Another plays a peer that extends its chain after the node has asked from that chain's last header, then announces it with an `inv`: the node must follow the batch that again ends at that header. Two more play a peer that sends a header before the handshake completes: one sends it before its `verack`, the other sends `verack` and the header before its `version`. The node must take neither header. One checks the command field rule of section 14.1: `decode_frame` drops each kind of malformed field, and a node whose peer answers `getheaders` with a header in a frame whose command field is `headers`, four zero bytes and `x` must not take it. The last two serve headers from a chain of 2,001 connected blocks, with a side branch and two headers past the active tip. One calls `answer_getheaders` for each rule of section 14.3. The other plays a peer that sends `getheaders` to the node, including one that gets no answer and one that cannot be decoded, and checks the bytes of every `headers` message the node sends back.
 
 ```rust
 #[cfg(test)]
@@ -918,6 +927,34 @@ mod sync_tests {
         let address = scripted_peer(handshake(&early), move |stream, message| {
             if message.command == "getheaders" {
                 let _ = stream.write_all(&empty);
+            }
+        });
+        let (end, state) = sync(address, None, 1, false);
+        assert_eq!(end.unwrap(), SyncEnd::Idle);
+        assert_eq!(state.best_header().hash, regtest().params.genesis.header.hash());
+    }
+
+    #[test]
+    fn a_malformed_command_field_is_dropped() {
+        let magic = regtest().params.magic;
+        let with_field = |field: &[u8; 12], payload: &[u8]| {
+            let mut frame = encode_message(magic, "", payload);
+            frame[4..16].copy_from_slice(field);
+            frame
+        };
+        for field in [b"headers\0\0\0\0\0", b"abcdefghijkl", b"a b~\0\0\0\0\0\0\0\0"] {
+            let command = String::from_utf8(field.iter().copied().take_while(|&b| b != 0).collect()).unwrap();
+            assert_eq!(decode_frame(&with_field(field, &[]), magic).unwrap(), Some(Message { command, payload: Vec::new() }));
+        }
+        for field in [b"headers\0\0\0\0x", b"\0headers\0\0\0\0", b"head\x1fers\0\0\0\0", b"headers\x7f\0\0\0\0", b"headers\x80\0\0\0\0"] {
+            assert_eq!(decode_frame(&with_field(field, &[]), magic).unwrap(), None);
+        }
+        // The node must not take a header that arrives under a malformed command.
+        let dropped = with_field(b"headers\0\0\0\0x", &encode_headers(&[header_on_genesis()]));
+        let answer = [dropped, encode_message(magic, "headers", &encode_headers(&[]))].concat();
+        let address = scripted_peer(handshake(&[]), move |stream, message| {
+            if message.command == "getheaders" {
+                let _ = stream.write_all(&answer);
             }
         });
         let (end, state) = sync(address, None, 1, false);
