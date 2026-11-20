@@ -1,11 +1,13 @@
 //! Builds the reference crate from the specification text.
 //!
-//! Every fenced code block whose info string is exactly `rust` in `spec/NN-*.md` is normative. This
+//! Every fenced code block whose info string is exactly `rust` in `spec/*.md` is normative. This
 //! script copies those blocks, in document order, into one module per chapter. All chapter modules
 //! are glob re-exported at the crate root and every module glob-imports the crate root, so code in
 //! any chapter can name items from any other chapter, exactly as the prose does.
 //!
-//! Blocks with any other info string (`text`, `rust,ignore`, ...) are not compiled.
+//! Blocks marked `text` are not compiled. Any other fence fails the build, because a block opened
+//! with `Rust`, `rs`, no info string, tildes or four backticks would otherwise drop out of the
+//! crate unnoticed.
 
 use std::{env, fs, path::Path};
 
@@ -28,7 +30,7 @@ fn main() {
         println!("cargo:rerun-if-changed={}", path.display());
         let text = fs::read_to_string(&path).expect("read chapter");
         let file_name = path.file_name().unwrap().to_string_lossy().to_string();
-        let code = extract(&text, &file_name);
+        let code = extract(&text, &file_name).unwrap_or_else(|error| panic!("{error}"));
         if code.is_empty() {
             continue;
         }
@@ -47,33 +49,66 @@ fn main() {
 }
 
 /// Returns the normative Rust code of one chapter, with a comment pointing at the source line of
-/// every block so compiler messages can be traced back to the document.
-fn extract(text: &str, file_name: &str) -> String {
+/// every block so compiler messages can be traced back to the document. Fails on any fence it
+/// cannot classify as opening a `rust` block, opening a `text` block, or closing a block.
+///
+/// `tests/spec_fences.rs` includes this file to test this function.
+pub(crate) fn extract(text: &str, file_name: &str) -> Result<String, String> {
     let mut out = String::new();
-    let mut in_block = false;
+    // The line the open block started on, if one is open.
+    let mut opened_at: Option<usize> = None;
     let mut normative = false;
-    for (number, line) in text.lines().enumerate() {
+    for (index, line) in text.lines().enumerate() {
+        let number = index + 1;
+        let at = format!("spec/{file_name}:{number}");
         let trimmed = line.trim_start();
-        if !in_block {
-            if let Some(info) = trimmed.strip_prefix("```") {
-                in_block = true;
-                normative = info.trim() == "rust";
-                if normative {
-                    out.push_str(&format!("// spec/{}:{}\n", file_name, number + 2));
-                }
-            }
-        } else if trimmed.starts_with("```") {
-            in_block = false;
+        if opened_at.is_none() && trimmed.starts_with("~~~") {
+            return Err(format!("{at}: open code blocks with three backticks, not tildes"));
+        }
+        let Some(rest) = trimmed.strip_prefix("```") else {
             if normative {
+                out.push_str(line);
                 out.push('\n');
             }
-        } else if normative {
-            out.push_str(line);
-            out.push('\n');
+            continue;
+        };
+        if rest.starts_with('`') {
+            return Err(format!("{at}: code fences must be exactly three backticks"));
+        }
+        let info = rest.trim();
+        match opened_at {
+            None => {
+                if info != "rust" && info != "text" {
+                    return Err(format!(
+                        "{at}: code block marked {info:?}; mark it \"rust\" (compiled) or \"text\" (not compiled)"
+                    ));
+                }
+                opened_at = Some(number);
+                normative = info == "rust";
+                if normative {
+                    out.push_str(&format!("// spec/{file_name}:{}\n", number + 1));
+                }
+            }
+            // Markdown renders this line as part of the open block, so treating it as the close
+            // would disagree with what readers see. It usually means a closing fence is missing.
+            Some(opened) if !info.is_empty() => {
+                return Err(format!(
+                    "{at}: \"```{info}\" inside the code block opened at line {opened}; is that block missing its closing fence?"
+                ));
+            }
+            Some(_) => {
+                opened_at = None;
+                if normative {
+                    out.push('\n');
+                }
+                normative = false;
+            }
         }
     }
-    assert!(!in_block, "unterminated code block in spec/{file_name}");
-    out
+    if let Some(opened) = opened_at {
+        return Err(format!("spec/{file_name}:{opened}: code block is never closed"));
+    }
+    Ok(out)
 }
 
 /// `05-script-execution` becomes `ch05_script_execution`; `A-quirks` becomes `appendix_a_quirks`.
