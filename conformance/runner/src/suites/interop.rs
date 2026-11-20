@@ -252,8 +252,26 @@ fn run_node(command: &str, stderr_path: &Path, timeout: Duration) -> Result<Node
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if let Ok(Some(status)) = child.try_wait() {
-                    // Drain what is left, then stop waiting.
-                    while let Ok(Ok(line)) = rx.recv_timeout(Duration::from_millis(200)) {
+                    // Drain what is left until the output goes quiet, then stop waiting. A process
+                    // the command left running can keep writing to the output it inherited, so
+                    // the drain too ends at the deadline.
+                    const QUIET: Duration = Duration::from_millis(200);
+                    let mut timed_out = false;
+                    while out.stopped.is_none() {
+                        let left = deadline.saturating_duration_since(Instant::now());
+                        if left.is_zero() {
+                            timed_out = true;
+                            break;
+                        }
+                        let line = match rx.recv_timeout(left.min(QUIET)) {
+                            Ok(Ok(line)) => line,
+                            // A wait the deadline cut short did not see the output go quiet.
+                            Err(mpsc::RecvTimeoutError::Timeout) => {
+                                timed_out = left < QUIET;
+                                break;
+                            }
+                            _ => break,
+                        };
                         if !line.starts_with('{') {
                             continue;
                         }
@@ -264,7 +282,13 @@ fn run_node(command: &str, stderr_path: &Path, timeout: Duration) -> Result<Node
                         }
                     }
                     out.exit = Some(status);
-                    if out.stopped.is_none() {
+                    if timed_out {
+                        out.problems.push(format!(
+                            "the node exited ({status}) without a stopped line and its output \
+                             did not go quiet within {} s",
+                            timeout.as_secs()
+                        ));
+                    } else if out.stopped.is_none() {
                         out.problems
                             .push(format!("the node exited ({status}) without a stopped line"));
                     }
@@ -828,5 +852,50 @@ mod tests {
             "{}",
             out.problems[0]
         );
+    }
+
+    /// A wrapper that exits while a process it started keeps writing to its output is held to the
+    /// node timeout, and that process is ended.
+    #[test]
+    fn output_after_the_node_exited_is_held_to_the_timeout() {
+        let path = std::env::temp_dir().join(format!("bcs-interop-writer-{}", std::process::id()));
+        let pid_file =
+            std::env::temp_dir().join(format!("bcs-interop-writer-{}.pid", std::process::id()));
+        // The writer starts once the runner has waited 500 ms for a line and seen the exit, and
+        // then writes for 20 s with gaps shorter than the drain waits for.
+        let command = format!(
+            "sh -c 'echo $$ > {pid}; sleep 0.6; i=0; \
+             while [ $i -lt 400 ]; do echo x; sleep 0.05; i=$((i+1)); done' & exit 3",
+            pid = pid_file.display()
+        );
+        let started = Instant::now();
+        let out = run_node(&command, &path, Duration::from_secs(1)).unwrap();
+        let elapsed = started.elapsed();
+        let _ = std::fs::remove_file(&path);
+        let writer: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let _ = std::fs::remove_file(&pid_file);
+        assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+        assert!(out.stopped.is_none());
+        assert_eq!(out.exit.and_then(|s| s.code()), Some(3));
+        assert_eq!(out.problems.len(), 1, "{:?}", out.problems);
+        assert!(
+            out.problems[0].starts_with("the node exited (")
+                && out.problems[0].ends_with(
+                    ") without a stopped line and its output did not go quiet within 1 s"
+                ),
+            "{}",
+            out.problems[0]
+        );
+        // Ended with the group. Elsewhere than Linux process 1 reaps it a moment later.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        // SAFETY: signal 0 only checks that the process exists.
+        while unsafe { libc::kill(writer, 0) } == 0 {
+            assert!(Instant::now() < deadline, "the writer was left running");
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 }
