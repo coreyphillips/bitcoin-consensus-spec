@@ -1,0 +1,40 @@
+//! build.rs fails on a code fence it cannot classify, so a mistyped fence stops the build instead of
+//! dropping a normative block from the crate.
+
+#[allow(dead_code)]
+#[path = "../build.rs"]
+mod build;
+
+fn extract(text: &str) -> Result<String, String> {
+    build::extract(text, "99-test.md")
+}
+
+#[test]
+fn rust_blocks_are_compiled_and_text_blocks_are_not() {
+    let code = extract("prose\n```rust\nfn a() {}\n```\n\n```text\ndiagram\n```\n  ```rust\n  fn b() {}\n  ```\n").unwrap();
+    assert_eq!(code, "// spec/99-test.md:3\nfn a() {}\n\n// spec/99-test.md:10\n  fn b() {}\n\n");
+}
+
+#[test]
+fn a_mistyped_opening_fence_fails() {
+    for opening in ["```Rust", "```rs", "```rust,ignore", "```", "````rust", "~~~rust", "```rust blocks are normative"] {
+        let text = format!("prose\n{opening}\nfn a() {{}}\n```\n");
+        match extract(&text) {
+            Err(error) => assert!(error.starts_with("spec/99-test.md:2: "), "{opening}: {error}"),
+            Ok(code) => panic!("{opening} was accepted and gave {code:?}"),
+        }
+    }
+}
+
+#[test]
+fn an_info_string_inside_a_block_fails() {
+    let error = extract("```text\ndiagram\n```rust\nfn a() {}\n```\n").unwrap_err();
+    assert!(error.starts_with("spec/99-test.md:3: "), "{error}");
+    assert!(error.contains("opened at line 1"), "{error}");
+}
+
+#[test]
+fn an_unclosed_block_fails() {
+    let error = extract("prose\n```rust\nfn a() {}\n").unwrap_err();
+    assert!(error.starts_with("spec/99-test.md:2: "), "{error}");
+}
