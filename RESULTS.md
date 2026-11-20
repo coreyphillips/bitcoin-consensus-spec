@@ -40,7 +40,7 @@ The tools these reviews wrote were not kept, so the figures below are a record o
 
 ## 3. Mutation audit
 
-Each mutant changes one rule in a copy of the reference (for example "treat the transaction version as signed in BIP68", "check the block weight before the witness commitment"). A mutant is caught when some suite fails. 105 of the 145 mutants break a quirk from Appendix A and name its item. The other 40 break a rule Appendix A does not list, such as the coinbase script length or a mainnet activation height. `run.py --items` prints the Appendix A items that no mutant breaks: 19 of 79. The mutants and the script that runs them are in `conformance/mutation`.
+Each mutant changes one rule in a copy of the reference (for example "treat the transaction version as signed in BIP68", "check the block weight before the witness commitment"). A mutant is caught when some suite fails. 106 of the 160 mutants break a quirk from Appendix A and name its item. The other 54 break a rule Appendix A does not list, such as the coinbase script length or a mainnet activation height. `run.py --items` prints the Appendix A items that no mutant breaks: 19 of 79. The mutants and the script that runs them are in `conformance/mutation`.
 
 | Mutants | Caught by the vectors and corpus | Notes |
 |---|---|---|
