@@ -99,13 +99,17 @@ Appendix B section B.5 contains a prompt for handing this repository to an AI sy
 
 In scope: everything that decides block and transaction validity and chain selection on mainnet, testnet3, testnet4, signet and regtest; the peer-to-peer subset needed to synchronize with Bitcoin Core. Out of scope: transaction relay policy and the mempool, mining, wallets, RPC, BIP324 encrypted transport.
 
-No test suite proves the absence of divergence. This specification and its suites are strong evidence, built from Bitcoin Core's own tests and code, not a proof. Report a disagreement with Bitcoin Core v32.1 as a defect (Appendix B section B.6).
+No test suite proves the absence of divergence. This specification and its suites are strong evidence, built from Bitcoin Core's own tests and code, not a proof. Report a disagreement with Bitcoin Core v32.1 as a defect (Appendix B section B.6), with the failing input. Use the issue template, or report it privately as `SECURITY.md` describes when a block or transaction on a public network could trigger it.
 
 ## Updating
 
 When Bitcoin Core changes consensus, a new specification version is cut against the new release: diff the consensus code between the two tags, update the affected chapters and Appendix A, regenerate the derived vectors with the oracle built from the new tag, and re-record the block corpus.
 
 `spec/VERSION` holds the specification version; `reference-harness` reports it, and this README and chapter 00 state it. The first change to `spec/` after a version tag moves `spec/VERSION` to the next revision and opens its entry in `CHANGELOG.md`; later changes add to that entry. Tag the revision with the same name. CI runs `.github/check_spec_version.py`, which fails when the stated versions disagree, when `spec/` has changed since the newest tag without a new revision, or when a tag names a different version than `spec/VERSION`.
+
+## Contributing
+
+`CONTRIBUTING.md` covers adding a vector, a block scenario or a mutant, and the checks CI runs on a pull request.
 
 ## License
 

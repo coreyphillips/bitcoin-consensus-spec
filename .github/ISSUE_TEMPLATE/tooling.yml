@@ -1,0 +1,33 @@
+name: Conformance tooling
+description: A bug in the runner, a harness, the recorder, the mutation audit or CI.
+labels: [bug]
+body:
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The exact command line, with the harness or node command you passed.
+      render: sh
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: What it printed. With the runner, `--verbose` shows each failing check.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, `rustc --version`, the commit, and the bitcoind version if the suite runs one.
+    validations:
+      required: true
