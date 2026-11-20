@@ -13,11 +13,8 @@ use std::time::{Duration, Instant};
 /// an offset derived from the process id so concurrent runs rarely collide.
 pub fn free_ports(range: (u16, u16), count: usize, avoid: &[u16]) -> Result<Vec<u16>, String> {
     let (lo, hi) = range;
-    let span = (hi - lo) as u32 + 1;
-    let start = std::process::id() % span;
     let mut ports = Vec::new();
-    for i in 0..span {
-        let port = lo + ((start + i * 7) % span) as u16;
+    for port in port_order(range, std::process::id()) {
         if avoid.contains(&port) || ports.contains(&port) {
             continue;
         }
@@ -31,6 +28,26 @@ pub fn free_ports(range: (u16, u16), count: usize, avoid: &[u16]) -> Result<Vec<
         }
     }
     Err(format!("no {count} free ports in {lo}-{hi}"))
+}
+
+/// Every port of `range` once, in the order [`free_ports`] tries them: from an offset derived
+/// from `seed`, in strides of about 7 so that runs with adjacent process ids try different ports
+/// first. The stride must be coprime to the range's size, or the walk cycles through only a
+/// fraction of the range.
+fn port_order((lo, hi): (u16, u16), seed: u32) -> impl Iterator<Item = u16> {
+    let span = (hi - lo) as u32 + 1;
+    let start = seed % span;
+    let step = (7..)
+        .find(|&s| gcd(s, span) == 1)
+        .expect("a stride coprime to the span");
+    (0..span).map(move |i| lo + ((start + i * step) % span) as u16)
+}
+
+fn gcd(mut a: u32, mut b: u32) -> u32 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
 }
 
 /// The Bitcoin Core release the corpus was recorded from, `core.version` in
@@ -293,6 +310,32 @@ with open(os.path.join(args["datadir"], "regtest", ".cookie"), "w") as f:
     f.write("__cookie__:test")
 server.serve_forever()
 "#;
+
+    /// The walk visits every port of the range exactly once, also when the range's size is a
+    /// multiple of 7 (32200-32206 used to yield one port only).
+    #[test]
+    fn port_order_visits_every_port_once() {
+        let mut ranges: Vec<(u16, u16)> = (0..=100).map(|n| (32200, 32200 + n)).collect();
+        ranges.extend([(65529, 65535), (65535, 65535), (0, 30029), (0, 65535)]);
+        for range in ranges {
+            for seed in [0, 1, 6, 7, 12345, u32::MAX] {
+                let mut seen: Vec<u16> = port_order(range, seed).collect();
+                seen.sort_unstable();
+                let all: Vec<u16> = (range.0..=range.1).collect();
+                assert!(seen == all, "{range:?} from seed {seed}");
+            }
+        }
+    }
+
+    /// Adjacent process ids do not try the same ports first.
+    #[test]
+    fn port_order_spreads_adjacent_seeds() {
+        for range in [(29000, 29999), (32200, 32269)] {
+            let a: Vec<u16> = port_order(range, 0).take(2).collect();
+            let b: Vec<u16> = port_order(range, 1).take(2).collect();
+            assert!(a.iter().all(|p| !b.contains(p)), "{range:?}: {a:?} {b:?}");
+        }
+    }
 
     /// A fresh directory for one test, holding `script` as the executable `bitcoind`.
     fn fake(name: &str, script: &str) -> std::path::PathBuf {
