@@ -18,10 +18,11 @@
 //!
 //! Level 0 at normative checks is required, and so is level 1 with `--fail-on-tips`. Non-normative
 //! level 0 checks, level 1 without that flag and level 2 are reported separately. A harness error
-//! (`ok: false`, a crash) or a corrupt file is a failure. `--known-failures` names a level 0
-//! failure as `<file> check <n>`, a tip set that differs as `<file> check <n> tips` and a file's
-//! errors as `<file> errors from event <n>`, `<n>` being the event whose replay recorded the first
-//! one.
+//! (`ok: false`, a crash) or a corrupt file is a failure. A file's replay stops after more than
+//! `MAX_ERRORS` errors, and each check it leaves fails at every level it carries, as a failed call
+//! would. `--known-failures` names a level 0 failure as `<file> check <n>`, a tip set that differs
+//! as `<file> check <n> tips` and a file's errors as `<file> errors from event <n>`, `<n>` being
+//! the event whose replay recorded the first one.
 
 use crate::check::{short_hash, shorten, Ctx};
 use crate::hex;
@@ -262,6 +263,7 @@ pub fn event_request(ev: &Value, base: &Path) -> Result<(&'static str, String), 
 pub struct FileResult {
     pub name: String,
     pub events: u64,
+    /// Every check of the file, the ones after a stop on too many errors too (`*_skipped`).
     pub checks: u64,
     pub normative: u64,
     /// Normative checks that compare the chain work too.
@@ -269,8 +271,14 @@ pub struct FileResult {
     pub l0_fail: u64,
     /// Normative checks that failed as `--known-failures` says (not in `l0_fail`).
     pub l0_known: u64,
+    /// Normative checks after the replay stopped on too many errors (also counted in `normative`,
+    /// and in `l0_fail` or `l0_known`).
+    pub l0_skipped: u64,
     pub l0_other: u64,
     pub l0_other_fail: u64,
+    /// Non-normative checks after the replay stopped (also counted in `l0_other` and
+    /// `l0_other_fail`).
+    pub l0_other_skipped: u64,
     /// Level 1 checks. A `chain_tips` call that failed is an error and a tip set that differs.
     pub l1: u64,
     pub l1_fail: u64,
@@ -279,14 +287,16 @@ pub struct FileResult {
     /// Level 1 checks not compared because the harness does not list `chain_tips` (also counted
     /// in `l1_fail`).
     pub l1_uncompared: u64,
+    /// Level 1 checks after the replay stopped (also counted in `l1`, and in `l1_fail` or
+    /// `l1_known`).
+    pub l1_skipped: u64,
     /// Level 2 checks. A `utxo_hash` call that failed is an error and a mismatch.
     pub l2: u64,
     pub l2_fail: u64,
     /// Level 2 checks not compared because the harness does not list `utxo_hash` (also counted
     /// in `l2_fail`).
     pub l2_uncompared: u64,
-    /// Level 2 checks after the replay stopped on too many errors (also counted in `l2` and
-    /// `l2_fail`).
+    /// Level 2 checks after the replay stopped (also counted in `l2` and `l2_fail`).
     pub l2_skipped: u64,
     pub restarts: u64,
     pub restarts_skipped: u64,
@@ -414,6 +424,79 @@ fn tips_set(v: &Value) -> BTreeSet<Triple> {
         .unwrap_or_default()
 }
 
+/// Where a check is, after its name: `(event <idx>, line <line>, <label>)`.
+fn check_at(idx: usize, ev: &Value) -> String {
+    let label = ev["label"].as_str().unwrap_or("");
+    format!(
+        "(event {idx}, line {}{}{})",
+        idx + 2,
+        if label.is_empty() { "" } else { ", " },
+        label
+    )
+}
+
+/// Counts check `ev` (event `idx`), which a replay stopped on too many errors did not reach, as
+/// failed at every level it carries, unless `--known-failures` names it at that level.
+fn skip_check(
+    ctx: &Ctx,
+    r: &mut FileResult,
+    idx: usize,
+    ev: &Value,
+    fail_on_tips: bool,
+    printed: &mut [usize; 3],
+) {
+    let n = ev["n"].as_i64().unwrap_or(-1);
+    let at = check_at(idx, ev);
+    r.checks += 1;
+    if ev["normative"].as_bool().unwrap_or(true) {
+        r.normative += 1;
+        r.chainwork += u64::from(ev.get("chainwork").is_some());
+        r.l0_skipped += 1;
+        let known = crate::known::take("corpus", &format!("{} check {n}", r.name));
+        if known {
+            r.l0_known += 1;
+        } else {
+            r.l0_fail += 1;
+        }
+        if ctx.verbose && (known || printed[0] < MAX_MISMATCH_LINES) {
+            let tag = if known { "KNOWN" } else { "FAIL" };
+            println!("{tag:<8} [corpus] {} check {n} {at}: not replayed", r.name);
+        }
+        printed[0] += usize::from(!known);
+    } else {
+        r.l0_other += 1;
+        r.l0_other_fail += 1;
+        r.l0_other_skipped += 1;
+    }
+    if ev.get("tips").is_some() {
+        r.l1 += 1;
+        r.l1_skipped += 1;
+        let known = crate::known::take("corpus", &format!("{} check {n} tips", r.name));
+        if known {
+            r.l1_known += 1;
+        } else {
+            r.l1_fail += 1;
+        }
+        if ctx.verbose && (known || printed[1] < MAX_MISMATCH_LINES) {
+            let tag = match (known, fail_on_tips) {
+                (true, _) => "KNOWN",
+                (false, true) => "FAIL",
+                (false, false) => "LEVEL1",
+            };
+            println!(
+                "{tag:<8} [corpus] {} check {n} tips {at}: not replayed",
+                r.name
+            );
+        }
+        printed[1] += usize::from(!known);
+    }
+    if ev.get("utxo").is_some() {
+        r.l2 += 1;
+        r.l2_fail += 1;
+        r.l2_skipped += 1;
+    }
+}
+
 /// Replays one file through the harness. `fail_on_tips` only changes how a tip set that differs
 /// is printed; `run` decides whether it fails.
 pub fn replay_file(
@@ -455,18 +538,23 @@ pub fn replay_file(
             r.note_first_error(prev);
         }
         if r.errors.len() > MAX_ERRORS {
-            let rest = || events[idx..].iter().filter(|e| e["type"] == "check");
-            let utxo = rest().filter(|e| e.get("utxo").is_some()).count() as u64;
-            // Mismatches, as for a failed utxo_hash call: with --fail-on-level2, an entry waiving
-            // the file's errors must not pass the hashes the stop leaves unchecked.
-            r.l2 += utxo;
-            r.l2_fail += utxo;
-            r.l2_skipped = utxo;
+            // Every check left is counted at each of its levels and fails there, as a failed call
+            // would: an entry waiving the file's errors must not pass the checks the stop leaves
+            // unchecked. Each takes the entry that would waive it had it been replayed.
+            let reached = r.checks;
+            for (i, ev) in events.iter().enumerate().skip(idx) {
+                if ev["type"] == "check" {
+                    skip_check(ctx, &mut r, i, ev, fail_on_tips, &mut printed);
+                }
+            }
             r.stopped_at = Some(idx);
             r.errors.push(format!(
-                "too many errors, replay stopped at event {idx}: {} checks not replayed, \
-                 {utxo} of them with a UTXO hash",
-                rest().count()
+                "too many errors, replay stopped at event {idx}: {} checks not replayed \
+                 ({} normative, {} with a tip set, {} with a UTXO hash)",
+                r.checks - reached,
+                r.l0_skipped,
+                r.l1_skipped,
+                r.l2_skipped
             ));
             break;
         }
@@ -565,18 +653,12 @@ pub fn replay_file(
                 r.checks += 1;
                 let normative = ev["normative"].as_bool().unwrap_or(true);
                 let n = ev["n"].as_i64().unwrap_or(-1);
-                let label = ev["label"].as_str().unwrap_or("");
                 let want = format!(
                     "{} height {}",
                     short_hash(ev["tip"].as_str().unwrap_or("?")),
                     ev["height"]
                 );
-                let at = format!(
-                    "(event {idx}, line {}{}{})",
-                    idx + 2,
-                    if label.is_empty() { "" } else { ", " },
-                    label
-                );
+                let at = check_at(idx, ev);
                 let loc = format!("{name} check {n} {at}");
                 // Level 0, with the chain work when the check carries it.
                 let want_work = ev.get("chainwork").and_then(Value::as_str);
@@ -758,7 +840,7 @@ pub fn replay_file(
     }
     if ctx.verbose && printed[0] > MAX_MISMATCH_LINES {
         println!(
-            "         [corpus] {name}: {} more level 0 mismatches not shown",
+            "         [corpus] {name}: {} more level 0 failures not shown",
             printed[0] - MAX_MISMATCH_LINES
         );
     }
@@ -814,6 +896,7 @@ pub fn run(
             "normative": fr.normative,
             "normative_failed": fr.l0_fail,
             "normative_known": fr.l0_known,
+            "normative_skipped": fr.l0_skipped,
             "chainwork": fr.chainwork,
             "other": fr.l0_other,
             "other_failed": fr.l0_other_fail,
@@ -885,12 +968,15 @@ pub fn run(
         totals.normative += fr.normative;
         totals.l0_fail += fr.l0_fail;
         totals.l0_known += fr.l0_known;
+        totals.l0_skipped += fr.l0_skipped;
         totals.l0_other += fr.l0_other;
         totals.l0_other_fail += fr.l0_other_fail;
+        totals.l0_other_skipped += fr.l0_other_skipped;
         totals.l1 += fr.l1;
         totals.l1_fail += fr.l1_fail;
         totals.l1_known += fr.l1_known;
         totals.l1_uncompared += fr.l1_uncompared;
+        totals.l1_skipped += fr.l1_skipped;
         totals.l2 += fr.l2;
         totals.l2_fail += fr.l2_fail;
         totals.l2_uncompared += fr.l2_uncompared;
@@ -934,10 +1020,29 @@ pub fn run(
         totals.redelivered,
         totals.outcomes.iter().map(|(k, v)| format!("{k} {v}")).collect::<Vec<_>>().join(", ")
     ));
+    let stopped = "a replay stopped on too many errors before them";
+    if totals.l0_skipped > 0 {
+        ctx.stats.details.push(format!(
+            "level 0: {} normative checks not replayed ({stopped})",
+            totals.l0_skipped
+        ));
+    }
+    if totals.l0_other_skipped > 0 {
+        ctx.stats.details.push(format!(
+            "level 0: {} non-normative checks not replayed ({stopped})",
+            totals.l0_other_skipped
+        ));
+    }
     if totals.l1_uncompared > 0 {
         ctx.stats.details.push(format!(
             "level 1: {} chain tip sets not compared (the harness does not list chain_tips)",
             totals.l1_uncompared
+        ));
+    }
+    if totals.l1_skipped > 0 {
+        ctx.stats.details.push(format!(
+            "level 1: {} chain tip sets not compared ({stopped})",
+            totals.l1_skipped
         ));
     }
     if totals.l2_uncompared > 0 {
@@ -948,7 +1053,7 @@ pub fn run(
     }
     if totals.l2_skipped > 0 {
         ctx.stats.details.push(format!(
-            "level 2: {} UTXO set hashes not compared (a replay stopped on too many errors before them)",
+            "level 2: {} UTXO set hashes not compared ({stopped})",
             totals.l2_skipped
         ));
     }
@@ -1294,7 +1399,7 @@ done"#;
         // The check at event MAX_ERRORS + 1 recorded the last error before the stop.
         let stopped_at = MAX_ERRORS + 2;
         assert_eq!(r.stopped_at, Some(stopped_at));
-        assert_eq!(r.checks, MAX_ERRORS as u64 + 1);
+        assert_eq!(r.checks, MAX_ERRORS as u64 + 5);
         assert_eq!(
             (r.l2, r.l2_fail, r.l2_skipped),
             (MAX_ERRORS as u64 + 4, 3, 3)
@@ -1303,7 +1408,7 @@ done"#;
         assert_eq!(stats.l2_mismatches, 3);
         let stop = format!(
             "    error: too many errors, replay stopped at event {stopped_at}: \
-             4 checks not replayed, 3 of them with a UTXO hash"
+             4 checks not replayed (4 normative, 3 with a tip set, 3 with a UTXO hash)"
         );
         assert!(stats.details.contains(&stop), "{:?}", stats.details);
         assert!(stats
@@ -1320,6 +1425,81 @@ done"#;
             cols[5],
             format!("{}/{}", MAX_ERRORS + 1, MAX_ERRORS + 4),
             "{row}"
+        );
+    }
+
+    #[test]
+    fn checks_after_a_stop_on_too_many_errors_fail_at_their_levels() {
+        // chain_tips fails, so every check with a tip set records one error; chain_tip matches.
+        let script = stub_with(r#"*'"op":"chain_tips"'*)"#, r#"*'"op":"no_such_op"'*)"#);
+        let tips = json!([{"hash": "t", "height": 0, "status": "active"}]);
+        let check =
+            |n: usize| json!({"type": "check", "n": n, "tip": "t", "height": 0, "tips": tips});
+        let mut events = vec![json!({"type": "reset", "network": "regtest"})];
+        events.extend((1..=MAX_ERRORS + 1).map(check));
+        // Left by the stop: two normative checks with a tip set, one without, one non-normative.
+        events.extend([check(MAX_ERRORS + 2), check(MAX_ERRORS + 3)]);
+        let mut plain = json!({"type": "check", "n": MAX_ERRORS + 4, "tip": "t", "height": 0});
+        events.push(plain.clone());
+        plain["n"] = json!(MAX_ERRORS + 5);
+        plain["normative"] = json!(false);
+        events.push(plain);
+        let reached = MAX_ERRORS as u64 + 1;
+        let stats = |name: &str, fail_on_tips: bool| {
+            with_stub(name, &events, &script, |ctx, path| {
+                let r = replay_file(ctx, path, false, fail_on_tips);
+                run(ctx, &[path.to_path_buf()], false, fail_on_tips).unwrap();
+                (r, std::mem::take(&mut ctx.stats))
+            })
+        };
+
+        let (r, reported) = stats("skipped-reported", false);
+        assert_eq!(r.checks, reached + 4);
+        assert_eq!((r.normative, r.l0_fail, r.l0_skipped), (reached + 3, 3, 3));
+        assert_eq!((r.l0_other, r.l0_other_fail, r.l0_other_skipped), (1, 1, 1));
+        assert_eq!(
+            (r.l1, r.l1_fail, r.l1_skipped),
+            (reached + 2, reached + 2, 2)
+        );
+        // Each unreplayed normative check fails on its own, so an entry waiving the file's
+        // errors cannot pass the file; the non-normative one does not count.
+        assert_eq!(
+            (reported.cases, reported.passed, reported.failed),
+            (reached + 4, reached, 4)
+        );
+        let row = reported
+            .details
+            .iter()
+            .find(|d| d.starts_with("skipped-reported"))
+            .unwrap();
+        let cols: Vec<&str> = row.split_whitespace().collect();
+        assert_eq!(
+            cols[1..5],
+            [
+                (reached + 4).to_string(),
+                format!("{reached}/{}", reached + 3),
+                "0/1".to_string(),
+                format!("0/{}", reached + 2)
+            ],
+            "{row}"
+        );
+        for line in [
+            "level 0: 3 normative checks not replayed",
+            "level 0: 1 non-normative checks not replayed",
+            "level 1: 2 chain tip sets not compared (a replay stopped",
+        ] {
+            assert!(
+                reported.details.iter().any(|d| d.starts_with(line)),
+                "{line}: {:?}",
+                reported.details
+            );
+        }
+
+        // With --fail-on-tips, every tip set is a check, the two left by the stop too.
+        let (_, enforced) = stats("skipped-enforced", true);
+        assert_eq!(
+            (enforced.cases, enforced.passed, enforced.failed),
+            (2 * reached + 6, reached, reached + 6)
         );
     }
 
