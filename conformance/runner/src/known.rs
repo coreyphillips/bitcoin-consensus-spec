@@ -14,7 +14,9 @@
 //! as `<file> errors from event <n>`: `<n>` is the event whose replay recorded the first error, so
 //! an earlier error does not pass as known. `<file> errors` names them wherever they start.
 //! `<file>` is the file name alone, which is why `corpus_files` refuses two files that share it.
-//! The entries naming a file the suite could not read are not stale: none of its checks ran.
+//! No entry waives the errors of a file the suite could not read or replay as it stands, such as
+//! one whose block sidecar is missing. The entries naming that file are not stale: its checks did
+//! not run, or ran without the whole scenario.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};

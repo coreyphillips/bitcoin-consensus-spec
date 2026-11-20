@@ -22,7 +22,8 @@
 //! `MAX_ERRORS` errors, and each check it leaves fails at every level it carries, as a failed call
 //! would. `--known-failures` names a level 0 failure as `<file> check <n>`, a tip set that differs
 //! as `<file> check <n> tips` and a file's errors as `<file> errors from event <n>`, `<n>` being
-//! the event whose replay recorded the first one.
+//! the event whose replay recorded the first one. No entry waives the errors of a file with a
+//! defect: the file or a block sidecar cannot be read, or an event cannot be replayed as it stands.
 
 use crate::check::{short_hash, shorten, Ctx};
 use crate::hex;
@@ -319,6 +320,9 @@ pub struct FileResult {
     /// The 0-based index of the event whose replay recorded the first error; none for a file
     /// that could not be read.
     pub first_error_event: Option<usize>,
+    /// The index in `errors` of the first error the file caused rather than the harness: the
+    /// file or a block sidecar cannot be read, or an event cannot be replayed as it stands.
+    pub defect: Option<usize>,
     pub outcomes: BTreeMap<String, u64>,
     pub seconds: f64,
 }
@@ -340,12 +344,18 @@ impl FileResult {
         }
     }
 
+    /// Records error `e`, which the file caused rather than the harness.
+    fn push_defect(&mut self, e: String) {
+        self.defect.get_or_insert(self.errors.len());
+        self.errors.push(e);
+    }
+
     /// Whether `--known-failures` waives this file's errors, given `take` for the corpus suite:
     /// an entry names them by the event of the first one, or as `<file> errors` wherever they
-    /// start. A file that could not be read is a corpus defect, not the harness's: no entry
-    /// waives it.
+    /// start. An entry is for the harness's errors, so none waives a file with a defect, which
+    /// may also have kept the harness from the event the entry names.
     pub fn errors_waived(&self, take: &mut dyn FnMut(&str) -> bool) -> bool {
-        self.first_error_event.is_some()
+        self.defect.is_none()
             && (take(&self.errors_location()) || take(&format!("{} errors", self.name)))
     }
 }
@@ -528,7 +538,7 @@ pub fn replay_file(
             // The error fails the run. The entries naming this file may still be needed once
             // it is restored, so they are not reported stale.
             crate::known::unreached("corpus", |entry| names_file(&name, entry));
-            r.errors.push(e);
+            r.push_defect(e);
             return r;
         }
     };
@@ -612,8 +622,7 @@ pub fn replay_file(
                     continue;
                 }
                 let Some(net) = network.clone() else {
-                    r.errors
-                        .push(format!("event {idx}: restart before any reset"));
+                    r.push_defect(format!("event {idx}: restart before any reset"));
                     continue;
                 };
                 options = new_options;
@@ -626,12 +635,17 @@ pub fn replay_file(
                     continue;
                 }
                 for pev in &prefix {
-                    let answer =
-                        event_request(pev, &base).and_then(|(op, fields)| call(ctx, op, &fields));
                     r.redelivered += 1;
-                    if let Err(e) = answer {
-                        r.errors
-                            .push(format!("event {idx} (re-delivery after restart): {e}"));
+                    match event_request(pev, &base) {
+                        Ok((op, fields)) => {
+                            if let Err(e) = call(ctx, op, &fields) {
+                                r.errors
+                                    .push(format!("event {idx} (re-delivery after restart): {e}"));
+                            }
+                        }
+                        Err(e) => {
+                            r.push_defect(format!("event {idx} (re-delivery after restart): {e}"))
+                        }
                     }
                 }
                 if ctx.verbose {
@@ -645,14 +659,22 @@ pub fn replay_file(
                 }
             }
             "block" | "headers" | "invalidate" => {
-                let answer =
-                    event_request(ev, &base).and_then(|(op, fields)| call(ctx, op, &fields));
-                match &answer {
-                    Ok(a) => {
-                        let outcome = a.get("result").and_then(Value::as_str).unwrap_or("ok");
-                        *r.outcomes.entry(format!("{kind}:{outcome}")).or_default() += 1;
+                let answer = match event_request(ev, &base) {
+                    Ok((op, fields)) => {
+                        let answer = call(ctx, op, &fields);
+                        if let Err(e) = &answer {
+                            r.errors.push(format!("event {idx} {kind}: {e}"));
+                        }
+                        answer
                     }
-                    Err(e) => r.errors.push(format!("event {idx} {kind}: {e}")),
+                    Err(e) => {
+                        r.push_defect(format!("event {idx} {kind}: {e}"));
+                        Err(e)
+                    }
+                };
+                if let Ok(a) = &answer {
+                    let outcome = a.get("result").and_then(Value::as_str).unwrap_or("ok");
+                    *r.outcomes.entry(format!("{kind}:{outcome}")).or_default() += 1;
                 }
                 if ctx.verbose {
                     recent.push(describe_event(idx, ev, &answer));
@@ -842,14 +864,17 @@ pub fn replay_file(
                 }
                 recent.clear();
             }
-            "meta" => r.errors.push(format!("event {idx}: a second meta event")),
-            other => r
-                .errors
-                .push(format!("event {idx}: unknown event type {other:?}")),
+            "meta" => r.push_defect(format!("event {idx}: a second meta event")),
+            other => r.push_defect(format!("event {idx}: unknown event type {other:?}")),
         }
     }
     if let Some(last) = events.len().checked_sub(1) {
         r.note_first_error(last);
+    }
+    if r.defect.is_some() {
+        // The defect fails the run. The checks after it did not see the scenario the entries
+        // were written against, so the entries naming this file are not reported stale.
+        crate::known::unreached("corpus", |entry| names_file(&name, entry));
     }
     if ctx.verbose && printed[0] > MAX_MISMATCH_LINES {
         println!(
@@ -940,7 +965,18 @@ pub fn run(
             .stopped_at
             .and(fr.errors.last())
             .filter(|_| fr.errors.len() > SHOWN_ERRORS);
-        for e in fr.errors.iter().take(SHOWN_ERRORS).chain(stop) {
+        // So is the first defect, which fails the file whatever the list says.
+        let defect = fr
+            .defect
+            .filter(|&i| i >= SHOWN_ERRORS)
+            .map(|i| &fr.errors[i]);
+        for e in fr
+            .errors
+            .iter()
+            .take(SHOWN_ERRORS)
+            .chain(defect)
+            .chain(stop)
+        {
             ctx.stats.details.push(format!("    error: {e}"));
             if ctx.verbose {
                 println!("ERROR    [corpus] {}: {e}", fr.name);
@@ -967,11 +1003,17 @@ pub fn run(
                 ctx.stats.failed += 1;
             }
             if ctx.verbose {
+                let which = match fr.defect {
+                    Some(i) => format!(
+                        "among them a corpus defect, which no entry waives: {}",
+                        fr.errors[i]
+                    ),
+                    None => format!("the first: {}", fr.errors[0]),
+                };
                 println!(
-                    "{:<8} [corpus] {loc}: {} errors, the first: {}",
+                    "{:<8} [corpus] {loc}: {} errors, {which}",
                     if known { "KNOWN" } else { "FAIL" },
-                    fr.errors.len(),
-                    fr.errors[0]
+                    fr.errors.len()
                 );
             }
         }
@@ -1351,6 +1393,74 @@ done"#;
         assert_eq!(r.errors_location(), "last errors from event 0");
     }
 
+    #[test]
+    fn no_entry_waives_errors_the_file_caused() {
+        let raw = hex::decode(GENESIS).unwrap();
+        let block = json!({"type": "block", "hash": GENESIS_HASH, "blob": "blobs/genesis.gz",
+                           "sha256": hex::encode(&Sha256::digest(&raw)), "size": raw.len(),
+                           "now": 1});
+        let reset = json!({"type": "reset", "network": "regtest"});
+        let check = json!({"type": "check", "n": 1, "tip": "t", "height": 0});
+        // Writes `blob` as the block's sidecar, gzipped, before the replay.
+        let with_blob = |name: &str, events: &[Value], blob: Option<&[u8]>| {
+            with_file(name, events, |ctx, path| {
+                let dir = path.parent().unwrap().join("blobs");
+                std::fs::create_dir_all(&dir).unwrap();
+                if let Some(bytes) = blob {
+                    let file = std::fs::File::create(dir.join("genesis.gz")).unwrap();
+                    let mut gz = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
+                    gz.write_all(bytes).unwrap();
+                    gz.finish().unwrap();
+                }
+                let r = replay_file(ctx, path, false, false);
+                run(ctx, &[path.to_path_buf()], false, false).unwrap();
+                (r, std::mem::take(&mut ctx.stats))
+            })
+        };
+        let waived = |r: &FileResult, list: &str| {
+            let mut k = crate::known::Known::parse(Path::new("k"), list, &["corpus"]).unwrap();
+            r.errors_waived(&mut |name| k.take("corpus", name))
+        };
+        let events = [reset.clone(), block, check.clone()];
+
+        // The stub fails chain_process_block: with the sidecar there, the error is the harness's.
+        let (r, _) = with_blob("sidecar-intact", &events, Some(&raw));
+        assert_eq!(r.errors, ["event 1 block: internal: stub"]);
+        assert_eq!(r.defect, None);
+        assert!(waived(&r, "corpus sidecar-intact errors from event 1"));
+
+        // Without it, the harness never gets the block the entry was written for.
+        let (r, _) = with_blob("sidecar-missing", &events, None);
+        assert!(
+            r.errors[0].starts_with("event 1 block: cannot open blob"),
+            "{:?}",
+            r.errors
+        );
+        assert_eq!((r.errors.len(), r.defect), (1, Some(0)));
+        assert_eq!(r.errors_location(), "sidecar-missing errors from event 1");
+        assert!(!waived(&r, "corpus sidecar-missing errors from event 1"));
+        assert!(!waived(&r, "corpus sidecar-missing errors"));
+
+        let (r, _) = with_blob("sidecar-short", &events, Some(&raw[..80]));
+        assert!(r.errors[0].contains("has 80 bytes"), "{:?}", r.errors);
+        assert_eq!(r.defect, Some(0));
+
+        // A defect after harness errors still fails the file, and is shown past the ones listed.
+        let invalidate = json!({"type": "invalidate", "hash": "ab", "now": 7});
+        let mut events = vec![reset.clone()];
+        events.extend((0..=SHOWN_ERRORS).map(|_| invalidate.clone()));
+        events.extend([json!({"type": "nosuch"}), check]);
+        let (r, stats) = with_blob("late-defect", &events, None);
+        assert_eq!(r.defect, Some(SHOWN_ERRORS + 1), "{:?}", r.errors);
+        assert_eq!(r.errors_location(), "late-defect errors from event 1");
+        assert!(!waived(&r, "corpus late-defect errors from event 1"));
+        let shown = format!(
+            "    error: event {}: unknown event type \"nosuch\"",
+            SHOWN_ERRORS + 2
+        );
+        assert!(stats.details.contains(&shown), "{:?}", stats.details);
+    }
+
     /// A reset and one normative check with a tip set (that the stub's `chain_tips` matches) and a
     /// UTXO hash.
     fn tips_and_utxo_check() -> [Value; 2] {
@@ -1603,17 +1713,20 @@ done"#;
         assert!(!names_file("a", "a b check 1"));
     }
 
+    /// The regtest genesis block and its hash.
+    const GENESIS: &str = "0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4adae5494dffff7f20020000000101000000010000000000000000000000000000000000000000000000000000000000000000ffffffff4d04ffff001d0104455468652054696d65732030332f4a616e2f32303039204368616e63656c6c6f72206f6e206272696e6b206f66207365636f6e64206261696c6f757420666f722062616e6b73ffffffff0100f2052a01000000434104678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5fac00000000";
+    const GENESIS_HASH: &str = "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206";
+
     #[test]
     fn event_requests() {
-        let genesis_block = "0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4adae5494dffff7f20020000000101000000010000000000000000000000000000000000000000000000000000000000000000ffffffff4d04ffff001d0104455468652054696d65732030332f4a616e2f32303039204368616e63656c6c6f72206f6e206272696e6b206f66207365636f6e64206261696c6f757420666f722062616e6b73ffffffff0100f2052a01000000434104678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5fac00000000";
-        let ev = json!({"type": "block", "hash": "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206",
-                        "hex": genesis_block, "now": 5, "via": "p2p", "requested": false});
+        let ev = json!({"type": "block", "hash": GENESIS_HASH,
+                        "hex": GENESIS, "now": 5, "via": "p2p", "requested": false});
         let (op, body) = event_request(&ev, Path::new(".")).unwrap();
         assert_eq!(op, "chain_process_block");
         let v: Value = serde_json::from_str(&format!("{{{body}}}")).unwrap();
         assert_eq!(
             v,
-            json!({"block": genesis_block, "now": 5, "via": "p2p", "requested": false})
+            json!({"block": GENESIS, "now": 5, "via": "p2p", "requested": false})
         );
         // A wrong hash is a corrupt file.
         let mut bad = ev.clone();
