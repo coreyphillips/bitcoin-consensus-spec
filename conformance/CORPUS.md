@@ -36,7 +36,7 @@ Always the first line. Describes provenance; a runner only needs `format`, `form
 | `scenario`, `node` | Test name and node index |
 | `source` | Test file path (in the Bitcoin Core tree, or `conformance/recorder/extra/`), its SHA256, and the test arguments used |
 | `core` | Version, commit, SHA256 of the `bitcoind` binary and of the release tarball |
-| `recorder` | Base image digest, built image ID, Python version, SHA256 of every functional test framework file |
+| `recorder` | Base image digest, built image ID, Python version, SHA256 of every functional test framework file, and `unpinned`, present only when the recording was made with files that do not match `recorder/pins.json`: one line per such file |
 | `recorded_at` | UTC time the recording started |
 | `counts` | Number of events, blocks, headers events, invalidations, restarts, checks and normative checks |
 | `notes` | Free-text remarks about this scenario, if any |

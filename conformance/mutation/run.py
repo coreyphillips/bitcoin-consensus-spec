@@ -174,9 +174,24 @@ def block_verdict(harness):
 EVALUATE = {"script": script_verdict, "block": block_verdict}
 
 
-def copy_repo(name, work):
+def tracked_files():
+    """The files git tracks, outside any `vectors` directory (the runner reads the vectors of the
+    repository itself). Untracked files, however large, stay out of the copies; a new source file
+    needs `git add` before a copy builds with it."""
+    out = subprocess.run(["git", "ls-files", "-z"], cwd=REPO, capture_output=True, check=True).stdout
+    paths = [p for p in os.fsdecode(out).split("\0") if p]
+    return [p for p in paths if "vectors" not in p.split("/")[:-1]]
+
+
+def copy_repo(name, work, files):
     copy = os.path.join(tempfile.mkdtemp(prefix=name + "-", dir=work), "repo")
-    shutil.copytree(REPO, copy, ignore=shutil.ignore_patterns("target", ".git", ".idea", "vectors"))
+    for rel in files:
+        src = os.path.join(REPO, rel)
+        if not os.path.lexists(src):  # deleted in the working tree
+            continue
+        dst = os.path.join(copy, rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(src, dst, follow_symlinks=False)
     return copy
 
 
@@ -196,8 +211,8 @@ def build(copy):
     return harness, None
 
 
-def audit(mutant, work):
-    copy = copy_repo(mutant["name"], work)
+def audit(mutant, work, files):
+    copy = copy_repo(mutant["name"], work, files)
     try:
         path = os.path.join(copy, "spec", mutant["file"])
         with open(path) as f:
@@ -214,9 +229,9 @@ def audit(mutant, work):
         shutil.rmtree(os.path.dirname(copy), ignore_errors=True)
 
 
-def baseline(kinds, work, pool):
+def baseline(kinds, work, pool, files):
     """Runs the suites of `kinds` against an unmodified copy and exits unless every check passes."""
-    copy = copy_repo("unmodified", work)
+    copy = copy_repo("unmodified", work, files)
     try:
         harness, failure = build(copy)
         if failure:
@@ -269,11 +284,12 @@ def main():
                 opts.kind + " " if opts.kind else "", ", ".join(sorted(unknown))))
         mutants = [m for m in mutants if m["name"] in names]
     kinds = [k for k in EVALUATE if any(m["kind"] == k for m in mutants)]
+    files = tracked_files()
     unexpected = 0
     with tempfile.TemporaryDirectory(prefix="bcs-mutants-") as work:
         with concurrent.futures.ThreadPoolExecutor(max_workers=opts.jobs) as pool:
-            baseline(kinds, work, pool)
-            results = pool.map(lambda m: (m, audit(m, work)), mutants)
+            baseline(kinds, work, pool, files)
+            results = pool.map(lambda m: (m, audit(m, work, files)), mutants)
             for mutant, (verdict, detail) in results:
                 ok = verdict == mutant["expect"]
                 unexpected += not ok

@@ -427,13 +427,23 @@ class Recorder:
         method = proxy._service_name
         if self.tl("internal", False) or method is None:
             return orig(proxy, *args, **kwargs)
-        if method in UNSUPPORTED_RPCS:
-            self.emit({"ev": "unsupported_rpc", "method": method})
-        if method not in STATE_RPCS:
+        if method not in STATE_RPCS and method not in UNSUPPORTED_RPCS:
             return orig(proxy, *args, **kwargs)
         url = proxy._AuthServiceProxy__url
         idx = self.node_for_port(url.port)
         s = self.session_for(idx) if idx is not None else None
+        if method in UNSUPPORTED_RPCS:
+            # postprocess.py refuses a node whose chain such a call changed.
+            ev = {"ev": "unsupported_rpc", "node": idx, "session": s.id if s else None, "method": method}
+            try:
+                result = orig(proxy, *args, **kwargs)
+            except Exception as e:
+                ev.update(ok=False, error=str(getattr(e, "error", None) or e))
+                self.emit(ev)
+                raise
+            ev["ok"] = True
+            self.emit(ev)
+            return result
         if s is None:
             return orig(proxy, *args, **kwargs)
         synced = self.can_sync()
@@ -544,6 +554,9 @@ class Recorder:
             ev["now_end"] = s.now()
         elif method in ("invalidateblock", "reconsiderblock", "preciousblock"):
             ev["hash"] = self.arg(args, kwargs, 0, "blockhash")
+            if method == "reconsiderblock" and ok:
+                # walk() counts invalid tips as complete; they can take a block again now.
+                ns.complete.clear()
         ev["t1"] = time.time()
         self.emit(ev)
 
@@ -599,19 +612,26 @@ class Recorder:
                    "stable": stable, "now": s.now(), "mocktime": s.mocktime})
 
     def walk(self, ns, s, tips):
-        """Find block index entries this recorder has not seen delivered."""
+        """Find block index entries this recorder has not seen delivered.
+
+        The walk down from each tip stops at a complete entry: one whose
+        ancestors are all complete and whose block Core has, or which is an
+        invalid tip (Core stores no block for an entry marked invalid). A
+        header-only entry is walked again at every checkpoint, because its
+        block can still arrive from another peer."""
         found = []
+        visited = set()
         for t in tips:
             h = t["hash"]
             stack = []
-            while h is not None and h not in ns.complete:
+            while h is not None and h not in ns.complete and h not in visited:
                 hdr = s.rpc.getblockheader(h)
                 ns.meta[h] = {"height": hdr["height"], "chainwork": hdr["chainwork"],
                               "prev": hdr.get("previousblockhash"), "ntx": hdr["nTx"]}
+                visited.add(h)
                 stack.append(h)
                 h = hdr.get("previousblockhash")
-            for h in stack:
-                ns.complete.add(h)
+            complete = h is None or h in ns.complete
             for h in reversed(stack):
                 m = ns.meta[h]
                 if m["ntx"] > 0 and h not in ns.known_block:
@@ -621,6 +641,10 @@ class Recorder:
                 elif m["ntx"] == 0 and h not in ns.known_header:
                     found.append(("header", h, s.rpc.getblockheader(h, False)))
                     ns.known_header.add(h)
+                final = m["ntx"] > 0 or (h == t["hash"] and t["status"] == "invalid")
+                complete = complete and final
+                if complete:
+                    ns.complete.add(h)
         return found
 
 
