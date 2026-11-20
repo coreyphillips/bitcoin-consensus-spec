@@ -111,6 +111,8 @@ The `version` payload is:
 | start height | i32 | Height of the active tip |
 | relay | u8 (0 or 1) | 0 to receive no transaction announcements |
 
+The peer's service bits say which blocks it can serve. `NODE_NETWORK` (bit 0) means every block. `NODE_NETWORK_LIMITED` (bit 10) means the last 288 blocks of its active chain (BIP159). Bitcoin Core v32.1 always sets bit 10 and adds bit 0 unless it is pruned (or still validating the blocks below an assumeutxo snapshot). A peer that sets bit 10 without bit 0 is therefore a *pruned* peer, and section 14.4 limits what may be asked of it. Bitcoin Core neither starts a headers synchronization with a peer that sets neither bit nor downloads blocks from it (Core: `CanServeBlocks`, `IsLimitedPeer`, `src/net_processing.cpp`).
+
 ```rust
 pub const PROTOCOL_VERSION: i32 = 70016;
 /// Core: `MIN_PEER_PROTO_VERSION`.
@@ -118,6 +120,15 @@ pub const MIN_PEER_PROTO_VERSION: i32 = 31800;
 pub const NODE_NETWORK: u64 = 1;
 pub const NODE_WITNESS: u64 = 1 << 3;
 pub const NODE_NETWORK_LIMITED: u64 = 1 << 10;
+/// Core: `NODE_NETWORK_LIMITED_MIN_BLOCKS`. How many blocks below its tip a pruned peer serves.
+pub const NODE_NETWORK_LIMITED_MIN_BLOCKS: i32 = 288;
+
+/// Whether a peer offering `services` is pruned: it serves only its last 288 blocks.
+/// Core: `IsLimitedPeer`.
+pub fn is_limited_peer(services: u64) -> bool {
+    services & NODE_NETWORK == 0 && services & NODE_NETWORK_LIMITED != 0
+}
+
 /// Core: `MAX_INV_SZ`. More entries in one `inv` or `getdata` is misbehaviour.
 pub const MAX_INV_SZ: usize = 50_000;
 
@@ -182,11 +193,20 @@ A node learns the header chain with `getheaders` and `headers`:
 
 How Bitcoin Core answers `getheaders` (Core: the `GETHEADERS` case of `ProcessMessage`, `Chainstate::FindForkInGlobalIndex`, `src/validation.cpp`):
 
+- A locator of more than 101 hashes gets no answer: the peer is disconnected (section 14.2).
+- While it is importing blocks from files (`-loadblock`) or reindexing, it sends **nothing at all** (Core: `BlockManager::LoadingBlocks`). It ignores `headers` and `block` messages then too.
 - While its own active chain has less work than its minimum chain work, it answers with an empty `headers` message, unless the requester has the `download` permission (for example through `-whitelist`). A node synchronizing from a Bitcoin Core node that is itself still synchronizing therefore gets headers only up to that node's active tip, or none at all.
 - With an **empty locator**, it sends exactly one header, the stop hash's, if it knows that block and is willing to serve it (on its active chain, or a recent valid fork); otherwise it sends **nothing at all**.
 - Otherwise it takes the first locator hash that it knows and that is on its active chain, or that is a descendant of its active tip (then it uses the tip); hashes it does not know, and hashes on side branches, are skipped; if none qualifies it uses genesis. It then sends the headers of its active chain after that block, up to 2,000, stopping early after the stop hash.
 
 A node keeps sending `getheaders`, with a locator starting from the last header received, until a `headers` message has fewer than 2,000 entries or is not processed in full. The locator starts there even when that header is already known or has less work than the best header. A locator built from the best header would not move in either case, and the peer would send the same headers again. (Core: `ProcessHeadersMessage`, `GetLocator(pindexLast)`.) A received `headers` message is first checked as a whole (`headers_message_acceptable` below), and then processed with `process_headers` (chapter 11) in order, stopping at the first header that fails.
+
+What Bitcoin Core does with a `headers` message that is not processed in full (Core: `ProcessHeadersMessage`, `HandleUnconnectingHeaders`, `MaybePunishNodeForBlock`):
+
+- A header with invalid proof of work, or headers that do not form a chain (`headers_pow_and_chain_valid`), make the peer misbehaving. Core checks this before anything else.
+- If the first header's parent is unknown, the message is not an answer to `getheaders`. It is usually the announcement of a block whose parent the node has not seen yet. Core sends `getheaders` with a locator from its best header at once, unless a `getheaders` it sent that peer less than 2 minutes ago is still unanswered. This is not misbehaviour (Core: `MaybeSendGetHeaders`, `HEADERS_RESPONSE_TIME`). Every other `headers` message, an empty one included, counts as the answer.
+- A header that `process_headers` rejects makes the peer misbehaving, except for `time-too-new` (a `Temporary` failure, which can pass later). The headers before it stay accepted. Core punishes `duplicate-invalid` only from a peer it connected to, not from one that connected to it.
+- A message dropped for too little work is not misbehaviour.
 
 The locator is the hashes of a block and its ancestors at decreasing heights: the first 12 entries are consecutive heights, after which the step doubles at each entry; the list always ends with genesis. Bitcoin Core builds the first locator of a headers synchronization from its best header's parent (or from genesis), so that a peer that is up to date still answers with at least one header. It builds the locator after an `inv` for an unknown block from its best header, and the one after a full batch from the last header received. (Core: `LocatorEntries`, `src/chain.cpp`; `SendMessages` and the `INV` case of `ProcessMessage`, `src/net_processing.cpp`.)
 
@@ -261,10 +281,16 @@ pub fn decode_headers(payload: &[u8]) -> Result<Vec<BlockHeader>, DecodeError> {
     Ok(headers)
 }
 
+/// Whether every header has valid proof of work and follows the one before it. A peer whose
+/// `headers` message fails this is misbehaving. Core: `CheckHeadersPoW`.
+pub fn headers_pow_and_chain_valid(params: &ConsensusParams, headers: &[BlockHeader]) -> bool {
+    headers.iter().all(|header| check_proof_of_work(&header.hash(), header.bits, params.pow_limit))
+        && headers.windows(2).all(|pair| pair[1].prev_block == pair[0].hash())
+}
+
 /// Whether a received `headers` message is processed at all. Bitcoin Core drops the whole message,
 /// processing none of it:
-/// - if any header fails its own proof of work, or the headers do not form a continuous chain
-///   (the peer is misbehaving);
+/// - if it fails `headers_pow_and_chain_valid` (the peer is misbehaving);
 /// - if the first header's parent is unknown (Core asks the peer for headers again);
 /// - if the chain's claimed work (the parent's chain work plus each header's proof) is below
 ///   `anti_dos_work_threshold`, unless the last header is already known and is an ancestor of the
@@ -280,11 +306,7 @@ pub fn headers_message_acceptable(state: &ChainState, headers: &[BlockHeader]) -
     if headers.is_empty() {
         return true;
     }
-    let pow_limit = state.params.consensus.pow_limit;
-    if headers.iter().any(|header| !check_proof_of_work(&header.hash(), header.bits, pow_limit)) {
-        return false;
-    }
-    if headers.windows(2).any(|pair| pair[1].prev_block != pair[0].hash()) {
+    if !headers_pow_and_chain_valid(&state.params.consensus, headers) {
         return false;
     }
     let parent = match state.tree.get(&headers[0].prev_block) {
@@ -343,9 +365,11 @@ pub fn answer_getheaders(tree: &BlockTree, locator: &[Hash256], stop: &Hash256) 
 
 Blocks are requested with `getdata`, whose payload is a CompactSize count (at most 50,000) followed by inventory entries `type:u32 | hash:32`. To receive witness data a node MUST request blocks with the type `MSG_WITNESS_BLOCK` (`0x40000002`). A plain `MSG_BLOCK` (2) request returns the block without witnesses; for a block that has witness data, that copy fails validation after segwit activation (the witness commitment check of chapter 10, a `Mutated` failure).
 
-Bitcoin Core answers a block request with a `block` message, or **not at all**: it never sends `notfound` for blocks. It stays silent for a block it does not know, does not have the data for, or will not serve (an old block on a side branch), and it disconnects a peer that asks for pruned blocks or historical blocks beyond what it is willing to serve. A requester MUST therefore time out every block request and ask another peer. Bitcoin Core times only the oldest block in flight from a peer, and only from when it became the oldest: its request, or the arrival of the block that was the oldest before it. Core disconnects the peer once that block has waited 10 minutes, plus 5 minutes for each other peer it is downloading blocks from (Core: `BLOCK_DOWNLOAD_TIMEOUT_BASE`, `BLOCK_DOWNLOAD_TIMEOUT_PER_PEER`, `m_downloading_since`). A peer that delivers slowly but steadily is never cut off this way. Core also disconnects a peer for stalling, much sooner, but only when a block in flight from that peer stops the 1,024-block download window from moving while another peer has nothing in flight and could be given work. The stalling peer then has 2 seconds to deliver a block. The limit doubles, up to 64 seconds, each time a peer is disconnected for stalling, and shrinks back as blocks connect (Core: `BLOCK_DOWNLOAD_WINDOW`, `BLOCK_STALLING_TIMEOUT_DEFAULT`, `BLOCK_STALLING_TIMEOUT_MAX`). With a single peer the stalling rule never applies.
+Bitcoin Core answers a block request with a `block` message, or **not at all**: it never sends `notfound` for blocks. It stays silent for a block it does not know, does not have the data for, or will not serve (an old block on a side branch). Once its upload target (`-maxuploadtarget`) is reached, it disconnects a peer that asks for a block more than a week older than its best header. A pruned Bitcoin Core node also disconnects, without answering, a peer that asks for a block more than 290 blocks below its active tip (288, plus 2 for blocks found meanwhile), unless that peer has the `noban` permission (Core: `ProcessGetBlockData`). A requester MUST therefore time out every block request and ask another peer. Bitcoin Core times only the oldest block in flight from a peer, and only from when it became the oldest: its request, or the arrival of the block that was the oldest before it. Core disconnects the peer once that block has waited 10 minutes, plus 5 minutes for each other peer it is downloading blocks from (Core: `BLOCK_DOWNLOAD_TIMEOUT_BASE`, `BLOCK_DOWNLOAD_TIMEOUT_PER_PEER`, `m_downloading_since`). A peer that delivers slowly but steadily is never cut off this way. Core also disconnects a peer for stalling, much sooner, but only when a block in flight from that peer stops the 1,024-block download window from moving while another peer has nothing in flight and could be given work. The stalling peer then has 2 seconds to deliver a block. The limit doubles, up to 64 seconds, each time a peer is disconnected for stalling, and shrinks back as blocks connect (Core: `BLOCK_DOWNLOAD_WINDOW`, `BLOCK_STALLING_TIMEOUT_DEFAULT`, `BLOCK_STALLING_TIMEOUT_MAX`). With a single peer the stalling rule never applies.
 
 Blocks are requested along the best header chain, oldest first. Bitcoin Core itself keeps at most 16 blocks in flight per peer; a node downloading from Bitcoin Core should do the same, because Bitcoin Core answers `getdata` requests one at a time and large batches only delay other messages. For the same reason a node SHOULD finish synchronizing headers with a peer before requesting blocks from it: a peer busy serving blocks answers `getheaders` slowly.
+
+A node MUST NOT ask a pruned peer (section 14.2) for a block it cannot serve. Bitcoin Core never asks a pruned peer for a block 286 or more blocks below the best block it knows the peer has (288, less 2 for blocks found meanwhile; `limited_peer_serves`). During initial block download it does not download blocks from pruned peers at all. It also drops an automatic outbound connection to a pruned peer unless its own best block is less than 144 block intervals (about a day) old (Core: `FindNextBlocks`, `GetDesirableServiceFlags`, `NODE_NETWORK_LIMITED_ALLOW_CONN_BLOCKS`).
 
 Bitcoin Core announces new blocks with `inv` entries of type `MSG_BLOCK`, or with `headers` messages if the peer sent `sendheaders` (empty payload; Bitcoin Core accepts it before or after `verack`). On an `inv` for an unknown block, send `getheaders`; on new headers, request the blocks.
 
@@ -362,6 +386,12 @@ pub const MAX_BLOCKS_IN_TRANSIT_PER_PEER: usize = 16;
 /// peer. Core: `BLOCK_DOWNLOAD_TIMEOUT_BASE` times the 10-minute block interval, with no other peer
 /// downloading.
 pub const BLOCK_DOWNLOAD_TIMEOUT_SECS: u64 = 600;
+
+/// Whether a pruned peer whose best block is at `peer_height` may be asked for the block at
+/// `height`. Core: `FindNextBlocks`.
+pub fn limited_peer_serves(peer_height: i32, height: i32) -> bool {
+    peer_height - height < NODE_NETWORK_LIMITED_MIN_BLOCKS - 2
+}
 
 /// The blocks requested from one peer, oldest first. Only the oldest is timed, from when it became
 /// the oldest: its request, or the arrival of the block that was the oldest before it. Timing each
@@ -477,7 +507,7 @@ pub fn decode_inv(payload: &[u8]) -> Result<Vec<(u32, Hash256)>, DecodeError> {
 
 ## 14.5 A minimal synchronizing peer
 
-The function below connects to one peer, performs the handshake, downloads headers and blocks until the active tip equals `stop_at` (in headers-only mode, until the header `stop_at` is known), and answers `ping` and `getheaders` along the way. Without `stop_at`, it stops when the peer has no more headers (headers-only mode) or when nothing has happened for `idle_limit` seconds. Synchronization starts only after the node has accepted the peer's `version`, answered it with `verack` and received the peer's `verack`. Until then it ignores every other message, including a `verack` that arrives before the peer's `version`, and it ignores a second `version` at any time. It fails with an error if the handshake has not completed 60 seconds after the connection opened. Nothing the peer sends can move that deadline. It also fails with an error when it makes no progress for `idle_limit` seconds with a target still unreached or a `getheaders` request still unanswered, when the peer stops reading for `idle_limit` seconds, when the oldest block it has requested does not arrive within `BLOCK_DOWNLOAD_TIMEOUT_SECS` (10 minutes) of becoming the oldest, when the peer sends a block that cannot be decoded or that fails validation, and when the peer breaks the framing rules. The idle limit counts from the handshake, whether or not the peer has sent its last headers, so no peer can keep the node waiting forever. After a full batch of headers that was processed in full, the node asks for more with a locator starting from the batch's last header. If its previous such request already started from that header, with no request from the best header in between, it does not send it again. A batch that is dropped, or that stops at a header that fails, is not followed up. While a target is unknown it asks for headers again every 10 seconds, because a peer that is itself still synchronizing does not announce new blocks. The target may be below the peer's tip. Once its header is known, only it and its ancestors are requested, and the target is checked after every message, so the blocks it asked for never carry the tip past the target. It is deliberately simple: one peer, one connection, blocking input and output. It is the reference behaviour the conformance suite's interop test exercises against Bitcoin Core; a production node adds multiple peers, peer discovery, retries elsewhere and persistence.
+The function below connects to one peer, performs the handshake, downloads headers and blocks until the active tip equals `stop_at` (in headers-only mode, until the header `stop_at` is known), and answers `ping` and `getheaders` along the way. Without `stop_at`, it stops when the peer has no more headers (headers-only mode) or when nothing has happened for `idle_limit` seconds. Synchronization starts only after the node has accepted the peer's `version`, answered it with `verack` and received the peer's `verack`. Until then it ignores every other message, including a `verack` that arrives before the peer's `version`, and it ignores a second `version` at any time. It fails with an error if the handshake has not completed 60 seconds after the connection opened. Nothing the peer sends can move that deadline. It also fails with an error when it makes no progress for `idle_limit` seconds with a target still unreached or a `getheaders` request still unanswered, when the peer stops reading for `idle_limit` seconds, when the oldest block it has requested does not arrive within `BLOCK_DOWNLOAD_TIMEOUT_SECS` (10 minutes) of becoming the oldest, when the peer sends a block that cannot be decoded or that fails validation, when the peer sends a header that fails validation (other than one too far in the future), when the peer is pruned and the next block the node needs is older than it serves, and when the peer breaks the framing rules. The idle limit counts from the handshake, whether or not the peer has sent its last headers, so no peer can keep the node waiting forever. After a full batch of headers that was processed in full, the node asks for more with a locator starting from the batch's last header. If its previous such request already started from that header, with no request from the best header in between, it does not send it again. A batch that is dropped, or that stops at a header too far in the future, is not followed up. Headers whose first parent is unknown are not an answer. The node then asks from its best header, unless its last `getheaders` is still unanswered. While a target is unknown it asks for headers again every 10 seconds, because a peer that is itself still synchronizing does not announce new blocks. The target may be below the peer's tip. Once its header is known, only it and its ancestors are requested, and the target is checked after every message, so the blocks it asked for never carry the tip past the target. It is deliberately simple: one peer, one connection, blocking input and output. It is the reference behaviour the conformance suite's interop test exercises against Bitcoin Core; a production node adds multiple peers, peer discovery, retries elsewhere and persistence.
 
 ```rust
 /// Outcome of a successful synchronization run.
@@ -551,6 +581,7 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
     let mut buffer: Vec<u8> = Vec::new();
     // The peer's `version` passed its check and the node answered it with `verack`.
     let mut version_accepted = false;
+    let mut peer_limited = false;
     let mut handshake_done = false;
     // A getheaders request is outstanding.
     let mut requested_headers = false;
@@ -610,6 +641,7 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
                     if theirs.version < MIN_PEER_PROTO_VERSION {
                         return Err(Error::new(ErrorKind::InvalidData, "peer version too old"));
                     }
+                    peer_limited = is_limited_peer(theirs.services);
                     send_by_deadline(&mut stream, "sendheaders", &[])?;
                     send_by_deadline(&mut stream, "verack", &[])?;
                     version_accepted = true;
@@ -640,10 +672,36 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
                     }
                 }
                 "headers" => {
-                    requested_headers = false;
                     let headers = decode_headers(&message.payload).map_err(|e| Error::new(ErrorKind::InvalidData, e.0))?;
+                    if !headers_pow_and_chain_valid(&state.params.consensus, &headers) {
+                        return Err(Error::new(ErrorKind::InvalidData, "peer sent headers with invalid proof of work or not in a chain"));
+                    }
+                    // Not an answer: the peer announced a block whose parent the node lacks (14.3).
+                    if headers.first().map_or(false, |first| state.tree.get(&first.prev_block).is_none()) {
+                        if !requested_headers {
+                            request_headers(state, &mut stream, &state.best_header().hash)?;
+                            continued_from = None;
+                            requested_headers = true;
+                            last_headers_request = Instant::now();
+                        }
+                        continue;
+                    }
+                    requested_headers = false;
                     let full_batch = headers.len() == MAX_HEADERS_RESULTS;
-                    let processed = headers_message_acceptable(state, &headers) && state.process_headers(&headers, unix_now()).is_ok();
+                    let processed = headers_message_acceptable(state, &headers)
+                        && match state.process_headers(&headers, unix_now()) {
+                            Ok(()) => true,
+                            // The header may be valid once the clock has caught up, so the peer is not to blame.
+                            Err((_, HeaderError::Failed(failure))) if failure.kind == FailureKind::Temporary => false,
+                            Err((index, error)) => {
+                                let reason = match error {
+                                    HeaderError::Failed(failure) => failure.reason,
+                                    HeaderError::Orphan => "prev-blk-not-found".to_string(),
+                                };
+                                let hash = hash_to_display(&headers[index].hash());
+                                return Err(Error::new(ErrorKind::InvalidData, format!("peer sent an invalid header {hash}: {reason}")));
+                            }
+                        };
                     if !full_batch {
                         headers_synced = true;
                     } else if processed {
@@ -741,6 +799,11 @@ pub fn sync_from_peer(state: &mut ChainState, address: &str, stop_at: Option<Has
                 }
                 let entry = state.tree.ancestor(&goal, height).unwrap();
                 if entry.block.is_none() && !entry.failed && !in_flight.contains(&entry.hash) {
+                    // A pruned peer disconnects a node that asks for an older block (14.4), and there
+                    // is no other peer to ask. The best header stands in for the peer's best block.
+                    if peer_limited && !limited_peer_serves(state.best_header().height, height) {
+                        return Err(Error::new(ErrorKind::Other, format!("peer is pruned and cannot serve the block at height {height}")));
+                    }
                     wanted.push(entry.hash);
                 }
             }
@@ -782,7 +845,7 @@ Default ports are in chapter 12. Peer discovery is not part of consensus; any so
 
 ## 14.7 Tests
 
-Three tests play a peer that never lets the synchronization finish on its own: one that never answers `getheaders`, one that answers every `getheaders` with the same 2,000 headers, and one that stops reading. `sync_from_peer` must return once its idle limit has passed. One plays an honest peer whose chain forks 2,100 headers below the node's best header and has more work: the node must end with the peer's tip as its best header. Another plays a peer that extends its chain after the node has asked from that chain's last header, then announces it with an `inv`: the node must follow the batch that again ends at that header. Two more play a peer that sends a header before the handshake completes: one sends it before its `verack`, the other sends `verack` and the header before its `version`. The node must take neither header. One checks the command field rule of section 14.1: `decode_frame` drops each kind of malformed field, and a node whose peer answers `getheaders` with a header in a frame whose command field is `headers`, four zero bytes and `x` must not take it. One times blocks in flight on a simulated clock: 16 blocks requested together, each delivered just inside `BLOCK_DOWNLOAD_TIMEOUT_SECS` after the one before, must never time out, while a block that waits the whole limit from its request must, even when a block requested after it has arrived. The last two serve headers from a chain of 2,001 connected blocks, with a side branch and two headers past the active tip. One calls `answer_getheaders` for each rule of section 14.3. The other plays a peer that sends `getheaders` to the node, including one that gets no answer and one that cannot be decoded, and checks the bytes of every `headers` message the node sends back.
+Three tests play a peer that never lets the synchronization finish on its own: one that never answers `getheaders`, one that answers every `getheaders` with the same 2,000 headers, and one that stops reading. `sync_from_peer` must return once its idle limit has passed. One plays an honest peer whose chain forks 2,100 headers below the node's best header and has more work: the node must end with the peer's tip as its best header. Another plays a peer that extends its chain after the node has asked from that chain's last header, then announces it with an `inv`: the node must follow the batch that again ends at that header. Two more play a peer that sends a header before the handshake completes: one sends it before its `verack`, the other sends `verack` and the header before its `version`. The node must take neither header. One checks the command field rule of section 14.1: `decode_frame` drops each kind of malformed field, and a node whose peer answers `getheaders` with a header in a frame whose command field is `headers`, four zero bytes and `x` must not take it. One times blocks in flight on a simulated clock: 16 blocks requested together, each delivered just inside `BLOCK_DOWNLOAD_TIMEOUT_SECS` after the one before, must never time out, while a block that waits the whole limit from its request must, even when a block requested after it has arrived. One plays a peer that answers `getheaders` with a header that fails validation. The node must fail for a `time-too-old` header, keeping the header before it, and for a header with invalid proof of work, but not for a header too far in the future. One plays a peer that announces a header whose parent the node lacks: the node must ask again from its best header and end with the announced header. When such a header is the only answer to `getheaders`, the node must not ask a second time. One plays a pruned peer with 300 headers: the node must fail without asking it for a block. The last two serve headers from a chain of 2,001 connected blocks, with a side branch and two headers past the active tip. One calls `answer_getheaders` for each rule of section 14.3. The other plays a peer that sends `getheaders` to the node, including one that gets no answer and one that cannot be decoded, and checks the bytes of every `headers` message the node sends back.
 
 ```rust
 #[cfg(test)]
@@ -800,10 +863,15 @@ mod sync_tests {
 
     /// The peer's `version`, then `before_verack`, then its `verack`.
     fn handshake(before_verack: &[u8]) -> Vec<u8> {
+        handshake_with(NODE_NETWORK | NODE_WITNESS, before_verack)
+    }
+
+    /// `handshake` from a peer offering `services`.
+    fn handshake_with(services: u64, before_verack: &[u8]) -> Vec<u8> {
         let magic = regtest().params.magic;
         let version = VersionMessage {
             version: PROTOCOL_VERSION,
-            services: NODE_NETWORK | NODE_WITNESS,
+            services,
             timestamp: 0,
             nonce: 1,
             user_agent: Vec::new(),
@@ -1046,6 +1114,117 @@ mod sync_tests {
         let (end, _) = sync(address, None, 5, true);
         let error = end.unwrap_err();
         assert_eq!((error.kind(), error.to_string()), (ErrorKind::TimedOut, "peer stopped reading".to_string()));
+    }
+
+    #[test]
+    fn a_header_failing_validation_ends_the_sync() {
+        let params = regtest().params;
+        let (magic, genesis, pow_limit) = (params.magic, params.genesis.header, params.consensus.pow_limit);
+        let mine = |mut header: BlockHeader| {
+            while !check_proof_of_work(&header.hash(), header.bits, pow_limit) {
+                header.nonce += 1;
+            }
+            header
+        };
+        let good = header_on_genesis();
+        // No later than the median time past of its parent.
+        let too_old = mine(BlockHeader { prev_block: good.hash(), time: genesis.time, ..good });
+        let mut high_hash = good;
+        while check_proof_of_work(&high_hash.hash(), high_hash.bits, pow_limit) {
+            high_hash.nonce += 1;
+        }
+        let future = mine(BlockHeader { time: (unix_now() + 3 * 60 * 60) as u32, ..good });
+        let answering = |batch: Vec<BlockHeader>| {
+            let reply = encode_message(magic, "headers", &encode_headers(&batch));
+            scripted_peer(handshake(&[]), move |stream, message| {
+                if message.command == "getheaders" {
+                    let _ = stream.write_all(&reply);
+                }
+            })
+        };
+        let (end, state) = sync(answering(vec![good, too_old]), None, 1, false);
+        let error = end.unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
+        assert!(error.to_string().ends_with("time-too-old"), "{error}");
+        assert_eq!(state.best_header().hash, good.hash());
+        let (end, _) = sync(answering(vec![high_hash]), None, 1, false);
+        assert_eq!(end.unwrap_err().kind(), ErrorKind::InvalidData);
+        // A header too far in the future is dropped, but the peer is not to blame.
+        let (end, state) = sync(answering(vec![future]), None, 1, false);
+        assert_eq!(end.unwrap(), SyncEnd::Idle);
+        assert_eq!(state.best_header().hash, genesis.hash());
+    }
+
+    #[test]
+    fn headers_that_do_not_connect_are_followed_from_the_best_header() {
+        let params = regtest().params;
+        let magic = params.magic;
+        let chain = headers_on(&params.genesis.header, 3, 0);
+        let tip = chain[2].hash();
+        let headers = move |range: &[BlockHeader]| encode_message(magic, "headers", &encode_headers(range));
+        // The first answer is the first header, followed by an announcement of the third. The
+        // second request must start from the first header.
+        let requests = Arc::new(AtomicUsize::new(0));
+        let counter = requests.clone();
+        let peer_chain = chain.clone();
+        let address = scripted_peer(handshake(&[]), move |stream, message| {
+            if message.command == "getheaders" {
+                let (locator, _) = decode_getheaders(&message.payload).unwrap();
+                let reply = match counter.fetch_add(1, Ordering::SeqCst) {
+                    0 => [headers(&peer_chain[..1]), headers(&peer_chain[2..])].concat(),
+                    _ if locator[0] == peer_chain[0].hash() => headers(&peer_chain[1..]),
+                    _ => Vec::new(),
+                };
+                let _ = stream.write_all(&reply);
+            }
+        });
+        let (end, state) = sync(address, Some(tip), 5, false);
+        assert_eq!(end.unwrap(), SyncEnd::ReachedTarget);
+        assert_eq!(state.best_header().hash, tip);
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+
+        // Headers that do not connect are not the answer, and while a request is unanswered the node
+        // does not send another.
+        let announcement = headers(&chain[2..]);
+        let requests = Arc::new(AtomicUsize::new(0));
+        let counter = requests.clone();
+        let address = scripted_peer(handshake(&[]), move |stream, message| {
+            if message.command == "getheaders" {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let _ = stream.write_all(&announcement);
+            }
+        });
+        let (end, state) = sync(address, None, 1, false);
+        let error = end.unwrap_err();
+        assert_eq!((error.kind(), error.to_string()), (ErrorKind::TimedOut, "getheaders not answered".to_string()));
+        assert_eq!(state.best_header().hash, params.genesis.header.hash());
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_pruned_peer_is_not_asked_for_old_blocks() {
+        assert!(is_limited_peer(NODE_NETWORK_LIMITED | NODE_WITNESS));
+        assert!(!is_limited_peer(NODE_NETWORK | NODE_NETWORK_LIMITED | NODE_WITNESS));
+        assert!(!is_limited_peer(NODE_WITNESS));
+        assert!(limited_peer_serves(300, 15) && !limited_peer_serves(300, 14));
+        let params = regtest().params;
+        let magic = params.magic;
+        let reply = encode_message(magic, "headers", &encode_headers(&headers_on(&params.genesis.header, 300, 0)));
+        let requests = Arc::new(AtomicUsize::new(0));
+        let counter = requests.clone();
+        let address = scripted_peer(handshake_with(NODE_NETWORK_LIMITED | NODE_WITNESS, &[]), move |stream, message| match message.command.as_str() {
+            "getheaders" => {
+                let _ = stream.write_all(&reply);
+            }
+            "getdata" => {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+            _ => {}
+        });
+        let (end, state) = sync(address, None, 5, true);
+        assert_eq!(end.unwrap_err().to_string(), "peer is pruned and cannot serve the block at height 1");
+        assert_eq!(state.best_header().height, 300);
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
     }
 
     #[test]
